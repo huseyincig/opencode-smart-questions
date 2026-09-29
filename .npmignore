@@ -1,0 +1,7 @@
+src/
+tests/
+sandbox/
+scripts/
+tsconfig.json
+.git/
+.gitignore

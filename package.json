@@ -1,6 +1,6 @@
 {
   "name": "opencode-smart-questions",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Intelligent auto-selection of recommended options for OpenCode agent question prompts with safe human-draft detection (Dual-Mode: OpenCode v1 & v2)",
   "type": "module",
   "main": "./dist/index.js",
@@ -26,7 +26,10 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "index.js",
+    "server.js",
+    "tui.js"
   ],
   "scripts": {
     "build": "tsc",
@@ -41,10 +44,19 @@
     "smart-question",
     "auto-selection",
     "tui",
-    "automation"
+    "automation",
+    "question-dialog"
   ],
   "author": "Hüseyin Hadi Çığ",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huseyincig/opencode-smart-questions.git"
+  },
+  "bugs": {
+    "url": "https://github.com/huseyincig/opencode-smart-questions/issues"
+  },
+  "homepage": "https://github.com/huseyincig/opencode-smart-questions#readme",
   "dependencies": {
     "@opentui/core": "^0.4.3",
     "@opentui/solid": "^0.4.3",
