@@ -47,6 +47,22 @@ export const OpencodeSmartQuestions = {
         await hooks.event?.({ event });
       });
     }
+
+    if (context.catalog?.transform && hooks['tool.definition']) {
+      context.catalog.transform((cat: any) => {
+        if (cat?.tool?.update) {
+          cat.tool.update('question', (tool: any) => {
+            const output = {
+              description: tool.description,
+              parameters: tool.parameters,
+              jsonSchema: tool.jsonSchema,
+            };
+            hooks['tool.definition']?.({ toolID: 'question' }, output);
+            if (output.description) tool.description = output.description;
+          });
+        }
+      });
+    }
   },
 };
 

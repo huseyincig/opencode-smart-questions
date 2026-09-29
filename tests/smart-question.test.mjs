@@ -1590,3 +1590,83 @@ test('SmartQuestion plugin - valid question with Turkish marker (Önerilen) auto
 
   await hooks.dispose();
 });
+
+test('SmartQuestion plugin - tool.definition enriches question tool description and schema', async () => {
+  const hooks = await SmartQuestion(
+    { client: {} },
+    {
+      config: {
+        enabled: true,
+        timeoutMs: 30000,
+        recommendedMarkers: ['(Recommended)', '(Önerilen)'],
+        requireExactlyOneRecommendation: true,
+      },
+    }
+  );
+
+  assert.ok(typeof hooks['tool.definition'] === 'function');
+
+  // Case 1: question tool
+  const questionOutput = {
+    description: 'Ask the user a question with choices',
+    jsonSchema: {
+      properties: {
+        questions: {
+          items: {
+            properties: {
+              options: {
+                items: {
+                  properties: {
+                    label: { description: 'Display text' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+
+  await hooks['tool.definition']({ toolID: 'question' }, questionOutput);
+
+  assert.match(questionOutput.description, /RECOMMENDED OPTION CONVENTION/);
+  assert.match(questionOutput.description, /\(Recommended\)/);
+  assert.match(
+    questionOutput.jsonSchema.properties.questions.items.properties.options.items.properties.label.description,
+    /\(Recommended\)/
+  );
+
+  // Case 2: other tool (e.g. bash)
+  const bashOutput = { description: 'Execute a bash command' };
+  await hooks['tool.definition']({ toolID: 'bash' }, bashOutput);
+  assert.equal(bashOutput.description, 'Execute a bash command');
+
+  await hooks.dispose();
+});
+
+test('SmartQuestion plugin - experimental.chat.system.transform injects guidance into system prompt', async () => {
+  const hooks = await SmartQuestion(
+    { client: {} },
+    {
+      config: {
+        enabled: true,
+        timeoutMs: 30000,
+        recommendedMarkers: ['(Recommended)', '(Önerilen)'],
+        requireExactlyOneRecommendation: true,
+      },
+    }
+  );
+
+  assert.ok(typeof hooks['experimental.chat.system.transform'] === 'function');
+
+  const systemOutput = { system: ['Base system prompt for assistant.'] };
+  await hooks['experimental.chat.system.transform']({ sessionID: 'ses-1' }, systemOutput);
+
+  assert.equal(systemOutput.system.length, 2);
+  assert.match(systemOutput.system[1], /Smart Question Auto-Selection Guidance/);
+  assert.match(systemOutput.system[1], /\(Recommended\)/);
+
+  await hooks.dispose();
+});
+

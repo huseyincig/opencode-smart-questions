@@ -223,8 +223,69 @@ export async function createSmartQuestionHooks(
     pendingRequests.clear();
   };
 
+  const markers =
+    config.recommendedMarkers && config.recommendedMarkers.length > 0
+      ? config.recommendedMarkers
+      : ['(Recommended)', '(Önerilen)'];
+  const primaryMarker = markers[0];
+  const markerList = markers.map((m) => `"${m}"`).join(', ');
+
+  const toolDefinitionHook = async (
+    input: { toolID?: string; [key: string]: any },
+    output: { description?: string; parameters?: any; jsonSchema?: any; [key: string]: any }
+  ): Promise<void> => {
+    if (input?.toolID !== 'question') {
+      return;
+    }
+
+    const guidance =
+      `\n\n[RECOMMENDED OPTION CONVENTION]: ` +
+      `When providing choices in options, ALWAYS indicate your recommended choice by appending "${primaryMarker}" to the option's label (e.g. "Run tests ${primaryMarker}"). ` +
+      `Accepted markers: ${markerList}. ` +
+      `For multi-select questions (multiple: true), you can mark one or more options with "${primaryMarker}". ` +
+      `This triggers the user's Smart Questions countdown timer and unattended auto-selection. Do NOT add the marker if you have no recommendation and require manual user choice.`;
+
+    if (typeof output.description === 'string') {
+      output.description += guidance;
+    } else {
+      output.description = guidance.trim();
+    }
+
+    try {
+      const optionsProp =
+        output.jsonSchema?.properties?.questions?.items?.properties?.options?.items?.properties;
+      if (optionsProp?.label && typeof optionsProp.label.description === 'string') {
+        optionsProp.label.description += ` (Append "${primaryMarker}" to indicate recommended option)`;
+      }
+    } catch {
+      // Best-effort schema enhancement
+    }
+  };
+
+  const systemTransformHook = async (
+    _input: { sessionID?: string; model?: any; [key: string]: any },
+    output: { system?: string[]; [key: string]: any }
+  ): Promise<void> => {
+    if (!output || !Array.isArray(output.system)) {
+      return;
+    }
+
+    const promptInstructions =
+      `\n## Smart Question Auto-Selection Guidance\n` +
+      `When asking user questions with options using the \`question\` tool:\n` +
+      `- If you have a recommended choice or preferred next action, ALWAYS append "${primaryMarker}" to the end of that option's label (e.g. \`label: "Fix issue ${primaryMarker}"\`).\n` +
+      `- Accepted recommendation markers: ${markerList}.\n` +
+      `- For multi-select questions (\`multiple: true\`), you can mark one or more options with "${primaryMarker}".\n` +
+      `- Options ending with an accepted marker trigger the Smart Question countdown timer to automatically select them unattended.\n` +
+      `- If you genuinely have no recommendation and need the user to make a completely manual choice without a countdown, do NOT append any marker.\n`;
+
+    output.system.push(promptInstructions);
+  };
+
   return {
     event: eventHook,
     dispose: disposeHook,
+    'tool.definition': toolDefinitionHook,
+    'experimental.chat.system.transform': systemTransformHook,
   };
 }

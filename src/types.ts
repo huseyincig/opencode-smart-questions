@@ -63,6 +63,14 @@ export interface PluginInput {
 export interface Hooks {
   event?: (input: { event: any }) => Promise<void>;
   dispose?: () => Promise<void>;
+  'tool.definition'?: (
+    input: { toolID?: string; [key: string]: any },
+    output: { description?: string; parameters?: any; jsonSchema?: any; [key: string]: any }
+  ) => Promise<void>;
+  'experimental.chat.system.transform'?: (
+    input: { sessionID?: string; model?: any; [key: string]: any },
+    output: { system?: string[]; [key: string]: any }
+  ) => Promise<void>;
   [key: string]: any;
 }
 
