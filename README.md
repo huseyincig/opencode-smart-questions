@@ -30,42 +30,37 @@ Dual-Mode compatible: works seamlessly out of the box with both **OpenCode 1.x**
 
 You do **not** need an npm registry release to install and use this plugin right now. Choose any of the methods below:
 
-### Method 1: Directly from GitHub (Recommended)
+### Method 1: Local Directory / Vendor (Recommended)
 
-Add to your OpenCode configuration (`~/.config/opencode/opencode.json` or project-local `opencode.json`):
+Clone or symlink the repository into your OpenCode vendor or plugins directory:
+
+```bash
+git clone https://github.com/huseyincig/opencode-smart-questions.git ~/.config/opencode/vendor/opencode-smart-questions
+```
+
+Then add the absolute `file:///` path to your OpenCode configuration (`~/.config/opencode/opencode.json`):
 
 ```json
 {
   "plugin": [
-    "github:huseyincig/opencode-smart-questions"
+    "file:///root/.config/opencode/vendor/opencode-smart-questions"
   ]
 }
 ```
 
-Or install it via `npm` / `bun`:
-
-```bash
-npm install github:huseyincig/opencode-smart-questions
-```
-
-### Method 2: Local Directory / Development
-
-If developing or testing locally on your system:
-
-```json
-{
-  "plugin": [
-    "file:/opt/nc-workspace/opencode-smart-questions"
-  ]
-}
-```
-
-### Method 3: Git Clone
-
-```bash
-git clone https://github.com/huseyincig/opencode-smart-questions.git
-```
 Pre-compiled distribution files are ready in `dist/`, so no `build` step is required before usage.
+
+### Method 2: NPM (Once Published)
+
+Once published to npm or an internal registry:
+
+```json
+{
+  "plugin": [
+    "opencode-smart-questions@latest"
+  ]
+}
+```
 
 ### Registering the terminal countdown panel (`tui.json`)
 
