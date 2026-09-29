@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "timeoutMs": 30000,
+  "recommendedMarkers": [
+    "(Recommended)",
+    "(Önerilen)"
+  ],
+  "requireExactlyOneRecommendation": true,
+  "debugLog": "/tmp/smart-question.log"
+}

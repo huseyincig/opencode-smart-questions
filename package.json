@@ -1,0 +1,56 @@
+{
+  "name": "opencode-smart-questions",
+  "version": "0.1.0",
+  "description": "Intelligent auto-selection of recommended options for OpenCode agent question prompts with safe human-draft detection (Dual-Mode: OpenCode v1 & v2)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./server": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./ui": {
+      "import": "./dist/ui.js",
+      "types": "./dist/ui.d.ts"
+    },
+    "./tui": {
+      "import": "./dist/tui.js",
+      "types": "./dist/tui.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "postbuild": "node scripts/emit-tui.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "ai-agent",
+    "smart-question",
+    "auto-selection",
+    "tui",
+    "automation"
+  ],
+  "author": "Hüseyin Hadi Çığ",
+  "license": "MIT",
+  "devDependencies": {
+    "@babel/core": "^7.29.7",
+    "@babel/preset-typescript": "^7.29.7",
+    "@types/node": "^22.0.0",
+    "babel-preset-solid": "^1.9.15",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}
