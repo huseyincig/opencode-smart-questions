@@ -1,16 +1,16 @@
-// src/ui.js
-import { createTextNode as _$createTextNode } from "@opentui/solid";
-import { createComponent as _$createComponent } from "@opentui/solid";
-import { effect as _$effect } from "@opentui/solid";
-import { memo as _$memo } from "@opentui/solid";
-import { insertNode as _$insertNode } from "@opentui/solid";
-import { insert as _$insert } from "@opentui/solid";
-import { setProp as _$setProp } from "@opentui/solid";
-import { createElement as _$createElement } from "@opentui/solid";
+// src/tui-runtime.js
+import { createTextNode as _$createTextNode } from "opentui:runtime-module:%40opentui%2Fsolid";
+import { createComponent as _$createComponent } from "opentui:runtime-module:%40opentui%2Fsolid";
+import { effect as _$effect } from "opentui:runtime-module:%40opentui%2Fsolid";
+import { memo as _$memo } from "opentui:runtime-module:%40opentui%2Fsolid";
+import { insertNode as _$insertNode } from "opentui:runtime-module:%40opentui%2Fsolid";
+import { insert as _$insert } from "opentui:runtime-module:%40opentui%2Fsolid";
+import { setProp as _$setProp } from "opentui:runtime-module:%40opentui%2Fsolid";
+import { createElement as _$createElement } from "opentui:runtime-module:%40opentui%2Fsolid";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createEffect, createMemo, createSignal, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, Show } from "opentui:runtime-module:solid-js";
 var DEFAULT_RECOMMENDED_MARKERS = ["(Recommended)", "(\xD6nerilen)"];
 var DEFAULT_CONFIG = {
   enabled: true,
@@ -601,10 +601,10 @@ var pluginModule = {
   id: "smart-question-ui",
   tui
 };
-var ui_default = pluginModule;
+var tui_runtime_default = pluginModule;
 export {
   SmartQuestionOverlay,
-  ui_default as default,
+  tui_runtime_default as default,
   detectRecommendations,
   formatCountdown,
   loadConfig,

@@ -45,6 +45,15 @@
   ],
   "author": "Hüseyin Hadi Çığ",
   "license": "MIT",
+  "dependencies": {
+    "@opentui/core": "^0.4.3",
+    "@opentui/solid": "^0.4.3",
+    "solid-js": "^1.9.12"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=0.0.0-beta-0",
+    "@opencode/plugin": ">=2.0.0"
+  },
   "devDependencies": {
     "@babel/core": "^7.29.7",
     "@babel/preset-typescript": "^7.29.7",

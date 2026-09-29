@@ -9,7 +9,7 @@ import type {
 	TuiPluginApi,
 	TuiPluginModule,
 } from "@opencode-ai/plugin/tui";
-import { createMemo, createSignal, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, Show } from "solid-js";
 
 /**
  * Question option shape from @opencode/schema (QuestionV1.Option).
@@ -441,6 +441,18 @@ export function SmartQuestionOverlay(props: {
 		return act.agentFound ? `Agent: ${name}` : `Session: ${name}`;
 	});
 
+	createEffect(() => {
+		const act = active();
+		if (act) {
+			try {
+				fs.appendFileSync(
+					"/tmp/smart-question-ui.log",
+					`[smart-question-ui] ${new Date().toISOString()} Overlay active: req=${act.requestID}, countdown=${countdownText()}, recs=${recommendedChecklist()}\n`,
+				);
+			} catch {}
+		}
+	});
+
 	return (
 		<box width="100%" flexDirection="column">
 			<Show when={Boolean(active())}>
@@ -521,7 +533,6 @@ export const tui: TuiPlugin = async (api) => {
 		createSignal<ActiveQuestionState | null>(null);
 	const [countdownSec, setCountdownSec] = createSignal<number>(0);
 	let countdownTimer: NodeJS.Timeout | null = null;
-	let focusPollTimer: NodeJS.Timeout | null = null;
 	let currentLockPath: string | null = null;
 	let currentTriggerFocusGuard: ((reason: string) => void) | null = null;
 
@@ -545,17 +556,9 @@ export const tui: TuiPlugin = async (api) => {
 		}
 	};
 
-	const clearFocusPoll = () => {
-		if (focusPollTimer) {
-			clearInterval(focusPollTimer);
-			focusPollTimer = null;
-		}
-	};
-
 	const clearActive = (reason?: string) => {
 		logDiagnostic(`clearActive called${reason ? ` (reason: ${reason})` : ""}`);
 		clearTimer();
-		clearFocusPoll();
 		currentTriggerFocusGuard = null;
 		if (currentLockPath) {
 			try {
@@ -599,7 +602,6 @@ export const tui: TuiPlugin = async (api) => {
 		}
 
 		clearTimer();
-		clearFocusPoll();
 
 		const decision = detectRecommendations(
 			questions,
@@ -633,7 +635,6 @@ export const tui: TuiPlugin = async (api) => {
 			if (focusGuardTriggered) return;
 			focusGuardTriggered = true;
 			clearTimer();
-			clearFocusPoll();
 
 			logDiagnostic(
 				`focus-activation: requestID=${requestID}, reason=${reason}, writing lockPath=${lockPath}`,
@@ -667,20 +668,6 @@ export const tui: TuiPlugin = async (api) => {
 		};
 
 		currentTriggerFocusGuard = triggerFocusGuard;
-
-		focusPollTimer = setInterval(() => {
-			const editor = (
-				api.renderer as { currentFocusedEditor?: unknown } | null | undefined
-			)?.currentFocusedEditor;
-			if (editor !== null && editor !== false) {
-				// Truthy (user focused on input) OR undefined (API absent in this build -> fail safe)
-				const reason =
-					editor === undefined
-						? "currentFocusedEditor is undefined (fail safe)"
-						: "currentFocusedEditor is truthy";
-				triggerFocusGuard(reason);
-			}
-		}, 250);
 
 		if (decision.ok) {
 			const markers = normalizeParamMarkers(config.recommendedMarkers);
@@ -846,6 +833,7 @@ export const tui: TuiPlugin = async (api) => {
 	api.slots.register({
 		slots: {
 			app_bottom() {
+				logDiagnostic("app_bottom slot instantiated");
 				return (
 					<SmartQuestionOverlay
 						api={api}
