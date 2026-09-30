@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![OpenCode: v1 & v2](https://img.shields.io/badge/OpenCode-v1%20%26%20v2%20Compatible-blue.svg)](https://github.com/huseyincig/opencode-smart-questions)
 [![TypeScript: 5.x](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
-[![Tests: 100% Pass](https://img.shields.io/badge/Tests-53%2F53%20Passing-brightgreen.svg)](tests/)
+[![Tests: 100% Pass](https://img.shields.io/badge/Tests-55%2F55%20Passing-brightgreen.svg)](tests/)
 
 Safe auto-selection of agent-recommended choices for **OpenCode** question prompts, with a visible countdown and immediate cancellation when the user starts interacting.
 
@@ -13,7 +13,7 @@ The package contains separate adapters for **OpenCode v1** and **OpenCode v2** r
 
 ## Features
 
-- **Native recommendation guidance:** v1 enriches `tool.definition` and `experimental.chat.system.transform`; v2 uses `ctx.tool.transform(...)` and `ctx.session.hook("context", ...)`.
+- **Native recommendation guidance:** v1 enriches `tool.definition` and `experimental.chat.system.transform`; full v2 hosts use `ctx.tool.transform(...)` and `ctx.session.hook("context", ...)`. Transition builds that invoke `setup()` without the complete v2 capability surface are detected and ignored safely.
 - **Version-native question handling:** v1 consumes `question.asked/replied/rejected`; v2 consumes `form.created/replied/cancelled` in the TUI and replies through `session.form.reply(...)`.
 - **Single- and multi-select support:** recommended single choices and multiple recommended checkbox choices are both supported.
 - **Human interaction guard:** any real keyboard or paste interaction disables the pending auto-selection. The plugin never injects fake key presses into stdin.
@@ -167,7 +167,7 @@ Global/MCP forms and forms containing unsupported non-choice fields are not auto
 ## Testing
 
 ```bash
-# Build + 53 unit/regression tests
+# Build + 55 unit/regression tests
 npm test
 
 # Typecheck sources
@@ -184,7 +184,7 @@ node sandbox/comprehensive-test.mjs
 npm pack --dry-run
 ```
 
-The regression suite includes v1 timer/cancellation behavior, Turkish markers, draft-lock handling, v2 form label→value mapping, v2 backend transforms, v2 TUI auto-reply, user-input cancellation, and path traversal protection.
+The regression suite includes v1 timer/cancellation behavior, Turkish markers, draft-lock handling, v2 form label→value mapping, v2 backend transforms, v2 TUI auto-reply, partial-v2 capability detection, user-input cancellation, and path traversal protection.
 
 ---
 

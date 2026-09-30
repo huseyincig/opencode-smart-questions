@@ -440,6 +440,25 @@ export const tui: TuiPlugin = async (api) => {
  * OpenCode v2 TUI adapter.
  */
 export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
+  // Some OpenCode transition builds can discover/call the v2 TUI entry without
+  // providing the complete v2 TUI capability surface. Treat that as a no-op.
+  const formApi = context?.data?.session?.form;
+  if (
+    !context ||
+    typeof context !== 'object' ||
+    typeof context.data?.on !== 'function' ||
+    typeof formApi?.sync !== 'function' ||
+    typeof formApi?.list !== 'function' ||
+    typeof formApi?.reply !== 'function' ||
+    typeof formApi?.invalidate !== 'function' ||
+    typeof context.renderer?.keyInput?.on !== 'function' ||
+    typeof context.renderer?.keyInput?.off !== 'function' ||
+    typeof context.ui?.router?.current !== 'function' ||
+    typeof context.ui?.slot !== 'function'
+  ) {
+    return;
+  }
+
   const config = resolveV2TuiConfig(context);
   if (!config?.enabled) return;
 

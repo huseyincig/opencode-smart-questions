@@ -581,6 +581,10 @@ var tui = async (api) => {
   });
 };
 var setup = async (context) => {
+  const formApi = context?.data?.session?.form;
+  if (!context || typeof context !== "object" || typeof context.data?.on !== "function" || typeof formApi?.sync !== "function" || typeof formApi?.list !== "function" || typeof formApi?.reply !== "function" || typeof formApi?.invalidate !== "function" || typeof context.renderer?.keyInput?.on !== "function" || typeof context.renderer?.keyInput?.off !== "function" || typeof context.ui?.router?.current !== "function" || typeof context.ui?.slot !== "function") {
+    return;
+  }
   const config = resolveV2TuiConfig(context);
   if (!config?.enabled) return;
   const log = createDiagnosticLogger(config, "smart-question-v2-ui");

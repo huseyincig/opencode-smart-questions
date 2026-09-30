@@ -1971,3 +1971,64 @@ test('TUI source never injects fake stdin keypresses', () => {
   assert.doesNotMatch(source, /process\.stdin\.emit\s*\(/);
   assert.match(source, /session\.form\.reply/);
 });
+
+
+test('OpenCode v2 backend setup silently no-ops on partial v2 contexts', async () => {
+  const originalError = console.error;
+  const errors = [];
+  console.error = (...args) => errors.push(args);
+
+  try {
+    const missingTool = await OpencodeSmartQuestions.setup({
+      location: { directory: process.cwd() },
+      session: {},
+    });
+    assert.equal(missingTool, undefined);
+
+    const missingSessionHook = await OpencodeSmartQuestions.setup({
+      location: { directory: process.cwd() },
+      tool: {
+        transform() {
+          throw new Error('must not be reached without session.hook');
+        },
+      },
+      session: {},
+    });
+    assert.equal(missingSessionHook, undefined);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(
+      errors,
+      [],
+      'partial v2 backend contexts must not emit startup errors'
+    );
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test('OpenCode v2 TUI setup silently no-ops on partial v2 contexts', async () => {
+  const ui = await import('../dist/ui.js');
+  const originalError = console.error;
+  const errors = [];
+  console.error = (...args) => errors.push(args);
+
+  try {
+    const cleanup = await ui.setup({
+      location: { directory: process.cwd() },
+      data: {},
+      renderer: {},
+      ui: {},
+    });
+    assert.equal(cleanup, undefined);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(
+      errors,
+      [],
+      'partial v2 TUI contexts must not emit startup errors'
+    );
+  } finally {
+    console.error = originalError;
+  }
+});

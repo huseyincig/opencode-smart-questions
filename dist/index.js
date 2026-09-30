@@ -38,6 +38,15 @@ export const SmartQuestion = async (input, options) => {
     return createSmartQuestionHooks(input, options);
 };
 const setupV2 = async (context) => {
+    // OpenCode v1/transition builds may discover this v2-shaped plugin object and
+    // call setup() with only a partial context. Missing capabilities mean "v2 is
+    // unavailable", not a startup error.
+    if (!context ||
+        typeof context !== 'object' ||
+        typeof context.tool?.transform !== 'function' ||
+        typeof context.session?.hook !== 'function') {
+        return;
+    }
     const config = resolveV2Config(context);
     if (!config?.enabled)
         return;
