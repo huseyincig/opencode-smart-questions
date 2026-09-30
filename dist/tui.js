@@ -10,6 +10,7 @@ try {
 
 export default mod.default;
 export const tui = mod.tui;
+export const setup = mod.setup;
 export const SmartQuestionOverlay = mod.SmartQuestionOverlay;
 export const detectRecommendations = mod.detectRecommendations;
 export const formatCountdown = mod.formatCountdown;

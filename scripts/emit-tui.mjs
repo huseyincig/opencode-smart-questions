@@ -73,7 +73,7 @@ const esbuildRuntimeRes = buildSync({
   format: "esm",
   platform: "node",
   target: "node20",
-  external: ["opentui:*", "solid-js", "@opentui/*", "jsdom", "@opencode-ai/*"],
+  external: ["opentui:*", "solid-js", "@opentui/*", "jsdom", "@opencode-ai/*", "@opencode/*"],
   write: false,
 });
 
@@ -117,7 +117,7 @@ const esbuildStandaloneRes = buildSync({
   format: "esm",
   platform: "node",
   target: "node20",
-  external: ["solid-js", "@opentui/*", "jsdom", "@opencode-ai/*"],
+  external: ["solid-js", "@opentui/*", "jsdom", "@opencode-ai/*", "@opencode/*"],
   write: false,
 });
 
@@ -145,6 +145,7 @@ try {
 
 export default mod.default;
 export const tui = mod.tui;
+export const setup = mod.setup;
 export const SmartQuestionOverlay = mod.SmartQuestionOverlay;
 export const detectRecommendations = mod.detectRecommendations;
 export const formatCountdown = mod.formatCountdown;

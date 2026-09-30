@@ -10,11 +10,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "typeRoots": [
-      "/opt/nc-workspace/develop/repo/node_modules/@types",
-      "./node_modules/@types"
-    ]
+    "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*"]
 }

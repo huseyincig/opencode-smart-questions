@@ -1,69 +1,108 @@
+import type { Plugin as OpenCodeV1Plugin } from '@opencode-ai/plugin';
+import type { Plugin as OpenCodeV2 } from '@opencode/plugin';
 import { createSmartQuestionHooks } from './backend.js';
-import type { Plugin, PluginInput } from './types.js';
+import {
+  loadConfig,
+  normalizeSmartQuestionConfig,
+} from './config.js';
+import { buildRecommendationGuidance } from './guidance.js';
+import type { PluginInput, SmartQuestionConfig } from './types.js';
 
 export * from './types.js';
-export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_CONFIG } from './config.js';
+export {
+  loadConfig,
+  DEFAULT_RECOMMENDED_MARKERS,
+  DEFAULT_CONFIG,
+} from './config.js';
 export * from './detector.js';
 export * from './draft-guard.js';
 export * from './backend.js';
 
+function resolveV2Config(context: OpenCodeV2.Context): SmartQuestionConfig | null {
+  const options = context.options as Record<string, unknown> | undefined;
+  const candidate =
+    options && Object.prototype.hasOwnProperty.call(options, 'config')
+      ? options.config
+      : options;
+
+  const knownKeys = new Set([
+    'enabled',
+    'timeoutMs',
+    'recommendedMarkers',
+    'recommendedMarker',
+    'requireExactlyOneRecommendation',
+    'debugLog',
+    'configDir',
+  ]);
+  const hasInlineConfig =
+    candidate &&
+    typeof candidate === 'object' &&
+    !Array.isArray(candidate) &&
+    Object.keys(candidate as Record<string, unknown>).some((key) => knownKeys.has(key));
+
+  if (hasInlineConfig) {
+    return normalizeSmartQuestionConfig(
+      candidate,
+      context.location?.directory
+        ? `${context.location.directory}/.opencode`
+        : undefined
+    );
+  }
+
+  return loadConfig(context.location?.directory);
+}
+
 /**
- * OpenCode v1 Plugin Factory: export const SmartQuestion: Plugin
+ * OpenCode v1 plugin factory.
  */
-export const SmartQuestion: Plugin = async (
-  input: PluginInput,
-  options?: Record<string, unknown>
-) => {
-  return createSmartQuestionHooks(input, options);
+export const SmartQuestion: OpenCodeV1Plugin = async (input, options) => {
+  return createSmartQuestionHooks(
+    input as unknown as PluginInput,
+    options as Record<string, unknown> | undefined
+  );
+};
+
+const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
+  const config = resolveV2Config(context);
+  if (!config?.enabled) return;
+
+  const guidance = buildRecommendationGuidance(config);
+
+  context.tool.transform((editor) => {
+    editor.update('question', (tool) => {
+      if (!tool.description.includes('[RECOMMENDED OPTION CONVENTION]')) {
+        tool.description += guidance.tool;
+      }
+    });
+  });
+
+  context.session.hook('context', (event) => {
+    const alreadyInjected = event.system.some(
+      (part) =>
+        part.type === 'text' &&
+        typeof part.text === 'string' &&
+        part.text.includes('Smart Question Auto-Selection Guidance')
+    );
+    if (!alreadyInjected) {
+      event.system.push({
+        type: 'text',
+        text: guidance.system,
+      });
+    }
+  });
 };
 
 /**
- * OpenCode Dual-Mode Plugin Definition
+ * OpenCode v2 backend plugin definition. The v2 backend injects recommendation
+ * guidance; the v2 TUI adapter owns form countdown/reply because the server
+ * plugin Context intentionally does not expose session.form.reply().
  */
-export const OpencodeSmartQuestions = {
+export const OpencodeSmartQuestions: OpenCodeV2.Plugin & {
+  server: OpenCodeV1Plugin;
+} = {
   id: 'opencode-smart-questions',
-
-  /**
-   * OpenCode v1 Host Handler
-   */
-  server: async (input: PluginInput, options?: Record<string, unknown>) => {
-    return createSmartQuestionHooks(input, options);
-  },
-
-  /**
-   * OpenCode v2 Host Handler
-   */
-  setup: async (context: any) => {
-    const input: PluginInput = {
-      client: context.client ?? context.session ?? {},
-      directory: context.location?.directory ?? process.cwd(),
-      serverUrl: context.serverUrl,
-    };
-
-    const hooks = await createSmartQuestionHooks(input);
-
-    if (context.event?.subscribe && hooks.event) {
-      context.event.subscribe(async (event: any) => {
-        await hooks.event?.({ event });
-      });
-    }
-
-    if (context.catalog?.transform && hooks['tool.definition']) {
-      context.catalog.transform((cat: any) => {
-        if (cat?.tool?.update) {
-          cat.tool.update('question', (tool: any) => {
-            const output = {
-              description: tool.description,
-              parameters: tool.parameters,
-              jsonSchema: tool.jsonSchema,
-            };
-            hooks['tool.definition']?.({ toolID: 'question' }, output);
-            if (output.description) tool.description = output.description;
-          });
-        }
-      });
-    }
-  },
+  server: SmartQuestion,
+  setup: setupV2,
 };
 
 export default OpencodeSmartQuestions;

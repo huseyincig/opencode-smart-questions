@@ -1,90 +1,121 @@
 // src/ui.js
 import { createTextNode as _$createTextNode } from "@opentui/solid";
 import { createComponent as _$createComponent } from "@opentui/solid";
-import { effect as _$effect } from "@opentui/solid";
-import { memo as _$memo } from "@opentui/solid";
 import { insertNode as _$insertNode } from "@opentui/solid";
 import { insert as _$insert } from "@opentui/solid";
 import { setProp as _$setProp } from "@opentui/solid";
 import { createElement as _$createElement } from "@opentui/solid";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-import { createEffect, createMemo, createSignal, Show } from "solid-js";
+import fs3 from "node:fs";
+import path3 from "node:path";
+import { Show, createMemo, createSignal } from "solid-js";
+
+// src/config.ts
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 var DEFAULT_RECOMMENDED_MARKERS = ["(Recommended)", "(\xD6nerilen)"];
 var DEFAULT_CONFIG = {
   enabled: true,
   timeoutMs: 3e4,
   recommendedMarkers: DEFAULT_RECOMMENDED_MARKERS,
   recommendedMarker: "(Recommended)",
-  requireExactlyOneRecommendation: true
+  requireExactlyOneRecommendation: true,
+  debugLog: ""
 };
+function cleanMarkers(value) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+    )
+  );
+}
 function normalizeConfigMarkers(rawMarkers, legacyMarker) {
-  if (Array.isArray(rawMarkers)) {
-    const valid = rawMarkers.filter((m) => typeof m === "string" && m.length > 0);
-    const unique = Array.from(new Set(valid));
-    if (unique.length > 0) {
-      return unique;
-    }
-  }
-  if (typeof legacyMarker === "string" && legacyMarker.length > 0) {
-    return [legacyMarker];
+  const list = cleanMarkers(rawMarkers);
+  if (list.length > 0) return list;
+  if (typeof legacyMarker === "string" && legacyMarker.trim().length > 0) {
+    return [legacyMarker.trim()];
   }
   return [...DEFAULT_RECOMMENDED_MARKERS];
 }
 function normalizeParamMarkers(marker) {
   if (Array.isArray(marker)) {
-    const valid = marker.filter((m) => typeof m === "string" && m.length > 0);
-    const unique = Array.from(new Set(valid));
-    return unique.length > 0 ? unique : [...DEFAULT_RECOMMENDED_MARKERS];
+    const list = cleanMarkers(marker);
+    return list.length > 0 ? list : [...DEFAULT_RECOMMENDED_MARKERS];
   }
-  if (typeof marker === "string" && marker.length > 0) {
-    return [marker];
+  if (typeof marker === "string" && marker.trim().length > 0) {
+    return [marker.trim()];
   }
   return [...DEFAULT_RECOMMENDED_MARKERS];
 }
+function normalizeSmartQuestionConfig(raw, configDir) {
+  if (raw !== void 0 && (raw === null || typeof raw !== "object" || Array.isArray(raw))) {
+    return null;
+  }
+  const parsed = raw ?? {};
+  if (parsed.enabled === false) return null;
+  const recommendedMarkers = normalizeConfigMarkers(
+    parsed.recommendedMarkers,
+    parsed.recommendedMarker
+  );
+  const recommendedMarker = typeof parsed.recommendedMarker === "string" && parsed.recommendedMarker.trim().length > 0 ? parsed.recommendedMarker.trim() : recommendedMarkers[0] ?? DEFAULT_CONFIG.recommendedMarker;
+  const timeoutMs = typeof parsed.timeoutMs === "number" && Number.isFinite(parsed.timeoutMs) && parsed.timeoutMs >= 0 ? parsed.timeoutMs : DEFAULT_CONFIG.timeoutMs;
+  return {
+    enabled: true,
+    configDir: typeof parsed.configDir === "string" && parsed.configDir ? parsed.configDir : configDir,
+    timeoutMs,
+    recommendedMarkers,
+    recommendedMarker,
+    requireExactlyOneRecommendation: typeof parsed.requireExactlyOneRecommendation === "boolean" ? parsed.requireExactlyOneRecommendation : DEFAULT_CONFIG.requireExactlyOneRecommendation,
+    debugLog: typeof parsed.debugLog === "string" ? parsed.debugLog : DEFAULT_CONFIG.debugLog
+  };
+}
 function loadConfig(projectDir) {
+  if (projectDir && typeof projectDir === "object" && ("client" in projectDir || "directory" in projectDir)) {
+    return {};
+  }
+  const dir = typeof projectDir === "string" && projectDir ? projectDir : process.cwd();
+  const candidatePaths = [
+    path.resolve(dir, ".opencode/smart-question.json"),
+    path.resolve(dir, "smart-question.json"),
+    path.resolve(os.homedir(), ".config/opencode/smart-question.json")
+  ];
+  let configPath = null;
+  for (const candidate of candidatePaths) {
+    if (fs.existsSync(candidate)) {
+      configPath = candidate;
+      break;
+    }
+  }
+  if (!configPath) {
+    return normalizeSmartQuestionConfig({}, path.resolve(dir, ".opencode"));
+  }
   try {
-    const dir = typeof projectDir === "string" && projectDir ? projectDir : process.cwd();
-    const candidatePaths = [path.resolve(dir, ".opencode/smart-question.json"), path.resolve(dir, "smart-question.json"), path.resolve(os.homedir(), ".config/opencode/smart-question.json")];
-    let configPath = null;
-    for (const p of candidatePaths) {
-      if (fs.existsSync(p)) {
-        configPath = p;
-        break;
-      }
-    }
-    if (!configPath) {
-      return null;
-    }
     const raw = fs.readFileSync(configPath, "utf8");
     const parsed = JSON.parse(raw);
-    if (!parsed || parsed.enabled === false) {
-      return null;
+    const normalized = normalizeSmartQuestionConfig(parsed, path.dirname(configPath));
+    if (!normalized && parsed?.enabled !== false) {
+      console.error(
+        `[smart-question] Invalid config at ${configPath}; auto-selection disabled`
+      );
     }
-    const configDir = path.dirname(configPath);
-    const recommendedMarkers = normalizeConfigMarkers(parsed.recommendedMarkers, parsed.recommendedMarker);
-    const recommendedMarker = typeof parsed.recommendedMarker === "string" && parsed.recommendedMarker.length > 0 ? parsed.recommendedMarker : recommendedMarkers[0] ?? DEFAULT_CONFIG.recommendedMarker;
-    return {
-      enabled: true,
-      configDir,
-      timeoutMs: typeof parsed.timeoutMs === "number" && parsed.timeoutMs >= 0 ? parsed.timeoutMs : DEFAULT_CONFIG.timeoutMs,
-      recommendedMarkers,
-      recommendedMarker,
-      requireExactlyOneRecommendation: typeof parsed.requireExactlyOneRecommendation === "boolean" ? parsed.requireExactlyOneRecommendation : DEFAULT_CONFIG.requireExactlyOneRecommendation
-    };
+    return normalized;
   } catch (err) {
-    console.error(`[smart-question-ui] Failed to load config: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(
+      `[smart-question] Failed to load config at ${configPath}: ${err instanceof Error ? err.message : String(err)}`
+    );
     return null;
   }
 }
+
+// src/detector.ts
 function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMarkers, options = {}) {
+  if (questions && typeof questions === "object" && !Array.isArray(questions) && ("client" in questions || "directory" in questions)) {
+    return {};
+  }
   const requireOne = options.requireExactlyOneRecommendation !== false;
   if (!Array.isArray(questions) || questions.length === 0) {
-    return {
-      ok: false,
-      reason: "No questions provided in request"
-    };
+    return { ok: false, reason: "No questions provided in request" };
   }
   const markers = normalizeParamMarkers(marker);
   const markerDesc = markers.length === 1 ? `"${markers[0]}"` : `(accepted: ${markers.map((m) => `"${m}"`).join(", ")})`;
@@ -95,24 +126,15 @@ function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMar
     const q = questions[i];
     const qIndex = i + 1;
     if (!q) {
-      return {
-        ok: false,
-        reason: `Question ${qIndex} is null or undefined`
-      };
+      return { ok: false, reason: `Question ${qIndex} is null or undefined` };
     }
     if (!Array.isArray(q.options) || q.options.length === 0) {
-      return {
-        ok: false,
-        reason: `Question ${qIndex} has no options`
-      };
+      return { ok: false, reason: `Question ${qIndex} has no options` };
     }
     const matched = q.options.map((opt) => {
       if (!opt || typeof opt.label !== "string") return null;
       const m = markers.find((m2) => typeof m2 === "string" && m2.length > 0 && opt.label.endsWith(m2));
-      return m ? {
-        opt,
-        marker: m
-      } : null;
+      return m ? { opt, marker: m } : null;
     }).filter((x) => x !== null);
     if (matched.length === 0) {
       return {
@@ -143,12 +165,149 @@ function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMar
       recommendedOptions.push(matched[0].opt);
     }
   }
-  return {
-    ok: true,
-    answers,
-    recommendedOptions,
-    matchedMarker
+  return { ok: true, answers, recommendedOptions, matchedMarker };
+}
+
+// src/draft-guard.ts
+import fs2 from "node:fs";
+import path2 from "node:path";
+function resolveLockPath(configDir, requestID) {
+  if (configDir && typeof configDir === "object" && ("client" in configDir || "directory" in configDir)) {
+    return {};
+  }
+  const opencodeDir = typeof configDir === "string" && configDir || path2.resolve(process.cwd(), ".opencode");
+  const safeRequestID = encodeURIComponent(typeof requestID === "string" ? requestID : "unknown");
+  return path2.join(opencodeDir, `.sq-draft-${safeRequestID}`);
+}
+function deleteLockfile(lockPath, dbg) {
+  if (lockPath && typeof lockPath === "object" && ("client" in lockPath || "directory" in lockPath)) {
+    return {};
+  }
+  try {
+    if (typeof lockPath === "string" && fs2.existsSync(lockPath)) {
+      fs2.unlinkSync(lockPath);
+      dbg?.(`deleted lockfile path=${lockPath}`);
+    }
+  } catch (err) {
+    const errCode = err?.code;
+    if (errCode !== "ENOENT") {
+      dbg?.(`failed to delete lockfile path=${lockPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+// src/form-adapter.ts
+function detectV2FormRecommendations(form, markers, options) {
+  if (!form || !Array.isArray(form.fields) || form.fields.length === 0) {
+    return { ok: false, reason: "Form has no fields" };
+  }
+  const questions = [];
+  const selectableFields = [];
+  for (let i = 0; i < form.fields.length; i++) {
+    const field = form.fields[i];
+    const isStringChoice = field?.type === "string" && Array.isArray(field.options) && field.options.length > 0;
+    const isMultiChoice = field?.type === "multiselect" && Array.isArray(field.options) && field.options.length > 0;
+    if (!isStringChoice && !isMultiChoice) {
+      return {
+        ok: false,
+        reason: `Form field ${i + 1} (${field?.key ?? "unknown"}) is not a supported selectable field`
+      };
+    }
+    const fieldOptions = field.options;
+    if (fieldOptions.some(
+      (option) => !option || typeof option.value !== "string" || typeof option.label !== "string"
+    )) {
+      return {
+        ok: false,
+        reason: `Form field ${i + 1} contains an invalid option`
+      };
+    }
+    const mappedOptions = fieldOptions.map((option) => ({
+      label: option.label,
+      description: option.description,
+      value: option.value
+    }));
+    questions.push({
+      question: field.description ?? field.title ?? field.key,
+      header: field.title ?? field.key,
+      key: field.key,
+      options: mappedOptions,
+      multiple: isMultiChoice
+    });
+    selectableFields.push({
+      key: field.key,
+      multiple: isMultiChoice,
+      options: fieldOptions
+    });
+  }
+  const detection = detectRecommendations(questions, markers, options);
+  if (!detection.ok) return detection;
+  const answer = {};
+  for (let i = 0; i < selectableFields.length; i++) {
+    const field = selectableFields[i];
+    const selectedLabels = detection.answers[i] ?? [];
+    const selectedValues = selectedLabels.map((label) => {
+      const option = field.options.find((candidate) => candidate.label === label);
+      return option?.value;
+    });
+    if (selectedValues.length !== selectedLabels.length || selectedValues.some((value) => typeof value !== "string")) {
+      return {
+        ok: false,
+        reason: `Could not map recommended labels to values for field ${field.key}`
+      };
+    }
+    if (field.multiple) {
+      answer[field.key] = selectedValues;
+    } else {
+      const value = selectedValues[0];
+      if (typeof value !== "string") {
+        return {
+          ok: false,
+          reason: `Missing recommendation value for field ${field.key}`
+        };
+      }
+      answer[field.key] = value;
+    }
+  }
+  return { ok: true, answer, detection, questions };
+}
+
+// src/ui.js
+function loadConfig2(...args) {
+  return loadConfig(...args);
+}
+function detectRecommendations2(...args) {
+  return detectRecommendations(...args);
+}
+function createDiagnosticLogger(config, prefix) {
+  const logPath = typeof config.debugLog === "string" && config.debugLog ? config.debugLog : "";
+  return (message) => {
+    if (!logPath) return;
+    try {
+      fs3.appendFileSync(logPath, `[${prefix}] ${(/* @__PURE__ */ new Date()).toISOString()} ${message}
+`);
+    } catch {
+    }
   };
+}
+function ensureDraftLock(lockPath, payload) {
+  try {
+    fs3.mkdirSync(path3.dirname(lockPath), {
+      recursive: true
+    });
+    fs3.writeFileSync(lockPath, JSON.stringify(payload), "utf8");
+  } catch {
+  }
+}
+function resolveV2TuiConfig(context) {
+  const options = context.options;
+  const candidate = options && Object.prototype.hasOwnProperty.call(options, "config") ? options.config : options;
+  const knownKeys = /* @__PURE__ */ new Set(["enabled", "timeoutMs", "recommendedMarkers", "recommendedMarker", "requireExactlyOneRecommendation", "debugLog", "configDir"]);
+  const hasInlineConfig = candidate && typeof candidate === "object" && !Array.isArray(candidate) && Object.keys(candidate).some((key) => knownKeys.has(key));
+  if (hasInlineConfig) {
+    return normalizeSmartQuestionConfig(candidate, context.location?.directory ? path3.resolve(context.location.directory, ".opencode") : void 0);
+  }
+  return loadConfig2(context.location?.directory);
 }
 function resolveAgentName(api, sessionID, eventProps) {
   if (typeof eventProps?.agent === "string" && eventProps.agent.trim().length > 0) {
@@ -164,7 +323,7 @@ function resolveAgentName(api, sessionID, eventProps) {
     };
   }
   try {
-    const session = api.state?.session?.get?.(sessionID);
+    const session = api?.state?.session?.get?.(sessionID);
     if (session && typeof session.agent === "string" && session.agent.trim().length > 0) {
       return {
         name: session.agent.trim(),
@@ -181,434 +340,454 @@ function resolveAgentName(api, sessionID, eventProps) {
 }
 function stripMarker(label, marker) {
   const strLabel = typeof label === "string" ? label : String(label ?? "");
-  let candidateMarkers = [];
-  if (Array.isArray(marker)) {
-    candidateMarkers = marker.filter((m) => typeof m === "string" && m.length > 0);
-  } else if (typeof marker === "string" && marker.length > 0) {
-    candidateMarkers = [marker];
-  }
-  let longestMatch = null;
-  for (const m of candidateMarkers) {
-    if (strLabel.endsWith(m)) {
-      if (!longestMatch || m.length > longestMatch.length) {
-        longestMatch = m;
-      }
+  const markers = Array.isArray(marker) ? marker.filter((item) => typeof item === "string" && item.length > 0) : typeof marker === "string" && marker.length > 0 ? [marker] : [];
+  let longestMatch = "";
+  for (const candidate of markers) {
+    if (strLabel.endsWith(candidate) && candidate.length > longestMatch.length) {
+      longestMatch = candidate;
     }
   }
-  if (longestMatch) {
-    return strLabel.slice(0, -longestMatch.length).trim();
-  }
-  return strLabel;
+  return longestMatch ? strLabel.slice(0, -longestMatch.length).trim() : strLabel;
 }
 function formatCountdown(totalSeconds) {
-  const num = typeof totalSeconds === "number" && Number.isFinite(totalSeconds) ? totalSeconds : 0;
-  const clamped = Math.max(0, Math.floor(num));
-  const m = Math.floor(clamped / 60);
-  const s = clamped % 60;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  const numeric = typeof totalSeconds === "number" && Number.isFinite(totalSeconds) ? totalSeconds : 0;
+  const clamped = Math.max(0, Math.floor(numeric));
+  const minutes = Math.floor(clamped / 60);
+  const seconds = clamped % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 function SmartQuestionOverlay(props) {
-  const theme = createMemo(() => props.api?.theme?.current);
-  const t = () => theme();
   const active = () => props.state();
-  const act = new Proxy({}, {
-    get(_target, prop) {
-      const current = active();
-      if (!current) {
-        return prop === "detection" ? {} : void 0;
-      }
-      return current[prop] ?? (prop === "detection" ? {} : void 0);
-    }
-  });
-  const isAutoSelect = createMemo(() => Boolean(active()?.detection && active()?.detection.ok === true && !active()?.focusDisabled));
-  const hasRecommendation = createMemo(() => Boolean(active()?.detection && active()?.detection.ok === true));
+  const markers = () => props.markers ?? props.marker ?? DEFAULT_CONFIG.recommendedMarkers ?? [];
   const recommendedChecklist = createMemo(() => {
-    const act2 = active();
-    if (!act2?.detection?.ok || !Array.isArray(act2.detection.recommendedOptions)) {
-      return "";
-    }
-    const markers = props.markers ?? props.marker ?? DEFAULT_CONFIG.recommendedMarkers;
-    return act2.detection.recommendedOptions.filter((opt) => Boolean(opt && typeof opt.label === "string")).map((opt) => stripMarker(opt.label, markers)).filter(Boolean).map((label) => `\u2713 ${label}`).join("   ");
+    const state = active();
+    if (!state?.detection?.ok) return "";
+    return state.detection.recommendedOptions.filter((option) => option && typeof option.label === "string").map((option) => stripMarker(option.label, markers())).filter(Boolean).map((label) => `\u2713 ${label}`).join("   ");
   });
   const rationale = createMemo(() => {
-    const act2 = active();
-    if (!act2?.detection?.ok || !Array.isArray(act2.detection.recommendedOptions)) {
-      return "";
-    }
-    const firstRec = act2.detection.recommendedOptions[0];
-    const desc = firstRec?.description;
-    return typeof desc === "string" ? desc : String(desc ?? "");
+    const state = active();
+    if (!state?.detection?.ok) return "";
+    const description = state.detection.recommendedOptions[0]?.description;
+    return typeof description === "string" ? description : "";
   });
   const countdownText = createMemo(() => {
-    const sec = typeof props.countdown === "function" ? props.countdown() : 0;
-    return formatCountdown(sec);
+    const state = active();
+    const seconds = typeof props.countdown === "function" ? props.countdown() : state?.countdown ?? 0;
+    return formatCountdown(seconds);
   });
-  const agentBadgeText = createMemo(() => {
-    const act2 = active();
-    if (!act2) return "";
-    const name = String(act2.agentName ?? "");
-    return act2.agentFound ? `Agent: ${name}` : `Session: ${name}`;
+  const badge = createMemo(() => {
+    const state = active();
+    if (!state) return "";
+    return state.agentFound ? `Agent: ${state.agentName}` : `Session: ${state.agentName}`;
   });
-  createEffect(() => {
-    const act2 = active();
-    if (act2) {
-      try {
-        fs.appendFileSync("/tmp/smart-question-ui.log", `[smart-question-ui] ${(/* @__PURE__ */ new Date()).toISOString()} Overlay active: req=${act2.requestID}, countdown=${countdownText()}, recs=${recommendedChecklist()}
-`);
-      } catch {
-      }
+  return _$createComponent(Show, {
+    get when() {
+      return active();
+    },
+    get children() {
+      var _el$ = _$createElement("box"), _el$2 = _$createElement("box"), _el$3 = _$createElement("text"), _el$4 = _$createElement("box"), _el$5 = _$createElement("text"), _el$6 = _$createElement("b");
+      _$insertNode(_el$, _el$2);
+      _$insertNode(_el$, _el$4);
+      _$setProp(_el$, "width", "100%");
+      _$setProp(_el$, "border", true);
+      _$setProp(_el$, "borderStyle", "rounded");
+      _$setProp(_el$, "borderColor", "cyan");
+      _$setProp(_el$, "title", " Smart Question ");
+      _$setProp(_el$, "paddingLeft", 1);
+      _$setProp(_el$, "paddingRight", 1);
+      _$setProp(_el$, "flexDirection", "column");
+      _$insertNode(_el$2, _el$3);
+      _$setProp(_el$2, "width", "100%");
+      _$setProp(_el$2, "flexDirection", "row");
+      _$setProp(_el$2, "justifyContent", "flex-end");
+      _$setProp(_el$3, "fg", "gray");
+      _$insert(_el$3, badge);
+      _$insertNode(_el$4, _el$5);
+      _$setProp(_el$4, "width", "100%");
+      _$setProp(_el$4, "flexDirection", "row");
+      _$setProp(_el$4, "justifyContent", "space-between");
+      _$insertNode(_el$5, _el$6);
+      _$setProp(_el$5, "fg", "green");
+      _$insert(_el$6, recommendedChecklist);
+      _$insert(_el$4, _$createComponent(Show, {
+        get when() {
+          return !active()?.focusDisabled;
+        },
+        get fallback() {
+          return (() => {
+            var _el$11 = _$createElement("text"), _el$12 = _$createElement("b");
+            _$insertNode(_el$11, _el$12);
+            _$setProp(_el$11, "fg", "red");
+            _$insertNode(_el$12, _$createTextNode(`AUTO-SELECTION DISABLED`));
+            return _el$11;
+          })();
+        },
+        get children() {
+          var _el$7 = _$createElement("text"), _el$8 = _$createElement("b");
+          _$insertNode(_el$7, _el$8);
+          _$setProp(_el$7, "fg", "yellow");
+          _$insert(_el$8, countdownText);
+          return _el$7;
+        }
+      }), null);
+      _$insert(_el$, _$createComponent(Show, {
+        get when() {
+          return rationale();
+        },
+        get children() {
+          var _el$9 = _$createElement("box"), _el$0 = _$createElement("text"), _el$10 = _$createElement("text");
+          _$insertNode(_el$9, _el$0);
+          _$insertNode(_el$9, _el$10);
+          _$setProp(_el$9, "flexDirection", "row");
+          _$insertNode(_el$0, _$createTextNode(`\xD6neri: `));
+          _$setProp(_el$0, "fg", "gray");
+          _$insert(_el$10, rationale);
+          return _el$9;
+        }
+      }), null);
+      return _el$;
     }
   });
-  return (() => {
-    var _el$ = _$createElement("box");
-    _$setProp(_el$, "width", "100%");
-    _$setProp(_el$, "flexDirection", "column");
-    _$insert(_el$, _$createComponent(Show, {
-      get when() {
-        return Boolean(active());
-      },
-      get children() {
-        var _el$2 = _$createElement("box"), _el$3 = _$createElement("box"), _el$4 = _$createElement("text"), _el$5 = _$createElement("box");
-        _$insertNode(_el$2, _el$3);
-        _$insertNode(_el$2, _el$5);
-        _$setProp(_el$2, "width", "100%");
-        _$setProp(_el$2, "border", true);
-        _$setProp(_el$2, "borderStyle", "rounded");
-        _$setProp(_el$2, "title", " Smart Question ");
-        _$setProp(_el$2, "paddingLeft", 1);
-        _$setProp(_el$2, "paddingRight", 1);
-        _$setProp(_el$2, "flexDirection", "column");
-        _$insertNode(_el$3, _el$4);
-        _$setProp(_el$3, "width", "100%");
-        _$setProp(_el$3, "flexDirection", "row");
-        _$setProp(_el$3, "justifyContent", "flex-end");
-        _$insert(_el$4, agentBadgeText);
-        _$setProp(_el$5, "width", "100%");
-        _$setProp(_el$5, "flexDirection", "row");
-        _$setProp(_el$5, "justifyContent", "space-between");
-        _$insert(_el$5, (() => {
-          var _c$ = _$memo(() => !!(hasRecommendation() && recommendedChecklist()));
-          return () => _c$() ? (() => {
-            var _el$6 = _$createElement("box"), _el$7 = _$createElement("text"), _el$8 = _$createElement("b"), _el$9 = _$createElement("text"), _el$1 = _$createElement("text"), _el$10 = _$createElement("b");
-            _$insertNode(_el$6, _el$7);
-            _$insertNode(_el$6, _el$9);
-            _$insertNode(_el$6, _el$1);
-            _$setProp(_el$6, "flexDirection", "row");
-            _$insertNode(_el$7, _el$8);
-            _$insert(_el$8, recommendedChecklist);
-            _$insertNode(_el$9, _$createTextNode(` `));
-            _$insertNode(_el$1, _el$10);
-            _$insert(_el$10, (() => {
-              var _c$4 = _$memo(() => !!act.detection.matchedMarker);
-              return () => _c$4() ? act.detection.matchedMarker.replace(/[()]/g, "").toUpperCase() : "RECOMMENDED";
-            })());
-            _$effect((_p$) => {
-              var _v$3 = t()?.success ?? "green", _v$4 = t()?.success ?? "green", _v$5 = t()?.success ?? "green";
-              _v$3 !== _p$.e && (_p$.e = _$setProp(_el$7, "fg", _v$3, _p$.e));
-              _v$4 !== _p$.t && (_p$.t = _$setProp(_el$9, "fg", _v$4, _p$.t));
-              _v$5 !== _p$.a && (_p$.a = _$setProp(_el$1, "fg", _v$5, _p$.a));
-              return _p$;
-            }, {
-              e: void 0,
-              t: void 0,
-              a: void 0
-            });
-            return _el$6;
-          })() : _$createElement("box");
-        })(), null);
-        _$insert(_el$5, (() => {
-          var _c$2 = _$memo(() => !!isAutoSelect());
-          return () => _c$2() ? (() => {
-            var _el$12 = _$createElement("text"), _el$13 = _$createElement("b");
-            _$insertNode(_el$12, _el$13);
-            _$insert(_el$13, countdownText);
-            _$effect((_$p) => _$setProp(_el$12, "fg", t()?.warning ?? "yellow", _$p));
-            return _el$12;
-          })() : (() => {
-            var _el$14 = _$createElement("text"), _el$15 = _$createElement("b");
-            _$insertNode(_el$14, _el$15);
-            _$insertNode(_el$15, _$createTextNode(`AUTO-SELECTION DISABLED`));
-            _$effect((_$p) => _$setProp(_el$14, "fg", t()?.error ?? "red", _$p));
-            return _el$14;
-          })();
-        })(), null);
-        _$insert(_el$2, (() => {
-          var _c$3 = _$memo(() => !!rationale());
-          return () => _c$3() ? (() => {
-            var _el$17 = _$createElement("box"), _el$18 = _$createElement("text"), _el$20 = _$createElement("text");
-            _$insertNode(_el$17, _el$18);
-            _$insertNode(_el$17, _el$20);
-            _$setProp(_el$17, "flexDirection", "row");
-            _$insertNode(_el$18, _$createTextNode(`\xD6neri: `));
-            _$insert(_el$20, rationale);
-            _$effect((_p$) => {
-              var _v$6 = t()?.textMuted ?? "gray", _v$7 = t()?.text ?? "white";
-              _v$6 !== _p$.e && (_p$.e = _$setProp(_el$18, "fg", _v$6, _p$.e));
-              _v$7 !== _p$.t && (_p$.t = _$setProp(_el$20, "fg", _v$7, _p$.t));
-              return _p$;
-            }, {
-              e: void 0,
-              t: void 0
-            });
-            return _el$17;
-          })() : null;
-        })(), null);
-        _$effect((_p$) => {
-          var _v$ = t()?.accent ?? "cyan", _v$2 = t()?.textMuted ?? "gray";
-          _v$ !== _p$.e && (_p$.e = _$setProp(_el$2, "borderColor", _v$, _p$.e));
-          _v$2 !== _p$.t && (_p$.t = _$setProp(_el$4, "fg", _v$2, _p$.t));
-          return _p$;
-        }, {
-          e: void 0,
-          t: void 0
-        });
-        return _el$2;
-      }
-    }));
-    return _el$;
-  })();
 }
 var tui = async (api) => {
   const projectDir = api.state?.path?.directory ?? process.cwd();
-  const config = loadConfig(projectDir);
-  if (!config?.enabled) {
-    return;
-  }
+  const config = loadConfig2(projectDir);
+  if (!config?.enabled) return;
+  const log = createDiagnosticLogger(config, "smart-question-ui");
   const [activeQuestion, setActiveQuestion] = createSignal(null);
   const [countdownSec, setCountdownSec] = createSignal(0);
   let countdownTimer = null;
   let currentLockPath = null;
-  let currentTriggerFocusGuard = null;
-  const logDiagnostic = (msg) => {
-    try {
-      fs.appendFileSync("/tmp/smart-question-ui.log", `[smart-question-ui] ${(/* @__PURE__ */ new Date()).toISOString()} ${msg}
-`);
-    } catch {
-    }
-  };
-  let isPrechecking = false;
+  let triggerFocusGuard = null;
   const clearTimer = () => {
-    if (countdownTimer) {
-      clearInterval(countdownTimer);
-      countdownTimer = null;
-    }
+    if (!countdownTimer) return;
+    clearInterval(countdownTimer);
+    countdownTimer = null;
   };
-  const clearActive = (reason) => {
-    logDiagnostic(`clearActive called${reason ? ` (reason: ${reason})` : ""}`);
+  const clearActive = (removeLock = true) => {
     clearTimer();
-    currentTriggerFocusGuard = null;
-    if (currentLockPath) {
-      try {
-        if (fs.existsSync(currentLockPath)) {
-          fs.unlinkSync(currentLockPath);
-        }
-      } catch {
-      }
-      currentLockPath = null;
+    triggerFocusGuard = null;
+    if (removeLock && currentLockPath) {
+      deleteLockfile(currentLockPath, log);
     }
+    currentLockPath = null;
     setActiveQuestion(null);
-    try {
-      api.renderer?.requestRender?.();
-    } catch {
-    }
+    api.renderer?.requestRender?.();
   };
-  const opencodeDir = config.configDir ?? path.resolve(process.cwd(), ".opencode");
-  const handleQuestionAsked = (event) => {
+  const onAsked = (event) => {
     const data = event?.properties ?? event?.data ?? event;
     const requestID = data?.id ?? data?.requestID ?? event?.id;
-    const sessionID = data?.sessionID ?? event?.sessionID ?? "";
+    const sessionID = String(data?.sessionID ?? event?.sessionID ?? "");
     const questions = data?.questions ?? event?.questions ?? [];
-    logDiagnostic(`asked event received: requestID=${requestID ?? "none"}, sessionID=${sessionID}, questionsCount=${Array.isArray(questions) ? questions.length : 0}`);
-    if (!requestID || !Array.isArray(questions) || questions.length === 0) {
+    if (typeof requestID !== "string" || !Array.isArray(questions) || questions.length === 0) {
       return;
     }
-    clearTimer();
-    const decision = detectRecommendations(questions, config.recommendedMarkers, {
+    const decision = detectRecommendations2(questions, config.recommendedMarkers, {
       requireExactlyOneRecommendation: config.requireExactlyOneRecommendation
     });
-    const {
-      name: agentName,
-      found: agentFound
-    } = resolveAgentName(api, sessionID, data);
+    if (!decision.ok) return;
+    clearActive();
+    const agent = resolveAgentName(api, sessionID, data);
+    const lockPath = resolveLockPath(config.configDir, requestID);
+    currentLockPath = lockPath;
     setActiveQuestion({
       requestID,
       sessionID,
       questions,
       detection: decision,
-      agentName,
-      agentFound
+      agentName: agent.name,
+      agentFound: agent.found,
+      focusDisabled: false
     });
-    const lockPath = path.resolve(opencodeDir, `.sq-draft-${requestID}`);
-    currentLockPath = lockPath;
     let focusGuardTriggered = false;
-    const triggerFocusGuard = (reason) => {
+    triggerFocusGuard = (reason) => {
       if (focusGuardTriggered) return;
       focusGuardTriggered = true;
       clearTimer();
-      logDiagnostic(`focus-activation: requestID=${requestID}, reason=${reason}, writing lockPath=${lockPath}`);
-      try {
-        fs.writeFileSync(lockPath, JSON.stringify({
-          requestID,
-          ts: Date.now()
-        }), "utf8");
-      } catch (err) {
-        logDiagnostic(`focus-activation write lockfile failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      setActiveQuestion((prev) => {
-        if (!prev || prev.requestID !== requestID) return prev;
-        return {
-          ...prev,
-          focusDisabled: true
-        };
+      ensureDraftLock(lockPath, {
+        requestID,
+        sessionID,
+        ts: Date.now(),
+        reason
       });
-      try {
-        api.renderer?.requestRender?.();
-      } catch {
-      }
-    };
-    currentTriggerFocusGuard = triggerFocusGuard;
-    if (decision.ok) {
-      const markers = normalizeParamMarkers(config.recommendedMarkers);
-      const sleep = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
-      const precheckTabs = async () => {
-        isPrechecking = true;
-        try {
-          await sleep(150);
-          if (questions.length === 1 && questions[0]?.multiple !== true) {
-            return;
-          }
-          for (let qIdx = 0; qIdx < questions.length; qIdx++) {
-            const q = questions[qIdx];
-            if (!q || !Array.isArray(q.options)) continue;
-            const recIndices = [];
-            q.options.forEach((opt, idx) => {
-              if (opt && typeof opt.label === "string" && markers.some((m) => opt.label.endsWith(m)) && idx < 9) {
-                recIndices.push(idx);
-              }
-            });
-            if (q.multiple === true) {
-              for (const idx of recIndices) {
-                try {
-                  logDiagnostic(`Tab ${qIdx + 1}: Pre-checking multi-select option ${idx + 1}: ${q.options[idx]?.label}`);
-                  process.stdin.emit("data", Buffer.from(String(idx + 1)));
-                } catch (err) {
-                  logDiagnostic(`Failed to pre-check option ${idx + 1}: ${err}`);
-                }
-                await sleep(60);
-              }
-              if (qIdx < questions.length - 1) {
-                try {
-                  logDiagnostic(`Advancing from tab ${qIdx + 1} to next tab via Tab key`);
-                  process.stdin.emit("data", Buffer.from("	"));
-                } catch (err) {
-                  logDiagnostic(`Failed to advance tab: ${err}`);
-                }
-                await sleep(100);
-              }
-            } else {
-              if (recIndices.length > 0) {
-                const idx = recIndices[0];
-                try {
-                  logDiagnostic(`Tab ${qIdx + 1}: Selecting single-select option ${idx + 1}: ${q.options[idx]?.label}`);
-                  process.stdin.emit("data", Buffer.from(String(idx + 1)));
-                } catch (err) {
-                  logDiagnostic(`Failed to select option ${idx + 1}: ${err}`);
-                }
-                await sleep(100);
-              }
-            }
-          }
-        } finally {
-          await sleep(100);
-          isPrechecking = false;
-        }
-      };
-      precheckTabs().catch((err) => {
-        logDiagnostic(`precheckTabs error: ${err}`);
-      });
-      const initialSeconds = Math.max(0, Math.floor(config.timeoutMs / 1e3));
-      setCountdownSec(initialSeconds);
-      countdownTimer = setInterval(() => {
-        setCountdownSec((prev) => {
-          const next = prev - 1;
-          if (next <= 0) {
-            logDiagnostic(`countdown zero -> clearActive: requestID=${requestID}`);
-            clearActive("countdown zero");
-            return 0;
-          }
-          return next;
-        });
-        try {
-          api.renderer?.requestRender?.();
-        } catch {
-        }
-      }, 1e3);
-    }
-    try {
+      setActiveQuestion((current) => current?.requestID === requestID ? {
+        ...current,
+        focusDisabled: true
+      } : current);
+      log(`manual interaction request=${requestID} reason=${reason}`);
       api.renderer?.requestRender?.();
-    } catch {
+    };
+    const startedAt = Date.now();
+    const updateCountdown = () => {
+      const remainingMs = Math.max(0, config.timeoutMs - (Date.now() - startedAt));
+      setCountdownSec(Math.ceil(remainingMs / 1e3));
+      if (remainingMs <= 0) {
+        clearTimer();
+        setActiveQuestion(null);
+        currentLockPath = null;
+      }
+      api.renderer?.requestRender?.();
+    };
+    updateCountdown();
+    if (config.timeoutMs > 0) {
+      countdownTimer = setInterval(updateCountdown, 250);
     }
   };
-  const handleQuestionEnd = (eventName, event) => {
+  const onEnd = (event) => {
     const data = event?.properties ?? event?.data ?? event;
-    const payloadKeys = event ? Object.keys(event).join(",") : "none";
-    const dataKeys = data ? Object.keys(data).join(",") : "none";
     const requestID = data?.requestID ?? data?.id ?? event?.id;
     const current = activeQuestion();
-    const idsMatched = Boolean(current && requestID && requestID === current.requestID);
-    logDiagnostic(`handleQuestionEnd: event=${eventName}, eventKeys=[${payloadKeys}], dataKeys=[${dataKeys}], eventRequestID=${requestID ?? "none"}, currentRequestID=${current?.requestID ?? "none"}, idsMatched=${idsMatched}`);
-    if (!current || !requestID || requestID === current.requestID) {
-      clearActive(`handleQuestionEnd:${eventName}`);
+    if (!current || typeof requestID !== "string" || requestID === current.requestID) {
+      clearActive();
     }
   };
-  const unsubAsked = api.event?.on?.("question.asked", handleQuestionAsked);
-  const unsubReplied = api.event?.on?.("question.replied", (e) => handleQuestionEnd("question.replied", e));
-  const unsubRejected = api.event?.on?.("question.rejected", (e) => handleQuestionEnd("question.rejected", e));
-  api.slots.register({
+  const stopAsked = api.event?.on?.("question.asked", onAsked);
+  const stopReplied = api.event?.on?.("question.replied", onEnd);
+  const stopRejected = api.event?.on?.("question.rejected", onEnd);
+  api.slots?.register?.({
     slots: {
       app_bottom() {
-        logDiagnostic("app_bottom slot instantiated");
         return _$createComponent(SmartQuestionOverlay, {
-          api,
           state: activeQuestion,
           countdown: countdownSec,
           get markers() {
             return config.recommendedMarkers;
-          },
-          get marker() {
-            return config.recommendedMarkers;
           }
         });
       }
     }
   });
-  const unsubKey = api.keymap?.intercept?.("key", () => {
-    if (isPrechecking) return;
-    if (activeQuestion() && currentTriggerFocusGuard) {
-      logDiagnostic("User key interaction intercepted -> triggering focus guard");
-      currentTriggerFocusGuard("User key interaction in question dialog");
+  const onKey = () => {
+    if (activeQuestion() && triggerFocusGuard) {
+      triggerFocusGuard("user keyboard interaction");
     }
-  });
+  };
+  const onPaste = () => {
+    if (activeQuestion() && triggerFocusGuard) {
+      triggerFocusGuard("user paste interaction");
+    }
+  };
+  api.renderer?.keyInput?.on?.("keypress", onKey);
+  api.renderer?.keyInput?.on?.("paste", onPaste);
+  const stopLegacyKey = api.keymap?.intercept?.("key", onKey);
   api.lifecycle?.onDispose?.(() => {
-    unsubKey?.();
-    unsubAsked?.();
-    unsubReplied?.();
-    unsubRejected?.();
+    stopLegacyKey?.();
+    stopAsked?.();
+    stopReplied?.();
+    stopRejected?.();
+    api.renderer?.keyInput?.off?.("keypress", onKey);
+    api.renderer?.keyInput?.off?.("paste", onPaste);
     clearActive();
   });
 };
+var setup = async (context) => {
+  const config = resolveV2TuiConfig(context);
+  if (!config?.enabled) return;
+  const log = createDiagnosticLogger(config, "smart-question-v2-ui");
+  const [activeBySession, setActiveBySession] = createSignal({});
+  const pending = /* @__PURE__ */ new Map();
+  const location = context.location;
+  const updateSessionState = (sessionID, updater) => {
+    setActiveBySession((current) => {
+      const next = {
+        ...current
+      };
+      const updated = updater(next[sessionID]);
+      if (updated) next[sessionID] = updated;
+      else delete next[sessionID];
+      return next;
+    });
+  };
+  const clearPending = (formID, options = {}) => {
+    const item = pending.get(formID);
+    if (!item) return;
+    clearTimeout(item.timeout);
+    if (item.interval) clearInterval(item.interval);
+    item.status = "cancelled";
+    pending.delete(formID);
+    if (options.removeLock !== false) {
+      deleteLockfile(item.lockPath, log);
+    }
+    if (options.removeOverlay !== false) {
+      updateSessionState(item.sessionID, (current) => current?.formID === formID ? void 0 : current);
+    }
+  };
+  const cancelSessionAutoSelection = (sessionID, reason) => {
+    const state = activeBySession()[sessionID];
+    if (!state?.formID || state.focusDisabled) return;
+    const item = pending.get(state.formID);
+    if (!item) return;
+    clearTimeout(item.timeout);
+    if (item.interval) {
+      clearInterval(item.interval);
+      item.interval = null;
+    }
+    item.status = "cancelled";
+    ensureDraftLock(item.lockPath, {
+      formID: item.formID,
+      sessionID,
+      ts: Date.now(),
+      reason
+    });
+    updateSessionState(sessionID, (current) => current?.formID === item.formID ? {
+      ...current,
+      focusDisabled: true
+    } : current);
+    log(`manual interaction form=${item.formID} session=${sessionID} reason=${reason}`);
+  };
+  const onFormCreated = (event) => {
+    if (event?.location?.directory && location?.directory && event.location.directory !== location.directory) {
+      return;
+    }
+    const form = event?.data?.form;
+    if (!form?.id || !form.sessionID || form.sessionID === "global") return;
+    const decision = detectV2FormRecommendations(form, config.recommendedMarkers, {
+      requireExactlyOneRecommendation: config.requireExactlyOneRecommendation
+    });
+    if (!decision.ok) {
+      log(`skip form=${form.id} reason=${decision.reason}`);
+      return;
+    }
+    for (const [id, existing] of pending.entries()) {
+      if (existing.sessionID === form.sessionID) {
+        clearPending(id);
+      }
+    }
+    const detection = decision.detection;
+    const lockPath = resolveLockPath(config.configDir, form.id);
+    const expiresAt = Date.now() + config.timeoutMs;
+    const initialCountdown = Math.ceil(config.timeoutMs / 1e3);
+    const state = {
+      requestID: form.id,
+      formID: form.id,
+      sessionID: form.sessionID,
+      questions: decision.questions,
+      detection,
+      agentName: form.sessionID.slice(0, 8),
+      agentFound: false,
+      focusDisabled: false,
+      countdown: initialCountdown
+    };
+    const item = {
+      formID: form.id,
+      sessionID: form.sessionID,
+      answer: decision.answer,
+      state,
+      expiresAt,
+      status: "pending",
+      lockPath,
+      timeout: void 0,
+      interval: null
+    };
+    const fire = async () => {
+      if (pending.get(form.id) !== item || item.status !== "pending") return;
+      item.status = "firing";
+      if (item.interval) {
+        clearInterval(item.interval);
+        item.interval = null;
+      }
+      try {
+        await context.data.session.form.sync(form.sessionID, location);
+        const forms = context.data.session.form.list(form.sessionID, location);
+        const stillPending = Array.isArray(forms) && forms.some((candidate) => candidate.id === form.id);
+        if (!stillPending || activeBySession()[form.sessionID]?.focusDisabled) {
+          log(`skip reply form=${form.id} reason=no longer pending or manual interaction`);
+          clearPending(form.id);
+          return;
+        }
+        await context.data.session.form.reply({
+          sessionID: form.sessionID,
+          formID: form.id,
+          answer: decision.answer
+        }, location);
+        context.data.session.form.invalidate(form.sessionID, location);
+        item.status = "replied";
+        deleteLockfile(lockPath, log);
+        pending.delete(form.id);
+        updateSessionState(form.sessionID, (current) => current?.formID === form.id ? void 0 : current);
+        log(`reply OK form=${form.id}`);
+      } catch (error) {
+        log(`reply ERROR form=${form.id} err=${error instanceof Error ? error.message : String(error)}`);
+        pending.delete(form.id);
+        updateSessionState(form.sessionID, (current) => current?.formID === form.id ? void 0 : current);
+      }
+    };
+    item.timeout = setTimeout(() => {
+      void fire();
+    }, config.timeoutMs);
+    if (config.timeoutMs > 0) {
+      item.interval = setInterval(() => {
+        if (pending.get(form.id) !== item || item.status !== "pending") return;
+        const countdown = Math.ceil(Math.max(0, item.expiresAt - Date.now()) / 1e3);
+        updateSessionState(form.sessionID, (current) => current?.formID === form.id ? {
+          ...current,
+          countdown
+        } : current);
+      }, 250);
+    }
+    pending.set(form.id, item);
+    updateSessionState(form.sessionID, () => state);
+    log(`schedule form=${form.id} session=${form.sessionID} timeoutMs=${config.timeoutMs}`);
+  };
+  const onFormSettled = (event) => {
+    const formID = event?.data?.id;
+    if (typeof formID === "string") clearPending(formID);
+  };
+  const stopCreated = context.data.on("form.created", onFormCreated);
+  const stopReplied = context.data.on("form.replied", onFormSettled);
+  const stopCancelled = context.data.on("form.cancelled", onFormSettled);
+  const onKey = () => {
+    const route = context.ui.router.current();
+    if (route.type === "session") {
+      cancelSessionAutoSelection(route.sessionID, "user keyboard interaction");
+    }
+  };
+  const onPaste = () => {
+    const route = context.ui.router.current();
+    if (route.type === "session") {
+      cancelSessionAutoSelection(route.sessionID, "user paste interaction");
+    }
+  };
+  context.renderer.keyInput.on("keypress", onKey);
+  context.renderer.keyInput.on("paste", onPaste);
+  const stopSlot = context.ui.slot({
+    append: "session.composer.top",
+    render: ({
+      sessionID
+    }) => _$createComponent(SmartQuestionOverlay, {
+      state: () => activeBySession()[sessionID] ?? null,
+      countdown: () => activeBySession()[sessionID]?.countdown ?? 0,
+      get markers() {
+        return config.recommendedMarkers;
+      }
+    })
+  });
+  return () => {
+    stopCreated();
+    stopReplied();
+    stopCancelled();
+    stopSlot();
+    context.renderer.keyInput.off("keypress", onKey);
+    context.renderer.keyInput.off("paste", onPaste);
+    for (const formID of [...pending.keys()]) {
+      clearPending(formID);
+    }
+  };
+};
 var pluginModule = {
   id: "smart-question-ui",
-  tui
+  tui,
+  setup
 };
 var ui_default = pluginModule;
 export {
   SmartQuestionOverlay,
   ui_default as default,
-  detectRecommendations,
+  detectRecommendations2 as detectRecommendations,
   formatCountdown,
-  loadConfig,
+  loadConfig2 as loadConfig,
   resolveAgentName,
+  setup,
   stripMarker,
   tui
 };

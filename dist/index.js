@@ -1,57 +1,74 @@
 import { createSmartQuestionHooks } from './backend.js';
+import { loadConfig, normalizeSmartQuestionConfig, } from './config.js';
+import { buildRecommendationGuidance } from './guidance.js';
 export * from './types.js';
-export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_CONFIG } from './config.js';
+export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_CONFIG, } from './config.js';
 export * from './detector.js';
 export * from './draft-guard.js';
 export * from './backend.js';
+function resolveV2Config(context) {
+    const options = context.options;
+    const candidate = options && Object.prototype.hasOwnProperty.call(options, 'config')
+        ? options.config
+        : options;
+    const knownKeys = new Set([
+        'enabled',
+        'timeoutMs',
+        'recommendedMarkers',
+        'recommendedMarker',
+        'requireExactlyOneRecommendation',
+        'debugLog',
+        'configDir',
+    ]);
+    const hasInlineConfig = candidate &&
+        typeof candidate === 'object' &&
+        !Array.isArray(candidate) &&
+        Object.keys(candidate).some((key) => knownKeys.has(key));
+    if (hasInlineConfig) {
+        return normalizeSmartQuestionConfig(candidate, context.location?.directory
+            ? `${context.location.directory}/.opencode`
+            : undefined);
+    }
+    return loadConfig(context.location?.directory);
+}
 /**
- * OpenCode v1 Plugin Factory: export const SmartQuestion: Plugin
+ * OpenCode v1 plugin factory.
  */
 export const SmartQuestion = async (input, options) => {
     return createSmartQuestionHooks(input, options);
 };
+const setupV2 = async (context) => {
+    const config = resolveV2Config(context);
+    if (!config?.enabled)
+        return;
+    const guidance = buildRecommendationGuidance(config);
+    context.tool.transform((editor) => {
+        editor.update('question', (tool) => {
+            if (!tool.description.includes('[RECOMMENDED OPTION CONVENTION]')) {
+                tool.description += guidance.tool;
+            }
+        });
+    });
+    context.session.hook('context', (event) => {
+        const alreadyInjected = event.system.some((part) => part.type === 'text' &&
+            typeof part.text === 'string' &&
+            part.text.includes('Smart Question Auto-Selection Guidance'));
+        if (!alreadyInjected) {
+            event.system.push({
+                type: 'text',
+                text: guidance.system,
+            });
+        }
+    });
+};
 /**
- * OpenCode Dual-Mode Plugin Definition
+ * OpenCode v2 backend plugin definition. The v2 backend injects recommendation
+ * guidance; the v2 TUI adapter owns form countdown/reply because the server
+ * plugin Context intentionally does not expose session.form.reply().
  */
 export const OpencodeSmartQuestions = {
     id: 'opencode-smart-questions',
-    /**
-     * OpenCode v1 Host Handler
-     */
-    server: async (input, options) => {
-        return createSmartQuestionHooks(input, options);
-    },
-    /**
-     * OpenCode v2 Host Handler
-     */
-    setup: async (context) => {
-        const input = {
-            client: context.client ?? context.session ?? {},
-            directory: context.location?.directory ?? process.cwd(),
-            serverUrl: context.serverUrl,
-        };
-        const hooks = await createSmartQuestionHooks(input);
-        if (context.event?.subscribe && hooks.event) {
-            context.event.subscribe(async (event) => {
-                await hooks.event?.({ event });
-            });
-        }
-        if (context.catalog?.transform && hooks['tool.definition']) {
-            context.catalog.transform((cat) => {
-                if (cat?.tool?.update) {
-                    cat.tool.update('question', (tool) => {
-                        const output = {
-                            description: tool.description,
-                            parameters: tool.parameters,
-                            jsonSchema: tool.jsonSchema,
-                        };
-                        hooks['tool.definition']?.({ toolID: 'question' }, output);
-                        if (output.description)
-                            tool.description = output.description;
-                    });
-                }
-            });
-        }
-    },
+    server: SmartQuestion,
+    setup: setupV2,
 };
 export default OpencodeSmartQuestions;

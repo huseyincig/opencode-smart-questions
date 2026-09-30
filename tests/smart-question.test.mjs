@@ -4,16 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-let esbuild;
-try {
-  esbuild = (await import('esbuild')).default;
-} catch {
-  try {
-    esbuild = (await import('/opt/nc-workspace/develop/repo/node_modules/esbuild/lib/main.js')).default;
-  } catch {
-    // optional
-  }
-}
+const esbuild = (await import('esbuild')).default;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,6 +17,7 @@ import {
   cleanupStaleDrafts,
   OpencodeSmartQuestions,
 } from '../dist/index.js';
+import { detectV2FormRecommendations } from '../dist/form-adapter.js';
 
 test('detectRecommendations - valid case: exactly one recommended per question', () => {
   const questions = [
@@ -1360,6 +1352,10 @@ test('TUI plugin module - transpile and verify exported functions (handles plain
       "TUI module must export function 'SmartQuestionOverlay'"
     );
     assert.ok(
+      exportedFunctions.includes('setup'),
+      "TUI module must export function 'setup' for OpenCode v2"
+    );
+    assert.ok(
       exportedFunctions.includes('resolveAgentName'),
       "TUI module must export function 'resolveAgentName'"
     );
@@ -1373,8 +1369,8 @@ test('TUI plugin module - transpile and verify exported functions (handles plain
     );
     assert.equal(
       exportedFunctions.length,
-      7,
-      `Expected exactly 7 exported functions from smart-question-ui.tsx, found: ${exportedFunctions.join(', ')}`
+      8,
+      `Expected exactly 8 exported functions from smart-question-ui.tsx, found: ${exportedFunctions.join(', ')}`
     );
   }
 });
@@ -1670,3 +1666,308 @@ test('SmartQuestion plugin - experimental.chat.system.transform injects guidance
   await hooks.dispose();
 });
 
+
+
+test('loadConfig - missing file uses enabled defaults instead of silently disabling plugin', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-default-config-'));
+  try {
+    const cfg = loadConfig(tempDir);
+    assert.ok(cfg);
+    assert.equal(cfg.enabled, true);
+    assert.equal(cfg.timeoutMs, 30000);
+    assert.deepEqual(cfg.recommendedMarkers, ['(Recommended)', '(Önerilen)']);
+    assert.equal(cfg.configDir, path.join(tempDir, '.opencode'));
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('resolveLockPath - request IDs cannot escape configDir', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-safe-lock-'));
+  try {
+    const lockPath = resolveLockPath(tempDir, '../escape/nested');
+    assert.equal(path.dirname(lockPath), tempDir);
+    assert.ok(path.basename(lockPath).startsWith('.sq-draft-'));
+    assert.ok(!path.basename(lockPath).includes('/'));
+    assert.ok(!fs.existsSync(path.resolve(tempDir, '..', 'escape')));
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('detectV2FormRecommendations - maps recommended labels to v2 option values', () => {
+  const result = detectV2FormRecommendations(
+    {
+      id: 'form-v2-map',
+      sessionID: 'ses-v2-map',
+      fields: [
+        {
+          key: 'strategy',
+          type: 'string',
+          options: [
+            { value: 'canary', label: 'Canary' },
+            { value: 'blue-green', label: 'Blue-Green (Recommended)' },
+          ],
+        },
+        {
+          key: 'features',
+          type: 'multiselect',
+          options: [
+            { value: 'logs', label: 'Logging (Recommended)' },
+            { value: 'tracing', label: 'Tracing (Recommended)' },
+            { value: 'metrics', label: 'Metrics' },
+          ],
+        },
+      ],
+    },
+    ['(Recommended)'],
+    { requireExactlyOneRecommendation: true }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.answer, {
+    strategy: 'blue-green',
+    features: ['logs', 'tracing'],
+  });
+});
+
+test('detectV2FormRecommendations - refuses free-text forms fail-safe', () => {
+  const result = detectV2FormRecommendations({
+    id: 'form-v2-text',
+    sessionID: 'ses-v2-text',
+    fields: [
+      {
+        key: 'notes',
+        type: 'string',
+      },
+    ],
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /not a supported selectable field/i);
+});
+
+test('OpenCode v2 backend setup registers current tool/context transforms', async () => {
+  let transformedTool;
+  let contextHook;
+
+  const context = {
+    location: { directory: '/tmp/sq-v2-backend' },
+    options: {
+      enabled: true,
+      recommendedMarkers: ['(Recommended)'],
+      timeoutMs: 10,
+    },
+    tool: {
+      transform(callback) {
+        callback({
+          update(id, mutate) {
+            assert.equal(id, 'question');
+            const tool = {
+              description: 'Ask the user a question with choices',
+            };
+            mutate(tool);
+            transformedTool = tool;
+          },
+        });
+      },
+    },
+    session: {
+      hook(name, callback) {
+        assert.equal(name, 'context');
+        contextHook = callback;
+      },
+    },
+  };
+
+  const cleanup = await OpencodeSmartQuestions.setup(context);
+  assert.equal(cleanup, undefined);
+  assert.match(transformedTool.description, /RECOMMENDED OPTION CONVENTION/);
+
+  const event = {
+    system: [{ type: 'text', text: 'Base system prompt' }],
+    messages: [],
+    tools: [],
+  };
+  await contextHook(event);
+  assert.equal(event.system.length, 2);
+  assert.match(event.system[1].text, /Smart Question Auto-Selection Guidance/);
+
+  await contextHook(event);
+  assert.equal(event.system.length, 2, 'guidance must not duplicate');
+});
+
+function createV2TuiMock(tempDir, timeoutMs = 25) {
+  const eventHandlers = new Map();
+  const keyHandlers = new Map();
+  const pendingForms = new Map();
+  const replies = [];
+  let route = { type: 'session', sessionID: 'ses-v2-ui' };
+  let slotDisposed = false;
+
+  const context = {
+    options: {
+      enabled: true,
+      timeoutMs,
+      recommendedMarkers: ['(Recommended)'],
+      requireExactlyOneRecommendation: true,
+      configDir: tempDir,
+    },
+    location: { directory: tempDir },
+    data: {
+      on(type, handler) {
+        eventHandlers.set(type, handler);
+        return () => eventHandlers.delete(type);
+      },
+      session: {
+        form: {
+          async sync() {},
+          list(sessionID) {
+            return [...pendingForms.values()].filter(
+              (form) => form.sessionID === sessionID
+            );
+          },
+          async reply(input) {
+            replies.push(input);
+            pendingForms.delete(input.formID);
+          },
+          async cancel() {},
+          invalidate() {},
+        },
+      },
+    },
+    renderer: {
+      keyInput: {
+        on(type, handler) {
+          keyHandlers.set(type, handler);
+        },
+        off(type, handler) {
+          if (keyHandlers.get(type) === handler) keyHandlers.delete(type);
+        },
+      },
+    },
+    ui: {
+      router: {
+        current() {
+          return route;
+        },
+      },
+      slot(_definition) {
+        return () => {
+          slotDisposed = true;
+        };
+      },
+    },
+  };
+
+  return {
+    context,
+    replies,
+    emitCreated(form) {
+      pendingForms.set(form.id, form);
+      eventHandlers.get('form.created')?.({
+        type: 'form.created',
+        data: { form },
+        location: { directory: tempDir },
+      });
+    },
+    emitKey() {
+      keyHandlers.get('keypress')?.({ name: 'down' });
+    },
+    setRoute(next) {
+      route = next;
+    },
+    get slotDisposed() {
+      return slotDisposed;
+    },
+    get eventHandlerCount() {
+      return eventHandlers.size;
+    },
+    get keyHandlerCount() {
+      return keyHandlers.size;
+    },
+  };
+}
+
+test('OpenCode v2 TUI setup auto-replies through session.form using option values', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-v2-ui-reply-'));
+  try {
+    const ui = await import('../dist/ui.js');
+    const mock = createV2TuiMock(tempDir, 20);
+    const cleanup = await ui.setup(mock.context);
+
+    mock.emitCreated({
+      id: 'form-v2-ui-reply',
+      sessionID: 'ses-v2-ui',
+      fields: [
+        {
+          key: 'choice',
+          type: 'string',
+          options: [
+            { value: 'go', label: 'Continue (Recommended)' },
+            { value: 'stop', label: 'Stop' },
+          ],
+        },
+      ],
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    assert.equal(mock.replies.length, 1);
+    assert.deepEqual(mock.replies[0], {
+      sessionID: 'ses-v2-ui',
+      formID: 'form-v2-ui-reply',
+      answer: { choice: 'go' },
+    });
+
+    cleanup?.();
+    assert.equal(mock.eventHandlerCount, 0);
+    assert.equal(mock.keyHandlerCount, 0);
+    assert.equal(mock.slotDisposed, true);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('OpenCode v2 TUI user interaction cancels auto-reply without consuming input', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-v2-ui-manual-'));
+  try {
+    const ui = await import('../dist/ui.js');
+    const mock = createV2TuiMock(tempDir, 35);
+    const cleanup = await ui.setup(mock.context);
+
+    mock.emitCreated({
+      id: 'form-v2-ui-manual',
+      sessionID: 'ses-v2-ui',
+      fields: [
+        {
+          key: 'choice',
+          type: 'string',
+          options: [
+            { value: 'go', label: 'Continue (Recommended)' },
+            { value: 'stop', label: 'Stop' },
+          ],
+        },
+      ],
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    mock.emitKey();
+    await new Promise((resolve) => setTimeout(resolve, 55));
+
+    assert.equal(mock.replies.length, 0);
+
+    cleanup?.();
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('TUI source never injects fake stdin keypresses', () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, '../src/ui.tsx'),
+    'utf8'
+  );
+  assert.doesNotMatch(source, /process\.stdin\.emit\s*\(/);
+  assert.match(source, /session\.form\.reply/);
+});

@@ -1,25 +1,20 @@
-import type { Plugin, PluginInput } from './types.js';
+import type { Plugin as OpenCodeV1Plugin } from '@opencode-ai/plugin';
+import type { Plugin as OpenCodeV2 } from '@opencode/plugin';
 export * from './types.js';
-export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_CONFIG } from './config.js';
+export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_CONFIG, } from './config.js';
 export * from './detector.js';
 export * from './draft-guard.js';
 export * from './backend.js';
 /**
- * OpenCode v1 Plugin Factory: export const SmartQuestion: Plugin
+ * OpenCode v1 plugin factory.
  */
-export declare const SmartQuestion: Plugin;
+export declare const SmartQuestion: OpenCodeV1Plugin;
 /**
- * OpenCode Dual-Mode Plugin Definition
+ * OpenCode v2 backend plugin definition. The v2 backend injects recommendation
+ * guidance; the v2 TUI adapter owns form countdown/reply because the server
+ * plugin Context intentionally does not expose session.form.reply().
  */
-export declare const OpencodeSmartQuestions: {
-    id: string;
-    /**
-     * OpenCode v1 Host Handler
-     */
-    server: (input: PluginInput, options?: Record<string, unknown>) => Promise<import("./types.js").Hooks>;
-    /**
-     * OpenCode v2 Host Handler
-     */
-    setup: (context: any) => Promise<void>;
+export declare const OpencodeSmartQuestions: OpenCodeV2.Plugin & {
+    server: OpenCodeV1Plugin;
 };
 export default OpencodeSmartQuestions;

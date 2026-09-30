@@ -8,7 +8,8 @@ export function resolveLockPath(configDir, requestID) {
         return {};
     }
     const opencodeDir = (typeof configDir === 'string' && configDir) || path.resolve(process.cwd(), '.opencode');
-    return path.join(opencodeDir, `.sq-draft-${requestID}`);
+    const safeRequestID = encodeURIComponent(typeof requestID === 'string' ? requestID : 'unknown');
+    return path.join(opencodeDir, `.sq-draft-${safeRequestID}`);
 }
 export function deleteLockfile(lockPath, dbg) {
     if (lockPath &&

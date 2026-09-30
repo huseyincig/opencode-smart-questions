@@ -159,7 +159,7 @@ await runScenario('SCENARIO-5', 'Human draft lockfile blocks auto-selection', as
     directory: sandboxDir,
   }, { config });
 
-  const lockPath = resolveLockPath(sandboxDir, 's5');
+  const lockPath = resolveLockPath(path.resolve(sandboxDir, '.opencode'), 's5');
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   fs.writeFileSync(lockPath, 'user typing answer...');
 

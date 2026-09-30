@@ -1,6 +1,6 @@
 {
   "name": "opencode-smart-questions",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Intelligent auto-selection of recommended options for OpenCode agent question prompts with safe human-draft detection (Dual-Mode: OpenCode v1 & v2)",
   "type": "module",
   "main": "./dist/index.js",
@@ -35,7 +35,8 @@
     "build": "tsc",
     "postbuild": "node scripts/emit-tui.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/*.test.mjs"
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "prepack": "npm run build"
   },
   "keywords": [
     "opencode",
@@ -57,17 +58,39 @@
     "url": "https://github.com/huseyincig/opencode-smart-questions/issues"
   },
   "homepage": "https://github.com/huseyincig/opencode-smart-questions#readme",
-  "dependencies": {
-    "@opentui/core": "^0.4.3",
-    "@opentui/solid": "^0.4.3",
-    "solid-js": "^1.9.12"
+  "peerDependencies": {
+    "@opentui/core": ">=0.5.8",
+    "@opentui/solid": ">=0.5.8",
+    "solid-js": ">=1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",
     "@babel/preset-typescript": "^7.29.7",
+    "@opencode-ai/plugin": "^1.18.34",
+    "@opencode/plugin": "^2.0.21",
+    "@opentui/core": "0.5.14",
+    "@opentui/solid": "0.5.14",
     "@types/node": "^22.0.0",
-    "babel-preset-solid": "^1.9.15",
+    "babel-preset-solid": "1.9.12",
     "esbuild": "^0.25.0",
+    "solid-js": "1.9.12",
     "typescript": "^5.8.0"
+  },
+  "overrides": {
+    "@opentui/solid": {
+      "@babel/core": "^7.29.7",
+      "@babel/preset-typescript": "^7.29.7"
+    }
   }
 }

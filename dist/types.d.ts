@@ -4,11 +4,13 @@
 export interface QuestionOption {
     label: string;
     description?: string;
+    value?: string;
     [key: string]: unknown;
 }
 export interface QuestionInfo {
     question: string;
     header?: string;
+    key?: string;
     options: QuestionOption[];
     multiple?: boolean;
     custom?: boolean;

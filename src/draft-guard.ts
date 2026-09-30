@@ -21,8 +21,10 @@ export function resolveLockPath(
   ) {
     return {};
   }
-  const opencodeDir = (typeof configDir === 'string' && configDir) || path.resolve(process.cwd(), '.opencode');
-  return path.join(opencodeDir, `.sq-draft-${requestID}`);
+  const opencodeDir =
+    (typeof configDir === 'string' && configDir) || path.resolve(process.cwd(), '.opencode');
+  const safeRequestID = encodeURIComponent(typeof requestID === 'string' ? requestID : 'unknown');
+  return path.join(opencodeDir, `.sq-draft-${safeRequestID}`);
 }
 
 /**
