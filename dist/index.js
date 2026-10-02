@@ -17,6 +17,7 @@ function resolveV2Config(context) {
         'recommendedMarkers',
         'recommendedMarker',
         'requireExactlyOneRecommendation',
+        'uiText',
         'debugLog',
         'configDir',
     ]);

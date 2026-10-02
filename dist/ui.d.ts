@@ -1,9 +1,9 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui';
 import type { Plugin as OpenCodeV2Tui } from '@opencode/plugin/tui';
-import type { ActiveQuestionState, DetectionResult, SmartQuestionConfig } from './types.js';
+import type { ActiveQuestionState, DetectionResult, SmartQuestionConfig, SmartQuestionUIText } from './types.js';
 export declare function loadConfig(...args: any[]): SmartQuestionConfig | null;
-export declare function detectRecommendations(...args: any[]): Record<string, unknown> & DetectionResult;
+export declare function detectRecommendations(...args: any[]): DetectionResult;
 interface OverlayState extends ActiveQuestionState {
     countdown?: number;
     formID?: string;
@@ -22,6 +22,7 @@ export declare function SmartQuestionOverlay(props: {
     countdown?: () => number;
     marker?: string | string[];
     markers?: string | string[];
+    uiText?: SmartQuestionUIText;
 }): any;
 /**
  * OpenCode v1 TUI adapter.

@@ -31,6 +31,7 @@ function resolveV2Config(context: OpenCodeV2.Context): SmartQuestionConfig | nul
     'recommendedMarkers',
     'recommendedMarker',
     'requireExactlyOneRecommendation',
+    'uiText',
     'debugLog',
     'configDir',
   ]);

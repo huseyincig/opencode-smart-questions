@@ -13,6 +13,7 @@ export function detectV2FormRecommendations(form, markers, options) {
     }
     const questions = [];
     const selectableFields = [];
+    const seenKeys = new Set();
     for (let i = 0; i < form.fields.length; i++) {
         const field = form.fields[i];
         const isStringChoice = field?.type === 'string' &&
@@ -27,6 +28,10 @@ export function detectV2FormRecommendations(form, markers, options) {
                 reason: `Form field ${i + 1} (${field?.key ?? 'unknown'}) is not a supported selectable field`,
             };
         }
+        if (typeof field.key !== 'string' || !field.key || seenKeys.has(field.key)) {
+            return { ok: false, reason: `Form field ${i + 1} has a missing or duplicate key` };
+        }
+        seenKeys.add(field.key);
         const fieldOptions = field.options;
         if (fieldOptions.some((option) => !option ||
             typeof option.value !== 'string' ||
@@ -62,8 +67,9 @@ export function detectV2FormRecommendations(form, markers, options) {
         const field = selectableFields[i];
         const selectedLabels = detection.answers[i] ?? [];
         const selectedValues = selectedLabels.map((label) => {
-            const option = field.options.find((candidate) => candidate.label === label);
-            return option?.value;
+            const matchingOptions = field.options.filter((candidate) => candidate.label === label);
+            // A repeated label can point at different form values: require an unambiguous mapping.
+            return matchingOptions.length === 1 ? matchingOptions[0].value : undefined;
         });
         if (selectedValues.length !== selectedLabels.length ||
             selectedValues.some((value) => typeof value !== 'string')) {

@@ -32,7 +32,8 @@ export function detectRecommendations(questions, marker = DEFAULT_CONFIG.recomme
             .map((opt) => {
             if (!opt || typeof opt.label !== 'string')
                 return null;
-            const m = markers.find((m) => typeof m === 'string' && m.length > 0 && opt.label.endsWith(m));
+            const normalizedLabel = opt.label.trimEnd().normalize('NFC');
+            const m = markers.find((marker) => normalizedLabel.endsWith(marker.normalize('NFC')));
             return m ? { opt, marker: m } : null;
         })
             .filter((x) => x !== null);

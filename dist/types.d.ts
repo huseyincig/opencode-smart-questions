@@ -16,12 +16,30 @@ export interface QuestionInfo {
     custom?: boolean;
     [key: string]: unknown;
 }
+export interface ActiveQuestionState {
+    requestID: string;
+    sessionID: string;
+    questions: QuestionInfo[];
+    detection: DetectionResult;
+    agentName: string;
+    agentFound: boolean;
+    focusDisabled: boolean;
+    errorMessage?: string;
+}
+export interface SmartQuestionUIText {
+    recommendation: string;
+    disabled: string;
+    autoReplyFailed: string;
+    agent: string;
+    session: string;
+}
 export interface SmartQuestionConfig {
     enabled: boolean;
     timeoutMs: number;
     recommendedMarkers: string[];
     recommendedMarker?: string;
     requireExactlyOneRecommendation: boolean;
+    uiText: SmartQuestionUIText;
     debugLog?: string;
     configDir?: string;
 }

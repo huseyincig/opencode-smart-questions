@@ -1499,8 +1499,8 @@ test('loadConfig - neither recommendedMarkers nor recommendedMarker present -> d
     );
     const cfg = loadConfig(tempDir);
     assert.ok(cfg !== null);
-    assert.deepEqual(cfg.recommendedMarkers, ['(Recommended)', '(Önerilen)']);
-    assert.equal(cfg.recommendedMarker, '(Recommended)');
+    assert.deepEqual(cfg.recommendedMarkers, ['[SQ:recommended]', '(Recommended)', '(Önerilen)']);
+    assert.equal(cfg.recommendedMarker, '[SQ:recommended]');
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -1675,7 +1675,7 @@ test('loadConfig - missing file uses enabled defaults instead of silently disabl
     assert.ok(cfg);
     assert.equal(cfg.enabled, true);
     assert.equal(cfg.timeoutMs, 30000);
-    assert.deepEqual(cfg.recommendedMarkers, ['(Recommended)', '(Önerilen)']);
+    assert.deepEqual(cfg.recommendedMarkers, ['[SQ:recommended]', '(Recommended)', '(Önerilen)']);
     assert.equal(cfg.configDir, path.join(tempDir, '.opencode'));
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -1809,7 +1809,7 @@ function createV2TuiMock(tempDir, timeoutMs = 25) {
     options: {
       enabled: true,
       timeoutMs,
-      recommendedMarkers: ['(Recommended)'],
+      recommendedMarkers: ['[SQ:recommended]', '(Recommended)', '(Önerilen)'],
       requireExactlyOneRecommendation: true,
       configDir: tempDir,
     },
@@ -1873,6 +1873,9 @@ function createV2TuiMock(tempDir, timeoutMs = 25) {
     },
     emitKey() {
       keyHandlers.get('keypress')?.({ name: 'down' });
+    },
+    emitSettled(type, formID) {
+      eventHandlers.get(type)?.({ type, data: { id: formID } });
     },
     setRoute(next) {
       route = next;
@@ -2030,5 +2033,203 @@ test('OpenCode v2 TUI setup silently no-ops on partial v2 contexts', async () =>
     );
   } finally {
     console.error = originalError;
+  }
+});
+
+test('language-neutral token selects options in unrelated writing systems', () => {
+  const labels = [
+    'حفظ [SQ:recommended]',
+    '保存 [SQ:recommended]',
+    '保存する [SQ:recommended]',
+    'सहेजें [SQ:recommended]',
+    'Сохранить [SQ:recommended]',
+    'Guardar [SQ:recommended]',
+    'Enregistrer [SQ:recommended]',
+    '저장 [SQ:recommended]',
+    'Kaydet [SQ:recommended]',
+    'Simpan [SQ:recommended]',
+  ];
+  for (const label of labels) {
+    const result = detectRecommendations([
+      { question: 'Localized question', options: [{ label: 'Other' }, { label }] },
+    ]);
+    assert.equal(result.ok, true, label);
+    assert.deepEqual(result.answers, [[label]]);
+    assert.equal(result.matchedMarker, '[SQ:recommended]');
+  }
+});
+
+test('detector accepts configured Unicode markers and NFC-equivalent suffixes', () => {
+  const custom = '(Sélectionné)';
+  const decomposedLabel = 'Écrire (Se\u0301lectionne\u0301)  ';
+  const result = detectRecommendations(
+    [{ question: 'Choix', options: [{ label: 'Autre' }, { label: decomposedLabel }] }],
+    [custom],
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.answers, [[decomposedLabel]]);
+});
+
+test('v2 form refuses duplicate recommended labels with different values', () => {
+  const result = detectV2FormRecommendations({
+    id: 'duplicate-labels',
+    sessionID: 'session',
+    fields: [{
+      key: 'choice',
+      type: 'multiselect',
+      options: [
+        { value: 'first', label: '保存 [SQ:recommended]' },
+        { value: 'second', label: '保存 [SQ:recommended]' },
+      ],
+    }],
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /Could not map recommended labels to values/);
+});
+
+test('v2 form refuses duplicate field keys', () => {
+  const result = detectV2FormRecommendations({
+    id: 'duplicate-keys',
+    sessionID: 'session',
+    fields: [
+      { key: 'answer', type: 'string', options: [{ value: 'a', label: 'A [SQ:recommended]' }] },
+      { key: 'answer', type: 'string', options: [{ value: 'b', label: 'B [SQ:recommended]' }] },
+    ],
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /duplicate key/);
+});
+
+test('v2 cancellation while form.sync is awaiting prevents a stale reply', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v2-sync-cancel-'));
+  try {
+    const ui = await import('../dist/ui.js');
+    const mock = createV2TuiMock(tempDir, 15);
+    const cleanup = await ui.setup(mock.context);
+    mock.context.data.session.form.sync = async () => {
+      mock.emitSettled('form.cancelled', 'sync-cancel');
+    };
+    mock.emitCreated({
+      id: 'sync-cancel',
+      sessionID: 'ses-v2-ui',
+      fields: [{ key: 'choice', type: 'string', options: [
+        { value: 'yes', label: 'نعم [SQ:recommended]' },
+        { value: 'no', label: 'لا' },
+      ] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 65));
+    assert.equal(mock.replies.length, 0);
+    cleanup?.();
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('v2 unsupported new form cancels older auto-reply in same session', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v2-replace-'));
+  try {
+    const ui = await import('../dist/ui.js');
+    const mock = createV2TuiMock(tempDir, 35);
+    const cleanup = await ui.setup(mock.context);
+    mock.emitCreated({
+      id: 'earlier-form',
+      sessionID: 'ses-v2-ui',
+      fields: [{ key: 'choice', type: 'string', options: [
+        { value: 'yes', label: 'Yes [SQ:recommended]' },
+      ] }],
+    });
+    mock.emitCreated({
+      id: 'manual-form',
+      sessionID: 'ses-v2-ui',
+      fields: [{ key: 'notes', type: 'string' }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 65));
+    assert.equal(mock.replies.length, 0);
+    cleanup?.();
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('v2 reply failure is reported and leaves the user to answer manually', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v2-reply-fail-'));
+  const originalError = console.error;
+  const reported = [];
+  console.error = (...args) => reported.push(args.join(' '));
+  try {
+    const ui = await import('../dist/ui.js');
+    const mock = createV2TuiMock(tempDir, 15);
+    const cleanup = await ui.setup(mock.context);
+    mock.context.data.session.form.reply = async () => {
+      throw new Error('simulated transport failure');
+    };
+    mock.emitCreated({
+      id: 'reply-failure',
+      sessionID: 'ses-v2-ui',
+      fields: [{ key: 'choice', type: 'string', options: [
+        { value: 'yes', label: 'Sí [SQ:recommended]' },
+      ] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 65));
+    assert.equal(mock.replies.length, 0);
+    assert.ok(reported.some((message) => message.includes('Auto-selection failed')));
+    cleanup?.();
+  } finally {
+    console.error = originalError;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('localized UI labels are configurable independently of recommendation markers', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-ui-locale-'));
+  try {
+    fs.writeFileSync(path.join(tempDir, 'smart-question.json'), JSON.stringify({
+      enabled: true,
+      uiText: {
+        recommendation: '建议：',
+        disabled: '自动选择已禁用',
+        autoReplyFailed: '请手动回答。',
+        agent: '代理：',
+        session: '会话：',
+      },
+    }));
+    const cfg = loadConfig(tempDir);
+    assert.equal(cfg.uiText.recommendation, '建议：');
+    assert.equal(cfg.uiText.disabled, '自动选择已禁用');
+    assert.equal(cfg.uiText.autoReplyFailed, '请手动回答。');
+    assert.equal(cfg.uiText.agent, '代理：');
+    assert.equal(cfg.uiText.session, '会话：');
+    assert.deepEqual(cfg.recommendedMarkers, ['[SQ:recommended]', '(Recommended)', '(Önerilen)']);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('v2 cache refresh failure after successful reply does not report failed selection', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v2-invalidate-'));
+  const originalError = console.error;
+  const reported = [];
+  console.error = (...args) => reported.push(args.join(' '));
+  try {
+    const ui = await import('../dist/ui.js');
+    const mock = createV2TuiMock(tempDir, 15);
+    const cleanup = await ui.setup(mock.context);
+    mock.context.data.session.form.invalidate = () => {
+      throw new Error('cache update failed after successful reply');
+    };
+    mock.emitCreated({
+      id: 'invalidate-failure',
+      sessionID: 'ses-v2-ui',
+      fields: [{ key: 'choice', type: 'string', options: [
+        { value: 'yes', label: '保存 [SQ:recommended]' },
+      ] }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 65));
+    assert.equal(mock.replies.length, 1);
+    assert.deepEqual(reported, []);
+    cleanup?.();
+  } finally {
+    console.error = originalError;
+    fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });

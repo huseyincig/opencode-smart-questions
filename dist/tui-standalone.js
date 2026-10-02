@@ -13,15 +13,37 @@ import { Show, createMemo, createSignal } from "solid-js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-var DEFAULT_RECOMMENDED_MARKERS = ["(Recommended)", "(\xD6nerilen)"];
+var DEFAULT_RECOMMENDED_MARKERS = [
+  "[SQ:recommended]",
+  "(Recommended)",
+  "(\xD6nerilen)"
+];
+var DEFAULT_UI_TEXT = {
+  recommendation: "Recommendation:",
+  disabled: "AUTO-SELECTION DISABLED",
+  autoReplyFailed: "Auto-selection failed. Please answer manually.",
+  agent: "Agent:",
+  session: "Session:"
+};
 var DEFAULT_CONFIG = {
   enabled: true,
   timeoutMs: 3e4,
   recommendedMarkers: DEFAULT_RECOMMENDED_MARKERS,
-  recommendedMarker: "(Recommended)",
+  recommendedMarker: "[SQ:recommended]",
   requireExactlyOneRecommendation: true,
+  uiText: DEFAULT_UI_TEXT,
   debugLog: ""
 };
+function normalizeUIText(value) {
+  const overrides = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    recommendation: typeof overrides.recommendation === "string" && overrides.recommendation.trim() ? overrides.recommendation : DEFAULT_UI_TEXT.recommendation,
+    disabled: typeof overrides.disabled === "string" && overrides.disabled.trim() ? overrides.disabled : DEFAULT_UI_TEXT.disabled,
+    autoReplyFailed: typeof overrides.autoReplyFailed === "string" && overrides.autoReplyFailed.trim() ? overrides.autoReplyFailed : DEFAULT_UI_TEXT.autoReplyFailed,
+    agent: typeof overrides.agent === "string" && overrides.agent.trim() ? overrides.agent : DEFAULT_UI_TEXT.agent,
+    session: typeof overrides.session === "string" && overrides.session.trim() ? overrides.session : DEFAULT_UI_TEXT.session
+  };
+}
 function cleanMarkers(value) {
   if (!Array.isArray(value)) return [];
   return Array.from(
@@ -67,6 +89,7 @@ function normalizeSmartQuestionConfig(raw, configDir) {
     recommendedMarkers,
     recommendedMarker,
     requireExactlyOneRecommendation: typeof parsed.requireExactlyOneRecommendation === "boolean" ? parsed.requireExactlyOneRecommendation : DEFAULT_CONFIG.requireExactlyOneRecommendation,
+    uiText: normalizeUIText(parsed.uiText),
     debugLog: typeof parsed.debugLog === "string" ? parsed.debugLog : DEFAULT_CONFIG.debugLog
   };
 }
@@ -133,7 +156,10 @@ function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMar
     }
     const matched = q.options.map((opt) => {
       if (!opt || typeof opt.label !== "string") return null;
-      const m = markers.find((m2) => typeof m2 === "string" && m2.length > 0 && opt.label.endsWith(m2));
+      const normalizedLabel = opt.label.trimEnd().normalize("NFC");
+      const m = markers.find(
+        (marker2) => normalizedLabel.endsWith(marker2.normalize("NFC"))
+      );
       return m ? { opt, marker: m } : null;
     }).filter((x) => x !== null);
     if (matched.length === 0) {
@@ -203,6 +229,7 @@ function detectV2FormRecommendations(form, markers, options) {
   }
   const questions = [];
   const selectableFields = [];
+  const seenKeys = /* @__PURE__ */ new Set();
   for (let i = 0; i < form.fields.length; i++) {
     const field = form.fields[i];
     const isStringChoice = field?.type === "string" && Array.isArray(field.options) && field.options.length > 0;
@@ -213,6 +240,10 @@ function detectV2FormRecommendations(form, markers, options) {
         reason: `Form field ${i + 1} (${field?.key ?? "unknown"}) is not a supported selectable field`
       };
     }
+    if (typeof field.key !== "string" || !field.key || seenKeys.has(field.key)) {
+      return { ok: false, reason: `Form field ${i + 1} has a missing or duplicate key` };
+    }
+    seenKeys.add(field.key);
     const fieldOptions = field.options;
     if (fieldOptions.some(
       (option) => !option || typeof option.value !== "string" || typeof option.label !== "string"
@@ -247,8 +278,8 @@ function detectV2FormRecommendations(form, markers, options) {
     const field = selectableFields[i];
     const selectedLabels = detection.answers[i] ?? [];
     const selectedValues = selectedLabels.map((label) => {
-      const option = field.options.find((candidate) => candidate.label === label);
-      return option?.value;
+      const matchingOptions = field.options.filter((candidate) => candidate.label === label);
+      return matchingOptions.length === 1 ? matchingOptions[0].value : void 0;
     });
     if (selectedValues.length !== selectedLabels.length || selectedValues.some((value) => typeof value !== "string")) {
       return {
@@ -277,7 +308,7 @@ function loadConfig2(...args) {
   return loadConfig(...args);
 }
 function detectRecommendations2(...args) {
-  return detectRecommendations(...args);
+  return detectRecommendations(args[0], args[1], args[2]);
 }
 function createDiagnosticLogger(config, prefix) {
   const logPath = typeof config.debugLog === "string" && config.debugLog ? config.debugLog : "";
@@ -302,7 +333,7 @@ function ensureDraftLock(lockPath, payload) {
 function resolveV2TuiConfig(context) {
   const options = context.options;
   const candidate = options && Object.prototype.hasOwnProperty.call(options, "config") ? options.config : options;
-  const knownKeys = /* @__PURE__ */ new Set(["enabled", "timeoutMs", "recommendedMarkers", "recommendedMarker", "requireExactlyOneRecommendation", "debugLog", "configDir"]);
+  const knownKeys = /* @__PURE__ */ new Set(["enabled", "timeoutMs", "recommendedMarkers", "recommendedMarker", "requireExactlyOneRecommendation", "uiText", "debugLog", "configDir"]);
   const hasInlineConfig = candidate && typeof candidate === "object" && !Array.isArray(candidate) && Object.keys(candidate).some((key) => knownKeys.has(key));
   if (hasInlineConfig) {
     return normalizeSmartQuestionConfig(candidate, context.location?.directory ? path3.resolve(context.location.directory, ".opencode") : void 0);
@@ -339,12 +370,13 @@ function resolveAgentName(api, sessionID, eventProps) {
   };
 }
 function stripMarker(label, marker) {
-  const strLabel = typeof label === "string" ? label : String(label ?? "");
+  const strLabel = (typeof label === "string" ? label : String(label ?? "")).trimEnd().normalize("NFC");
   const markers = Array.isArray(marker) ? marker.filter((item) => typeof item === "string" && item.length > 0) : typeof marker === "string" && marker.length > 0 ? [marker] : [];
   let longestMatch = "";
   for (const candidate of markers) {
-    if (strLabel.endsWith(candidate) && candidate.length > longestMatch.length) {
-      longestMatch = candidate;
+    const normalized = candidate.normalize("NFC");
+    if (strLabel.endsWith(normalized) && normalized.length > longestMatch.length) {
+      longestMatch = normalized;
     }
   }
   return longestMatch ? strLabel.slice(0, -longestMatch.length).trim() : strLabel;
@@ -359,15 +391,16 @@ function formatCountdown(totalSeconds) {
 function SmartQuestionOverlay(props) {
   const active = () => props.state();
   const markers = () => props.markers ?? props.marker ?? DEFAULT_CONFIG.recommendedMarkers ?? [];
+  const labels = () => props.uiText ?? DEFAULT_CONFIG.uiText;
   const recommendedChecklist = createMemo(() => {
     const state = active();
     if (!state?.detection?.ok) return "";
-    return state.detection.recommendedOptions.filter((option) => option && typeof option.label === "string").map((option) => stripMarker(option.label, markers())).filter(Boolean).map((label) => `\u2713 ${label}`).join("   ");
+    return (state.detection.recommendedOptions ?? []).filter((option) => option && typeof option.label === "string").map((option) => stripMarker(option.label, markers())).filter(Boolean).map((label) => `\u2713 ${label}`).join("   ");
   });
   const rationale = createMemo(() => {
     const state = active();
     if (!state?.detection?.ok) return "";
-    const description = state.detection.recommendedOptions[0]?.description;
+    const description = state.detection.recommendedOptions?.[0]?.description;
     return typeof description === "string" ? description : "";
   });
   const countdownText = createMemo(() => {
@@ -378,7 +411,7 @@ function SmartQuestionOverlay(props) {
   const badge = createMemo(() => {
     const state = active();
     if (!state) return "";
-    return state.agentFound ? `Agent: ${state.agentName}` : `Session: ${state.agentName}`;
+    return state.agentFound ? `${labels().agent} ${state.agentName}` : `${labels().session} ${state.agentName}`;
   });
   return _$createComponent(Show, {
     get when() {
@@ -415,11 +448,11 @@ function SmartQuestionOverlay(props) {
         },
         get fallback() {
           return (() => {
-            var _el$11 = _$createElement("text"), _el$12 = _$createElement("b");
-            _$insertNode(_el$11, _el$12);
-            _$setProp(_el$11, "fg", "red");
-            _$insertNode(_el$12, _$createTextNode(`AUTO-SELECTION DISABLED`));
-            return _el$11;
+            var _el$12 = _$createElement("text"), _el$13 = _$createElement("b");
+            _$insertNode(_el$12, _el$13);
+            _$setProp(_el$12, "fg", "red");
+            _$insert(_el$13, () => labels().disabled);
+            return _el$12;
           })();
         },
         get children() {
@@ -432,17 +465,29 @@ function SmartQuestionOverlay(props) {
       }), null);
       _$insert(_el$, _$createComponent(Show, {
         get when() {
+          return active()?.errorMessage;
+        },
+        get children() {
+          var _el$9 = _$createElement("text");
+          _$setProp(_el$9, "fg", "red");
+          _$insert(_el$9, () => active()?.errorMessage);
+          return _el$9;
+        }
+      }), null);
+      _$insert(_el$, _$createComponent(Show, {
+        get when() {
           return rationale();
         },
         get children() {
-          var _el$9 = _$createElement("box"), _el$0 = _$createElement("text"), _el$10 = _$createElement("text");
-          _$insertNode(_el$9, _el$0);
-          _$insertNode(_el$9, _el$10);
-          _$setProp(_el$9, "flexDirection", "row");
-          _$insertNode(_el$0, _$createTextNode(`\xD6neri: `));
-          _$setProp(_el$0, "fg", "gray");
-          _$insert(_el$10, rationale);
-          return _el$9;
+          var _el$0 = _$createElement("box"), _el$1 = _$createElement("text"), _el$10 = _$createTextNode(` `), _el$11 = _$createElement("text");
+          _$insertNode(_el$0, _el$1);
+          _$insertNode(_el$0, _el$11);
+          _$setProp(_el$0, "flexDirection", "row");
+          _$insertNode(_el$1, _el$10);
+          _$setProp(_el$1, "fg", "gray");
+          _$insert(_el$1, () => labels().recommendation, _el$10);
+          _$insert(_el$11, rationale);
+          return _el$0;
         }
       }), null);
       return _el$;
@@ -552,6 +597,9 @@ var tui = async (api) => {
           countdown: countdownSec,
           get markers() {
             return config.recommendedMarkers;
+          },
+          get uiText() {
+            return config.uiText;
           }
         });
       }
@@ -645,17 +693,17 @@ var setup = async (context) => {
     }
     const form = event?.data?.form;
     if (!form?.id || !form.sessionID || form.sessionID === "global") return;
+    for (const [id, existing] of pending.entries()) {
+      if (existing.sessionID === form.sessionID) {
+        clearPending(id);
+      }
+    }
     const decision = detectV2FormRecommendations(form, config.recommendedMarkers, {
       requireExactlyOneRecommendation: config.requireExactlyOneRecommendation
     });
     if (!decision.ok) {
       log(`skip form=${form.id} reason=${decision.reason}`);
       return;
-    }
-    for (const [id, existing] of pending.entries()) {
-      if (existing.sessionID === form.sessionID) {
-        clearPending(id);
-      }
     }
     const detection = decision.detection;
     const lockPath = resolveLockPath(config.configDir, form.id);
@@ -694,8 +742,12 @@ var setup = async (context) => {
         await context.data.session.form.sync(form.sessionID, location);
         const forms = context.data.session.form.list(form.sessionID, location);
         const stillPending = Array.isArray(forms) && forms.some((candidate) => candidate.id === form.id);
-        if (!stillPending || activeBySession()[form.sessionID]?.focusDisabled) {
+        if (!stillPending || pending.get(form.id) !== item || item.status !== "firing" || activeBySession()[form.sessionID]?.formID !== form.id || activeBySession()[form.sessionID]?.focusDisabled) {
           log(`skip reply form=${form.id} reason=no longer pending or manual interaction`);
+          clearPending(form.id);
+          return;
+        }
+        if (pending.get(form.id) !== item || item.status !== "firing") {
           clearPending(form.id);
           return;
         }
@@ -704,16 +756,29 @@ var setup = async (context) => {
           formID: form.id,
           answer: decision.answer
         }, location);
-        context.data.session.form.invalidate(form.sessionID, location);
         item.status = "replied";
+        try {
+          context.data.session.form.invalidate(form.sessionID, location);
+        } catch (error) {
+          log(`form cache invalidation failed form=${form.id} err=${error instanceof Error ? error.message : String(error)}`);
+        }
         deleteLockfile(lockPath, log);
         pending.delete(form.id);
         updateSessionState(form.sessionID, (current) => current?.formID === form.id ? void 0 : current);
         log(`reply OK form=${form.id}`);
       } catch (error) {
-        log(`reply ERROR form=${form.id} err=${error instanceof Error ? error.message : String(error)}`);
-        pending.delete(form.id);
-        updateSessionState(form.sessionID, (current) => current?.formID === form.id ? void 0 : current);
+        const message = error instanceof Error ? error.message : String(error);
+        log(`reply ERROR form=${form.id} err=${message}`);
+        console.error(`[smart-question] Auto-selection failed for form ${form.id}: ${message}`);
+        if (pending.get(form.id) === item) {
+          pending.delete(form.id);
+          deleteLockfile(lockPath, log);
+          updateSessionState(form.sessionID, (current) => current?.formID === form.id ? {
+            ...current,
+            focusDisabled: true,
+            errorMessage: config.uiText.autoReplyFailed
+          } : current);
+        }
       }
     };
     item.timeout = setTimeout(() => {
@@ -763,6 +828,9 @@ var setup = async (context) => {
       countdown: () => activeBySession()[sessionID]?.countdown ?? 0,
       get markers() {
         return config.recommendedMarkers;
+      },
+      get uiText() {
+        return config.uiText;
       }
     })
   });

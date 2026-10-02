@@ -1,5 +1,4 @@
 /** @jsxImportSource @opentui/solid */
-// @ts-nocheck
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,6 +29,7 @@ import type {
   DetectionResult,
   QuestionInfo,
   SmartQuestionConfig,
+  SmartQuestionUIText,
 } from './types.js';
 
 export function loadConfig(...args: any[]) {
@@ -37,7 +37,7 @@ export function loadConfig(...args: any[]) {
 }
 
 export function detectRecommendations(...args: any[]) {
-  return detectSharedRecommendations(...args);
+  return detectSharedRecommendations(args[0], args[1], args[2]);
 }
 
 interface OverlayState extends ActiveQuestionState {
@@ -95,6 +95,7 @@ function resolveV2TuiConfig(context: OpenCodeV2Tui.Context): SmartQuestionConfig
     'recommendedMarkers',
     'recommendedMarker',
     'requireExactlyOneRecommendation',
+    'uiText',
     'debugLog',
     'configDir',
   ]);
@@ -158,7 +159,7 @@ export function resolveAgentName(
 }
 
 export function stripMarker(label: unknown, marker: unknown): string {
-  const strLabel = typeof label === 'string' ? label : String(label ?? '');
+  const strLabel = (typeof label === 'string' ? label : String(label ?? '')).trimEnd().normalize('NFC');
   const markers = Array.isArray(marker)
     ? marker.filter((item): item is string => typeof item === 'string' && item.length > 0)
     : typeof marker === 'string' && marker.length > 0
@@ -167,8 +168,9 @@ export function stripMarker(label: unknown, marker: unknown): string {
 
   let longestMatch = '';
   for (const candidate of markers) {
-    if (strLabel.endsWith(candidate) && candidate.length > longestMatch.length) {
-      longestMatch = candidate;
+    const normalized = candidate.normalize('NFC');
+    if (strLabel.endsWith(normalized) && normalized.length > longestMatch.length) {
+      longestMatch = normalized;
     }
   }
   return longestMatch
@@ -192,15 +194,17 @@ export function SmartQuestionOverlay(props: {
   countdown?: () => number;
   marker?: string | string[];
   markers?: string | string[];
+  uiText?: SmartQuestionUIText;
 }) {
   const active = () => props.state();
   const markers = () =>
     props.markers ?? props.marker ?? DEFAULT_CONFIG.recommendedMarkers ?? [];
+  const labels = () => props.uiText ?? DEFAULT_CONFIG.uiText;
 
   const recommendedChecklist = createMemo(() => {
     const state = active();
     if (!state?.detection?.ok) return '';
-    return state.detection.recommendedOptions
+    return (state.detection.recommendedOptions ?? [])
       .filter((option) => option && typeof option.label === 'string')
       .map((option) => stripMarker(option.label, markers()))
       .filter(Boolean)
@@ -211,7 +215,7 @@ export function SmartQuestionOverlay(props: {
   const rationale = createMemo(() => {
     const state = active();
     if (!state?.detection?.ok) return '';
-    const description = state.detection.recommendedOptions[0]?.description;
+    const description = state.detection.recommendedOptions?.[0]?.description;
     return typeof description === 'string' ? description : '';
   });
 
@@ -228,8 +232,8 @@ export function SmartQuestionOverlay(props: {
     const state = active();
     if (!state) return '';
     return state.agentFound
-      ? `Agent: ${state.agentName}`
-      : `Session: ${state.agentName}`;
+      ? `${labels().agent} ${state.agentName}`
+      : `${labels().session} ${state.agentName}`;
   });
 
   return (
@@ -255,7 +259,7 @@ export function SmartQuestionOverlay(props: {
             when={!active()?.focusDisabled}
             fallback={
               <text fg="red">
-                <b>AUTO-SELECTION DISABLED</b>
+                <b>{labels().disabled}</b>
               </text>
             }
           >
@@ -264,9 +268,12 @@ export function SmartQuestionOverlay(props: {
             </text>
           </Show>
         </box>
+        <Show when={active()?.errorMessage}>
+          <text fg="red">{active()?.errorMessage}</text>
+        </Show>
         <Show when={rationale()}>
           <box flexDirection="row">
-            <text fg="gray">Öneri: </text>
+            <text fg="gray">{labels().recommendation} </text>
             <text>{rationale()}</text>
           </box>
         </Show>
@@ -403,6 +410,7 @@ export const tui: TuiPlugin = async (api) => {
             state={activeQuestion}
             countdown={countdownSec}
             markers={config.recommendedMarkers}
+            uiText={config.uiText}
           />
         );
       },
@@ -540,6 +548,14 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     const form = event?.data?.form as V2FormInfo | undefined;
     if (!form?.id || !form.sessionID || form.sessionID === 'global') return;
 
+    // A newer form supersedes any prior timer in the same session, even if
+    // the new form is not eligible for automatic selection.
+    for (const [id, existing] of pending.entries()) {
+      if (existing.sessionID === form.sessionID) {
+        clearPending(id);
+      }
+    }
+
     const decision = detectV2FormRecommendations(
       form,
       config.recommendedMarkers,
@@ -548,12 +564,6 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     if (!decision.ok) {
       log(`skip form=${form.id} reason=${decision.reason}`);
       return;
-    }
-
-    for (const [id, existing] of pending.entries()) {
-      if (existing.sessionID === form.sessionID) {
-        clearPending(id);
-      }
     }
 
     const detection: DetectionResult = decision.detection;
@@ -599,12 +609,23 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         const stillPending =
           Array.isArray(forms) && forms.some((candidate) => candidate.id === form.id);
 
-        if (!stillPending || activeBySession()[form.sessionID]?.focusDisabled) {
+        if (
+          !stillPending ||
+          pending.get(form.id) !== item ||
+          item.status !== 'firing' ||
+          activeBySession()[form.sessionID]?.formID !== form.id ||
+          activeBySession()[form.sessionID]?.focusDisabled
+        ) {
           log(`skip reply form=${form.id} reason=no longer pending or manual interaction`);
           clearPending(form.id);
           return;
         }
 
+        // Recheck immediately before initiating the irreversible reply request.
+        if (pending.get(form.id) !== item || item.status !== 'firing') {
+          clearPending(form.id);
+          return;
+        }
         await context.data.session.form.reply(
           {
             sessionID: form.sessionID,
@@ -613,8 +634,14 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
           },
           location
         );
-        context.data.session.form.invalidate(form.sessionID, location);
         item.status = 'replied';
+        try {
+          context.data.session.form.invalidate(form.sessionID, location);
+        } catch (error) {
+          // Reply was already sent. A cache refresh error must not be reported
+          // as a failed reply or cause the user to submit the form twice.
+          log(`form cache invalidation failed form=${form.id} err=${error instanceof Error ? error.message : String(error)}`);
+        }
         deleteLockfile(lockPath, log);
         pending.delete(form.id);
         updateSessionState(form.sessionID, (current) =>
@@ -622,15 +649,18 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         );
         log(`reply OK form=${form.id}`);
       } catch (error) {
-        log(
-          `reply ERROR form=${form.id} err=${
-            error instanceof Error ? error.message : String(error)
-          }`
-        );
-        pending.delete(form.id);
-        updateSessionState(form.sessionID, (current) =>
-          current?.formID === form.id ? undefined : current
-        );
+        const message = error instanceof Error ? error.message : String(error);
+        log(`reply ERROR form=${form.id} err=${message}`);
+        console.error(`[smart-question] Auto-selection failed for form ${form.id}: ${message}`);
+        if (pending.get(form.id) === item) {
+          pending.delete(form.id);
+          deleteLockfile(lockPath, log);
+          updateSessionState(form.sessionID, (current) =>
+            current?.formID === form.id
+              ? { ...current, focusDisabled: true, errorMessage: config.uiText.autoReplyFailed }
+              : current
+          );
+        }
       }
     };
 
@@ -689,6 +719,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         state={() => activeBySession()[sessionID] ?? null}
         countdown={() => activeBySession()[sessionID]?.countdown ?? 0}
         markers={config.recommendedMarkers}
+        uiText={config.uiText}
       />
     ),
   });

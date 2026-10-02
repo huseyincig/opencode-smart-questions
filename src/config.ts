@@ -1,18 +1,44 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { SmartQuestionConfig } from './types.js';
+import type { SmartQuestionConfig, SmartQuestionUIText } from './types.js';
 
-export const DEFAULT_RECOMMENDED_MARKERS: string[] = ['(Recommended)', '(Önerilen)'];
+export const DEFAULT_RECOMMENDED_MARKERS: string[] = [
+  '[SQ:recommended]',
+  '(Recommended)',
+  '(Önerilen)',
+];
+
+export const DEFAULT_UI_TEXT: SmartQuestionUIText = {
+  recommendation: 'Recommendation:',
+  disabled: 'AUTO-SELECTION DISABLED',
+  autoReplyFailed: 'Auto-selection failed. Please answer manually.',
+  agent: 'Agent:',
+  session: 'Session:',
+};
 
 export const DEFAULT_CONFIG: SmartQuestionConfig = {
   enabled: true,
   timeoutMs: 30000,
   recommendedMarkers: DEFAULT_RECOMMENDED_MARKERS,
-  recommendedMarker: '(Recommended)',
+  recommendedMarker: '[SQ:recommended]',
   requireExactlyOneRecommendation: true,
+  uiText: DEFAULT_UI_TEXT,
   debugLog: '',
 };
+
+function normalizeUIText(value: unknown): SmartQuestionUIText {
+  const overrides = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return {
+    recommendation: typeof overrides.recommendation === 'string' && overrides.recommendation.trim() ? overrides.recommendation : DEFAULT_UI_TEXT.recommendation,
+    disabled: typeof overrides.disabled === 'string' && overrides.disabled.trim() ? overrides.disabled : DEFAULT_UI_TEXT.disabled,
+    autoReplyFailed: typeof overrides.autoReplyFailed === 'string' && overrides.autoReplyFailed.trim() ? overrides.autoReplyFailed : DEFAULT_UI_TEXT.autoReplyFailed,
+    agent: typeof overrides.agent === 'string' && overrides.agent.trim() ? overrides.agent : DEFAULT_UI_TEXT.agent,
+    session: typeof overrides.session === 'string' && overrides.session.trim() ? overrides.session : DEFAULT_UI_TEXT.session,
+  };
+}
 
 function cleanMarkers(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -90,6 +116,7 @@ export function normalizeSmartQuestionConfig(
       typeof parsed.requireExactlyOneRecommendation === 'boolean'
         ? parsed.requireExactlyOneRecommendation
         : DEFAULT_CONFIG.requireExactlyOneRecommendation,
+    uiText: normalizeUIText(parsed.uiText),
     debugLog: typeof parsed.debugLog === 'string' ? parsed.debugLog : DEFAULT_CONFIG.debugLog,
   };
 }

@@ -1,13 +1,13 @@
 # opencode-smart-questions 💡
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![OpenCode: v1 & v2](https://img.shields.io/badge/OpenCode-v1%20%26%20v2%20Compatible-blue.svg)](https://github.com/huseyincig/opencode-smart-questions)
+[![OpenCode: v1 & v2 adapters](https://img.shields.io/badge/OpenCode-v1%20%7C%20v2%20mock--tested-blue.svg)](https://github.com/huseyincig/opencode-smart-questions)
 [![TypeScript: 5.x](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
-[![Tests: 100% Pass](https://img.shields.io/badge/Tests-55%2F55%20Passing-brightgreen.svg)](tests/)
+[![Tests: automated](https://img.shields.io/badge/Tests-automated-brightgreen.svg)](tests/)
 
-Safe auto-selection of agent-recommended choices for **OpenCode** question prompts, with a visible countdown and immediate cancellation when the user starts interacting.
+Language-neutral auto-selection of agent-recommended choices for **OpenCode** question prompts, with a visible countdown and cancellation when the user starts interacting. The option text can be in any language: selection depends on an exact recommendation token, not language recognition.
 
-The package contains separate adapters for **OpenCode v1** and **OpenCode v2** rather than translating one host API into the other.
+The package contains separate adapters for **OpenCode v1** and **OpenCode v2** rather than translating one host API into the other. V2 behavior is covered by automated mock-host tests; live V2 host integration is not yet verified.
 
 ---
 
@@ -16,13 +16,14 @@ The package contains separate adapters for **OpenCode v1** and **OpenCode v2** r
 - **Native recommendation guidance:** v1 enriches `tool.definition` and `experimental.chat.system.transform`; full v2 hosts use `ctx.tool.transform(...)` and `ctx.session.hook("context", ...)`. Transition builds that invoke `setup()` without the complete v2 capability surface are detected and ignored safely.
 - **Version-native question handling:** v1 consumes `question.asked/replied/rejected`; v2 consumes `form.created/replied/cancelled` in the TUI and replies through `session.form.reply(...)`.
 - **Single- and multi-select support:** recommended single choices and multiple recommended checkbox choices are both supported.
-- **Human interaction guard:** any real keyboard or paste interaction disables the pending auto-selection. The plugin never injects fake key presses into stdin.
-- **Fail-safe matching:** no auto-answer is sent when a selectable field has no recommendation, a single-select field is ambiguous, or a v2 form contains unsupported free-text/number/boolean/external fields.
-- **Multi-language markers:** defaults to `["(Recommended)", "(Önerilen)"]` and supports custom suffix markers.
+- **Human interaction guard:** keyboard or paste interaction cancels pending auto-selection. V2 rechecks the current pending form after asynchronous synchronization and immediately before sending its reply. Already-issued replies cannot be recalled. The plugin never injects fake key presses into stdin.
+- **Conservative matching:** no auto-answer is sent when a field has no recommendation, a single-select field is ambiguous, a v2 form contains unsupported free-text/number/boolean/external fields, or recommended labels cannot be mapped unambiguously to form values.
+- **Language-neutral recommendations:** the default token is `[SQ:recommended]`, independent of the language used in option text. Legacy `(Recommended)` and `(Önerilen)` markers remain accepted; custom suffix markers are supported. Labels are compared using Unicode NFC normalization and trailing-whitespace tolerance.
 - **Safe draft lock paths:** request IDs are encoded before being used in lock filenames.
 - **OpenTUI integration:** a countdown panel shows the choices that will be selected and switches to `AUTO-SELECTION DISABLED` when the user takes control.
 - **Pre-built distribution:** compiled ESM, declarations, and adaptive TUI bundles are included. OpenTUI/Solid are peer runtimes rather than bundled duplicate renderer instances.
-- **No configuration file required:** safe defaults are used when `smart-question.json` is absent. A malformed config disables auto-selection rather than guessing.
+- **No configuration file required:** defaults are used when `smart-question.json` is absent. A malformed config disables auto-selection rather than guessing.
+- **Visible failure:** if a v2 automatic reply fails, the TUI displays a manual-answer warning and logs an error.
 
 ---
 
@@ -113,10 +114,18 @@ Example:
   "enabled": true,
   "timeoutMs": 30000,
   "recommendedMarkers": [
+    "[SQ:recommended]",
     "(Recommended)",
     "(Önerilen)"
   ],
   "requireExactlyOneRecommendation": true,
+  "uiText": {
+    "recommendation": "Öneri:",
+    "disabled": "OTOMATİK SEÇİM DEVRE DIŞI",
+    "autoReplyFailed": "Otomatik yanıt başarısız. Lütfen elle yanıtlayın.",
+    "agent": "Ajan:",
+    "session": "Oturum:"
+  },
   "debugLog": ""
 }
 ```
@@ -125,12 +134,19 @@ Example:
 | :--- | :--- | :--- | :--- |
 | `enabled` | `boolean` | `true` | Enables or disables the plugin. |
 | `timeoutMs` | `number` | `30000` | Delay before a recommended answer is sent. |
-| `recommendedMarkers` | `string[]` | `["(Recommended)", "(Önerilen)"]` | Accepted recommendation suffixes. |
-| `recommendedMarker` | `string` | first marker | Legacy single-marker form. |
+| `recommendedMarkers` | `string[]` | `["[SQ:recommended]", "(Recommended)", "(Önerilen)"]` | Exact language-neutral and legacy recommendation suffixes. |
+| `recommendedMarker` | `string` | `[SQ:recommended]` | Legacy single-marker configuration form. |
 | `requireExactlyOneRecommendation` | `boolean` | `true` | Requires exactly one recommendation for single-select questions. Multi-select may contain multiple recommendations. |
+| `uiText` | `object` | English UI labels | Optional translatable TUI labels: `recommendation`, `disabled`, `autoReplyFailed`, `agent`, `session`. Supply strings in any language. |
 | `debugLog` | `string` | `""` | Optional file path for diagnostic logging. No debug file is written when empty. |
 
 ---
+
+## Language-independent behavior
+
+The recommendation token is a protocol marker, **not a translated word**. The agent writes questions and options in the user's language, then appends the exact `[SQ:recommended]` token to recommended option labels. For example, `保存 [SQ:recommended]`, `حفظ [SQ:recommended]`, and `Guardar [SQ:recommended]` follow the same matching logic. Existing English/Turkish marker labels continue to work. Custom markers may be configured for other conventions; the detector does not try to translate arbitrary natural-language recommendations. The `uiText` configuration localizes TUI messages independently of the recommendation token.
+
+**Auto-selection does not judge whether the agent's recommendation is correct or authorized.** The guidance instructs the agent not to mark choices requiring human approval, such as destructive or irreversible actions. This is prompt guidance, not a guaranteed safety barrier: use OpenCode's permission and confirmation mechanisms for sensitive operations. `timeoutMs: 0` leaves no user-intervention window; use a positive timeout when cancellation matters.
 
 ## How it works
 
@@ -158,7 +174,7 @@ The backend listens for `question.*` events and owns the reply timer. The TUI di
 
 ### v2
 
-The backend injects recommendation guidance using native v2 transforms. The terminal plugin observes `form.created`, maps recommended option labels back to their stable form `value` fields, and owns the countdown/reply because v2 server plugin context intentionally does not expose the form reply API. Before replying, it refreshes the pending forms and confirms that the form still exists.
+The backend injects recommendation guidance using native v2 transforms. The terminal plugin observes `form.created`, maps recommended option labels back to their stable form `value` fields, and owns the countdown/reply because v2 server plugin context does not expose the form reply API. Before replying, it refreshes pending forms and verifies that the request was not cancelled or replaced. If the reply fails, the TUI asks for a manual answer.
 
 Global/MCP forms and forms containing unsupported non-choice fields are not auto-answered.
 
@@ -167,7 +183,7 @@ Global/MCP forms and forms containing unsupported non-choice fields are not auto
 ## Testing
 
 ```bash
-# Build + 55 unit/regression tests
+# Build and run unit/regression tests
 npm test
 
 # Typecheck sources
@@ -184,7 +200,7 @@ node sandbox/comprehensive-test.mjs
 npm pack --dry-run
 ```
 
-The regression suite includes v1 timer/cancellation behavior, Turkish markers, draft-lock handling, v2 form label→value mapping, v2 backend transforms, v2 TUI auto-reply, partial-v2 capability detection, user-input cancellation, and path traversal protection.
+The regression suite includes v1 timer/cancellation behavior, language-neutral and legacy markers, draft-lock handling, v2 form label→value mapping, duplicate-label refusal, v2 backend transforms, v2 TUI auto-reply, partial-v2 capability detection, cancellation during synchronization, user-input cancellation, and path traversal protection. The TUI source is typechecked. The tests use simulated hosts; a real v2 OpenCode end-to-end run remains outstanding.
 
 ---
 

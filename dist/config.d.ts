@@ -1,5 +1,6 @@
-import type { SmartQuestionConfig } from './types.js';
+import type { SmartQuestionConfig, SmartQuestionUIText } from './types.js';
 export declare const DEFAULT_RECOMMENDED_MARKERS: string[];
+export declare const DEFAULT_UI_TEXT: SmartQuestionUIText;
 export declare const DEFAULT_CONFIG: SmartQuestionConfig;
 export declare function normalizeConfigMarkers(rawMarkers?: unknown, legacyMarker?: unknown): string[];
 export declare function normalizeParamMarkers(marker?: string | string[]): string[];
