@@ -84,10 +84,14 @@ function ensureDraftLock(lockPath: string, payload: Record<string, unknown>): vo
 
 function resolveV2TuiConfig(context: OpenCodeV2Tui.Context): SmartQuestionConfig | null {
   const options = context.options as Record<string, unknown> | undefined;
-  const candidate =
-    options && Object.prototype.hasOwnProperty.call(options, 'config')
-      ? options.config
-      : options;
+  const configDir = context.location?.directory
+    ? path.resolve(context.location.directory, '.opencode')
+    : undefined;
+  // An explicit but invalid inline configuration must not enable auto-selection.
+  if (options && Object.prototype.hasOwnProperty.call(options, 'config')) {
+    return normalizeSmartQuestionConfig(options.config, configDir);
+  }
+  const candidate = options;
 
   const knownKeys = new Set([
     'enabled',
@@ -339,7 +343,9 @@ export const tui: TuiPlugin = async (api) => {
     );
     if (!decision.ok) return;
 
-    clearActive();
+    // Preserve a lock for a prior question if the user already took control;
+    // its backend timer must still observe the lock and refrain from replying.
+    clearActive(!activeQuestion()?.focusDisabled);
     const agent = resolveAgentName(api, sessionID, data);
     const lockPath = resolveLockPath(config.configDir, requestID);
     currentLockPath = lockPath;
@@ -393,7 +399,7 @@ export const tui: TuiPlugin = async (api) => {
       | undefined;
     const requestID = data?.requestID ?? data?.id ?? event?.id;
     const current = activeQuestion();
-    if (!current || typeof requestID !== 'string' || requestID === current.requestID) {
+    if (current && typeof requestID === 'string' && requestID === current.requestID) {
       clearActive();
     }
   };
@@ -688,7 +694,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
   };
 
   const onFormSettled = (event: any) => {
-    const formID = event?.data?.id;
+    const formID = event?.data?.id ?? event?.data?.form?.id ?? event?.properties?.id;
     if (typeof formID === 'string') clearPending(formID);
   };
 

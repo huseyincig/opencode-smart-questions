@@ -182,4 +182,4 @@ for (const file of ["ui.d.ts", "ui.d.ts.map"]) {
   }
 }
 
-console.log("[emit-tui] dist/tui-runtime.js (host), dist/ui.js (standalone), dist/tui.js (loader) emitted successfully");
+console.error("[emit-tui] dist/tui-runtime.js (host), dist/ui.js (standalone), dist/tui.js (loader) emitted successfully");

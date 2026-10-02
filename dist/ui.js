@@ -76,6 +76,9 @@ function normalizeSmartQuestionConfig(raw, configDir) {
   }
   const parsed = raw ?? {};
   if (parsed.enabled === false) return null;
+  if (parsed.enabled !== void 0 && parsed.enabled !== true || parsed.timeoutMs !== void 0 && (typeof parsed.timeoutMs !== "number" || !Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs < 0) || parsed.requireExactlyOneRecommendation !== void 0 && typeof parsed.requireExactlyOneRecommendation !== "boolean" || parsed.recommendedMarkers !== void 0 && (!Array.isArray(parsed.recommendedMarkers) || parsed.recommendedMarkers.length === 0 || parsed.recommendedMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.recommendedMarker !== void 0 && (typeof parsed.recommendedMarker !== "string" || parsed.recommendedMarker.trim().length === 0) || parsed.debugLog !== void 0 && typeof parsed.debugLog !== "string" || parsed.configDir !== void 0 && (typeof parsed.configDir !== "string" || parsed.configDir.trim().length === 0) || parsed.uiText !== void 0 && (parsed.uiText === null || typeof parsed.uiText !== "object" || Array.isArray(parsed.uiText) || Object.values(parsed.uiText).some((value) => typeof value !== "string" || value.trim().length === 0))) {
+    return null;
+  }
   const recommendedMarkers = normalizeConfigMarkers(
     parsed.recommendedMarkers,
     parsed.recommendedMarker
@@ -136,7 +139,7 @@ function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMar
   if (questions && typeof questions === "object" && !Array.isArray(questions) && ("client" in questions || "directory" in questions)) {
     return {};
   }
-  const requireOne = options.requireExactlyOneRecommendation !== false;
+  void options;
   if (!Array.isArray(questions) || questions.length === 0) {
     return { ok: false, reason: "No questions provided in request" };
   }
@@ -172,12 +175,6 @@ function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMar
       return {
         ok: false,
         reason: `Question ${qIndex} has ${matched.length} options ending with marker ${markerDesc} (expected exactly 1)`
-      };
-    }
-    if (!q.multiple && requireOne && matched.length !== 1) {
-      return {
-        ok: false,
-        reason: `Question ${qIndex} has ${matched.length} recommendations (requireExactlyOneRecommendation is true)`
       };
     }
     if (!matchedMarker) {
@@ -332,7 +329,11 @@ function ensureDraftLock(lockPath, payload) {
 }
 function resolveV2TuiConfig(context) {
   const options = context.options;
-  const candidate = options && Object.prototype.hasOwnProperty.call(options, "config") ? options.config : options;
+  const configDir = context.location?.directory ? path3.resolve(context.location.directory, ".opencode") : void 0;
+  if (options && Object.prototype.hasOwnProperty.call(options, "config")) {
+    return normalizeSmartQuestionConfig(options.config, configDir);
+  }
+  const candidate = options;
   const knownKeys = /* @__PURE__ */ new Set(["enabled", "timeoutMs", "recommendedMarkers", "recommendedMarker", "requireExactlyOneRecommendation", "uiText", "debugLog", "configDir"]);
   const hasInlineConfig = candidate && typeof candidate === "object" && !Array.isArray(candidate) && Object.keys(candidate).some((key) => knownKeys.has(key));
   if (hasInlineConfig) {
@@ -531,7 +532,7 @@ var tui = async (api) => {
       requireExactlyOneRecommendation: config.requireExactlyOneRecommendation
     });
     if (!decision.ok) return;
-    clearActive();
+    clearActive(!activeQuestion()?.focusDisabled);
     const agent = resolveAgentName(api, sessionID, data);
     const lockPath = resolveLockPath(config.configDir, requestID);
     currentLockPath = lockPath;
@@ -582,7 +583,7 @@ var tui = async (api) => {
     const data = event?.properties ?? event?.data ?? event;
     const requestID = data?.requestID ?? data?.id ?? event?.id;
     const current = activeQuestion();
-    if (!current || typeof requestID !== "string" || requestID === current.requestID) {
+    if (current && typeof requestID === "string" && requestID === current.requestID) {
       clearActive();
     }
   };
@@ -799,7 +800,7 @@ var setup = async (context) => {
     log(`schedule form=${form.id} session=${form.sessionID} timeoutMs=${config.timeoutMs}`);
   };
   const onFormSettled = (event) => {
-    const formID = event?.data?.id;
+    const formID = event?.data?.id ?? event?.data?.form?.id ?? event?.properties?.id;
     if (typeof formID === "string") clearPending(formID);
   };
   const stopCreated = context.data.on("form.created", onFormCreated);

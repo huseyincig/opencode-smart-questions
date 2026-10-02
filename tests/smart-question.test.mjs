@@ -269,7 +269,7 @@ test('loadConfig - loads valid config file and sets defaults', () => {
   assert.ok(config !== null);
   assert.equal(config.enabled, true);
   assert.equal(config.timeoutMs, 30000);
-  assert.equal(config.recommendedMarker, '(Recommended)');
+  assert.equal(config.recommendedMarker, '[SQ:recommended]');
   assert.equal(config.requireExactlyOneRecommendation, true);
 });
 
@@ -2229,6 +2229,157 @@ test('v2 cache refresh failure after successful reply does not report failed sel
     assert.deepEqual(reported, []);
     cleanup?.();
   } finally {
+    console.error = originalError;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('explicitly malformed auto-selection settings fail closed instead of using defaults', async () => {
+  const { normalizeSmartQuestionConfig, DEFAULT_UI_TEXT } = await import('../dist/config.js');
+  const invalid = [
+    { enabled: 'true' },
+    { timeoutMs: -1 },
+    { timeoutMs: '0' },
+    { timeoutMs: Number.POSITIVE_INFINITY },
+    { recommendedMarkers: [] },
+    { recommendedMarkers: [null, '[SQ:recommended]'] },
+    { recommendedMarker: 123 },
+    { requireExactlyOneRecommendation: 'false' },
+    { uiText: { disabled: 12 } },
+    { uiText: [] },
+    { debugLog: false },
+    { configDir: false },
+  ];
+  for (const input of invalid) {
+    assert.equal(normalizeSmartQuestionConfig(input), null, JSON.stringify(input));
+  }
+  const valid = normalizeSmartQuestionConfig({
+    timeoutMs: 0,
+    uiText: { recommendation: 'Рекомендация:' },
+  });
+  assert.equal(valid?.timeoutMs, 0);
+  assert.equal(valid?.uiText.recommendation, 'Рекомендация:');
+  assert.equal(valid?.uiText.disabled, DEFAULT_UI_TEXT.disabled);
+});
+
+test('invalid configuration file disables the plugin rather than enabling default auto-replies', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-invalid-config-'));
+  const originalError = console.error;
+  const logs = [];
+  console.error = (...args) => logs.push(args.join(' '));
+  try {
+    fs.writeFileSync(path.join(tempDir, 'smart-question.json'), JSON.stringify({
+      enabled: true,
+      timeoutMs: 'incorrect',
+    }));
+    assert.equal(loadConfig(tempDir), null);
+    assert.ok(logs.some((message) => message.includes('auto-selection disabled')));
+  } finally {
+    console.error = originalError;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('V1 TUI ignores unrelated settlement and preserves a manual-answer lock on replacement', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-ui-races-'));
+  const events = new Map();
+  const input = new Map();
+  let dispose;
+  try {
+    const ui = await import('../dist/ui.js');
+    await ui.tui({
+      state: { path: { directory: tempDir } },
+      event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
+      renderer: {
+        keyInput: {
+          on(type, handler) { input.set(type, handler); },
+          off(type) { input.delete(type); },
+        },
+        requestRender() {},
+      },
+      slots: { register() {} },
+      lifecycle: { onDispose(handler) { dispose = handler; } },
+    });
+    const send = (id) => events.get('question.asked')({
+      properties: { id, sessionID: 'same-session', questions: [{
+        question: 'Select', options: [
+          { label: 'Yes [SQ:recommended]' },
+          { label: 'No' },
+        ],
+      }] },
+    });
+    send('first-question');
+    input.get('keypress')?.({ name: 'a' });
+    const { resolveLockPath: lock } = await import('../dist/draft-guard.js');
+    const oldLock = lock(path.join(tempDir, '.opencode'), 'first-question');
+    assert.equal(fs.existsSync(oldLock), true);
+
+    send('second-question');
+    assert.equal(fs.existsSync(oldLock), true, 'a new question must not erase an earlier manual lock');
+    events.get('question.replied')?.({ properties: { id: 'unrelated-question' } });
+    input.get('keypress')?.({ name: 'b' });
+    const newLock = lock(path.join(tempDir, '.opencode'), 'second-question');
+    assert.equal(fs.existsSync(newLock), true, 'unrelated settlement must not clear active question');
+    dispose?.();
+  } finally {
+    dispose?.();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('explicit malformed v2 backend and TUI config objects disable auto-selection', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v2-config-'));
+  try {
+    const backend = await OpencodeSmartQuestions.setup({
+      location: { directory: tempDir },
+      options: { config: null },
+      tool: { transform() { assert.fail('invalid config must not transform tools'); } },
+      session: { hook() { assert.fail('invalid config must not register context'); } },
+    });
+    assert.equal(backend, undefined);
+
+    const ui = await import('../dist/ui.js');
+    const mock = createV2TuiMock(tempDir, 10);
+    mock.context.options = { config: { timeoutMs: 'invalid' } };
+    const cleanup = await ui.setup(mock.context);
+    assert.equal(cleanup, undefined);
+    assert.equal(mock.eventHandlerCount, 0);
+    assert.equal(mock.keyHandlerCount, 0);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('native V1 reply transport error result is not reported as successful', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-transport-error-'));
+  const originalError = console.error;
+  const logs = [];
+  console.error = (...args) => logs.push(args.join(' '));
+  let dispose;
+  let replyAttempts = 0;
+  try {
+    const hooks = await SmartQuestion({
+      client: { question: { reply: async () => {
+        replyAttempts++;
+        return { error: 'transport rejected' };
+      } } },
+      directory: tempDir,
+    }, { config: {
+      enabled: true, timeoutMs: 10,
+      recommendedMarkers: ['[SQ:recommended]'],
+    } });
+    dispose = hooks.dispose;
+    await hooks.event({ event: {
+      type: 'question.asked',
+      data: { id: 'native-error', questions: [
+        { question: 'Choice', options: [{ label: 'Yes [SQ:recommended]' }] },
+      ] },
+    } });
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    assert.equal(replyAttempts, 1);
+    assert.ok(logs.some((message) => message.includes('client.question.reply error')));
+  } finally {
+    await dispose?.();
     console.error = originalError;
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

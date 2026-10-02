@@ -170,7 +170,16 @@ export async function createSmartQuestionHooks(
           const internalClient = client?._client;
 
           if (client?.question && typeof client.question.reply === 'function') {
-            await client.question.reply({ requestID, answers: decision.answers });
+            const res = await client.question.reply({ requestID, answers: decision.answers });
+            if (res && typeof res === 'object') {
+              const outcome = res as { error?: unknown; ok?: boolean };
+              if (outcome.error) {
+                throw new Error(`client.question.reply error: ${String(outcome.error instanceof Error ? outcome.error.message : JSON.stringify(outcome.error))}`);
+              }
+              if (outcome.ok === false) {
+                throw new Error('client.question.reply failed with ok=false');
+              }
+            }
           } else if (internalClient && typeof internalClient.post === 'function') {
             const res = await internalClient.post({
               url: `/question/${encodeURIComponent(requestID)}/reply`,

@@ -87,6 +87,33 @@ export function normalizeSmartQuestionConfig(
   const parsed = (raw ?? {}) as Record<string, unknown>;
   if (parsed.enabled === false) return null;
 
+  // Invalid explicit settings must never silently enable a different auto-reply policy.
+  // Omitted settings are fine: they use the documented defaults.
+  if (
+    (parsed.enabled !== undefined && parsed.enabled !== true) ||
+    (parsed.timeoutMs !== undefined &&
+      (typeof parsed.timeoutMs !== 'number' || !Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs < 0)) ||
+    (parsed.requireExactlyOneRecommendation !== undefined &&
+      typeof parsed.requireExactlyOneRecommendation !== 'boolean') ||
+    (parsed.recommendedMarkers !== undefined &&
+      (!Array.isArray(parsed.recommendedMarkers) ||
+        parsed.recommendedMarkers.length === 0 ||
+        parsed.recommendedMarkers.some((marker: unknown) =>
+          typeof marker !== 'string' || marker.trim().length === 0))) ||
+    (parsed.recommendedMarker !== undefined &&
+      (typeof parsed.recommendedMarker !== 'string' || parsed.recommendedMarker.trim().length === 0)) ||
+    (parsed.debugLog !== undefined && typeof parsed.debugLog !== 'string') ||
+    (parsed.configDir !== undefined &&
+      (typeof parsed.configDir !== 'string' || parsed.configDir.trim().length === 0)) ||
+    (parsed.uiText !== undefined &&
+      (parsed.uiText === null || typeof parsed.uiText !== 'object' ||
+        Array.isArray(parsed.uiText) ||
+        Object.values(parsed.uiText).some((value) =>
+          typeof value !== 'string' || value.trim().length === 0)))
+  ) {
+    return null;
+  }
+
   const recommendedMarkers = normalizeConfigMarkers(
     parsed.recommendedMarkers,
     parsed.recommendedMarker

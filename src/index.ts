@@ -20,10 +20,14 @@ export * from './backend.js';
 
 function resolveV2Config(context: OpenCodeV2.Context): SmartQuestionConfig | null {
   const options = context.options as Record<string, unknown> | undefined;
-  const candidate =
-    options && Object.prototype.hasOwnProperty.call(options, 'config')
-      ? options.config
-      : options;
+  const configDir = context.location?.directory
+    ? `${context.location.directory}/.opencode`
+    : undefined;
+  // An explicitly supplied malformed config must not activate defaults.
+  if (options && Object.prototype.hasOwnProperty.call(options, 'config')) {
+    return normalizeSmartQuestionConfig(options.config, configDir);
+  }
+  const candidate = options;
 
   const knownKeys = new Set([
     'enabled',

@@ -1,7 +1,7 @@
 {
   "name": "opencode-smart-questions",
   "version": "0.2.0",
-  "description": "Intelligent auto-selection of recommended options for OpenCode agent question prompts with safe human-draft detection (Dual-Mode: OpenCode v1 & v2)",
+  "description": "Language-neutral auto-selection of recommended OpenCode question options with user-interaction cancellation and separate V1/V2 adapters",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -26,6 +26,7 @@
   "files": [
     "dist",
     "README.md",
+    "docs",
     "LICENSE",
     "index.js",
     "server.js",

@@ -29,7 +29,8 @@ export function detectRecommendations(
   ) {
     return {};
   }
-  const requireOne = options.requireExactlyOneRecommendation !== false;
+  // Retain the legacy options argument without relaxing single-choice ambiguity checks.
+  void options;
 
   if (!Array.isArray(questions) || questions.length === 0) {
     return { ok: false, reason: 'No questions provided in request' };
@@ -80,13 +81,6 @@ export function detectRecommendations(
       return {
         ok: false,
         reason: `Question ${qIndex} has ${matched.length} options ending with marker ${markerDesc} (expected exactly 1)`,
-      };
-    }
-
-    if (!q.multiple && requireOne && matched.length !== 1) {
-      return {
-        ok: false,
-        reason: `Question ${qIndex} has ${matched.length} recommendations (requireExactlyOneRecommendation is true)`,
       };
     }
 
