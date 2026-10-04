@@ -84,29 +84,52 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
   if (!config?.enabled) return;
 
   const guidance = buildRecommendationGuidance(config);
+  const registrations: Array<{ dispose(): Promise<void> }> = [];
+  const disposeRegistrations = async (): Promise<void> => {
+    // Reversed order undoes the most recent registration first. Splicing
+    // makes cleanup safe when the host calls the returned disposer twice.
+    await Promise.allSettled(
+      registrations.splice(0).reverse().map((registration) => registration.dispose())
+    );
+  };
 
-  context.tool.transform((editor) => {
-    editor.update('question', (tool) => {
-      if (!tool.description.includes('[RECOMMENDED OPTION CONVENTION]')) {
-        tool.description += guidance.tool;
+  try {
+    const toolRegistration = await context.tool.transform((editor) => {
+      editor.update('question', (tool) => {
+        if (!tool.description.includes('[RECOMMENDED OPTION CONVENTION]')) {
+          tool.description += guidance.tool;
+        }
+      });
+    });
+    if (!toolRegistration || typeof toolRegistration.dispose !== 'function') {
+      throw new Error('V2 tool transform did not return a valid registration');
+    }
+    registrations.push(toolRegistration);
+
+    const contextRegistration = await context.session.hook('context', (event) => {
+      const alreadyInjected = event.system.some(
+        (part) =>
+          part.type === 'text' &&
+          typeof part.text === 'string' &&
+          part.text.includes('Smart Question Auto-Selection Guidance')
+      );
+      if (!alreadyInjected) {
+        event.system.push({
+          type: 'text',
+          text: guidance.system,
+        });
       }
     });
-  });
-
-  context.session.hook('context', (event) => {
-    const alreadyInjected = event.system.some(
-      (part) =>
-        part.type === 'text' &&
-        typeof part.text === 'string' &&
-        part.text.includes('Smart Question Auto-Selection Guidance')
-    );
-    if (!alreadyInjected) {
-      event.system.push({
-        type: 'text',
-        text: guidance.system,
-      });
+    if (!contextRegistration || typeof contextRegistration.dispose !== 'function') {
+      throw new Error('V2 context hook did not return a valid registration');
     }
-  });
+    registrations.push(contextRegistration);
+  } catch (error) {
+    await disposeRegistrations();
+    throw new Error('[smart-question] V2 backend registration failed', { cause: error });
+  }
+
+  return disposeRegistrations;
 };
 
 /**

@@ -1,6 +1,6 @@
 {
   "name": "opencode-smart-questions",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Language-neutral auto-selection of recommended OpenCode question options with user-interaction cancellation and separate V1/V2 adapters",
   "type": "module",
   "main": "./dist/index.js",
@@ -79,7 +79,7 @@
     "@babel/core": "^7.29.7",
     "@babel/preset-typescript": "^7.29.7",
     "@opencode-ai/plugin": "^1.18.34",
-    "@opencode/plugin": "^2.0.21",
+    "@opencode/plugin": "^2.0.22",
     "@opentui/core": "0.5.14",
     "@opentui/solid": "0.5.14",
     "@types/node": "^22.0.0",

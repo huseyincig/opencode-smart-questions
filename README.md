@@ -1,17 +1,34 @@
-# opencode-smart-questions
+# 💡 OpenCode Smart Questions
 
-[![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/opencode-smart-questions?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
+[![npm downloads](https://img.shields.io/npm/dm/opencode-smart-questions?color=blue&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
+[![OpenCode: v1 & v2](https://img.shields.io/badge/OpenCode-v1%20%7C%20v2%20Dual--Mode-10b981?logo=terminal&logoColor=white)](https://opencode.ai)
 [![CI](https://github.com/huseyincig/opencode-smart-questions/actions/workflows/ci.yml/badge.svg)](https://github.com/huseyincig/opencode-smart-questions/actions/workflows/ci.yml)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+[Installation](#-installation) · [How It Works](#-how-selection-works) · [Configuration](#-configuration) · [Changes](#-v031-changes) · [Validation](#-validation--testing) · [Architecture](#-project-layout)
 
 A standalone OpenCode plugin that selects an agent-recommended answer after a configurable countdown, unless the user intervenes. It supports single-choice and multiple-choice questions with separate OpenCode V1 and V2 adapters.
 
 **Language-independent selection:** question text and options can be written in any language. The plugin recognizes an exact marker such as `[SQ:recommended]`; it does not translate or judge the meaning of recommendations. The older `(Recommended)` and `(Önerilen)` markers are also accepted.
 
-## Installation
+---
 
-The examples using `@latest` require the package to be available on npm. For an unpublished revision, use [local development](#local-development). The package version in this source tree is `0.2.0`; changes on `main` do not automatically update a published npm package.
+## 🚀 v0.3.1 Changes
 
-### OpenCode V1
+- V2 tool-transform and session-context registrations are awaited, tracked and disposed on teardown; partial setup failures roll back registered hooks.
+- Missing-project-configuration tests and V1 TUI race tests no longer depend on the user's global OpenCode settings. Production configuration precedence is unchanged.
+- Updated the V2 development SDK to `@opencode/plugin` **2.0.22** and the resolved `http-cache-semantics` dependency to **4.3.0**.
+- Expanded regression coverage for registration, partial failure, repeat cleanup and global configuration fallback. See [verification and limitations](docs/verification.md) for measured results and host-test boundaries.
+
+---
+
+## 📦 Installation
+
+The source version is **0.3.1**. As of 04 October 2026, npm publishes **0.3.0**; `@latest` installs the latest *published* version, not unpublished GitHub changes. To use the 0.3.1 source before npm publication, follow [local development](#-local-development).
+
+### 🟢 OpenCode V1
 
 Add the package to the server plugin configuration:
 
@@ -32,7 +49,7 @@ To show the countdown panel, also register the same package in the V1 terminal c
 
 The package exposes independent `./server` and `./tui` entry points. Actual plugin loading depends on the OpenCode build.
 
-### OpenCode V2
+### 🔵 OpenCode V2
 
 Use the V2 plugin configuration:
 
@@ -44,7 +61,7 @@ Use the V2 plugin configuration:
 
 On V2 builds that support package TUI discovery, the `./tui` export provides the countdown and form-reply handling. The V2 path has automated mock-host coverage; **a real V2 host has not yet been verified**.
 
-### Local development
+### 🛠️ Local Development
 
 ```bash
 git clone https://github.com/huseyincig/opencode-smart-questions.git ~/.config/opencode/vendor/opencode-smart-questions
@@ -60,7 +77,9 @@ Use the absolute `file:///` directory URL in the appropriate `plugin` (V1) or `p
 
 V1's terminal configuration needs the same directory in its own `plugin` list. The repository contains compiled `dist/` files, so using its committed build does not require compiling on the target machine.
 
-## How selection works
+---
+
+## ⚡ How Selection Works
 
 1. The agent marks each recommended option by appending `[SQ:recommended]` to its label, regardless of the label's language.
 2. The V1 backend receives `question.asked`; the V2 TUI receives `form.created`. Both use the same recommendation detector.
@@ -70,9 +89,12 @@ V1's terminal configuration needs the same directory in its own `plugin` list. T
 
 For example, `保存 [SQ:recommended]`, `حفظ [SQ:recommended]`, `Guardar [SQ:recommended]` and `Kaydet [SQ:recommended]` all use the same detection rule. You can configure additional exact markers without adding language-specific detection logic. Unicode NFC normalization and trailing whitespace are supported.
 
-**Selection is not permission.** The plugin cannot determine whether a recommendation is correct, safe or authorized. Its guidance tells the agent not to mark choices requiring explicit human approval, including destructive or irreversible actions, but guidance is not an enforcement boundary. Use OpenCode's own permission and confirmation controls for sensitive actions. The optional countdown is an opportunity to intervene, not a guarantee that an already-sent reply can be recalled.
+> [!IMPORTANT]
+> **Selection is not permission.** The plugin cannot determine whether a recommendation is correct, safe or authorized. Its guidance tells the agent not to mark choices requiring explicit human approval, including destructive or irreversible actions, but guidance is not an enforcement boundary. Use OpenCode's own permission and confirmation controls for sensitive actions. The optional countdown is an opportunity to intervene, not a guarantee that an already-sent reply can be recalled.
 
-## Configuration
+---
+
+## ⚙️ Configuration
 
 Settings are loaded from the first existing file in this order: project `.opencode/smart-question.json`, project `smart-question.json`, then `~/.config/opencode/smart-question.json`. If no file exists, built-in defaults apply. An explicitly malformed configuration disables auto-selection instead of silently substituting a different policy.
 
@@ -109,7 +131,9 @@ Settings are loaded from the first existing file in this order: project `.openco
 
 Multiple-choice questions may mark several options. Questions with no recommendation, ambiguous single-choice recommendations, unsupported V2 field types, duplicate form keys or ambiguous label-to-value mappings are left to the user.
 
-## Validation
+---
+
+## 🧪 Validation & Testing
 
 ```bash
 npm ci
@@ -123,10 +147,21 @@ npm pack --dry-run
 
 CI runs on Node 22 and 24. Unit/regression tests and sandbox scenarios use simulated OpenCode hosts; they do **not** establish reliable behavior on every released OpenCode build. For implementation boundaries, reproducibility and the remaining real-host checks, see [verification and limitations](docs/verification.md).
 
-## Project layout
+---
 
-`src/backend.ts` handles V1 question events and reply transport; `src/ui.tsx` contains V1/V2 TUI adapters; `src/detector.ts` recognizes recommendations; `src/form-adapter.ts` maps V2 form options to values; `src/config.ts` validates settings; `src/draft-guard.ts` manages V1 cancellation locks; `src/index.ts` registers the V1/V2 backend adapters. Compiled outputs and the adaptive TUI loader are in `dist/`.
+## 🏗️ Project Layout
 
-## License
+- `src/backend.ts`: Handles V1 question events and reply transport
+- `src/ui.tsx`: Contains V1/V2 TUI countdown and reply adapters
+- `src/detector.ts`: Recognizes recommendation markers across locales
+- `src/form-adapter.ts`: Maps V2 form options to field values
+- `src/config.ts`: Loads and validates plugin settings
+- `src/draft-guard.ts`: Manages V1 manual answer cancellation locks
+- `src/index.ts`: Registers V1/V2 dual-mode backend adapters
+- `dist/`: Precompiled JavaScript outputs and adaptive TUI loader
+
+---
+
+## 📄 License
 
 [MIT](LICENSE) © Hüseyin Hadi Çığ

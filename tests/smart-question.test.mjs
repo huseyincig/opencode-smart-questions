@@ -1668,8 +1668,11 @@ test('SmartQuestion plugin - experimental.chat.system.transform injects guidance
 
 
 
-test('loadConfig - missing file uses enabled defaults instead of silently disabling plugin', () => {
+test('loadConfig - missing file uses enabled defaults instead of silently disabling plugin', (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-default-config-'));
+  // A real user's global config is intentional in production, but cannot
+  // determine the result of a missing-project-config unit test.
+  t.mock.method(os, 'homedir', () => tempDir);
   try {
     const cfg = loadConfig(tempDir);
     assert.ok(cfg);
@@ -1750,6 +1753,7 @@ test('detectV2FormRecommendations - refuses free-text forms fail-safe', () => {
 test('OpenCode v2 backend setup registers current tool/context transforms', async () => {
   let transformedTool;
   let contextHook;
+  const disposed = [];
 
   const context = {
     location: { directory: '/tmp/sq-v2-backend' },
@@ -1770,18 +1774,20 @@ test('OpenCode v2 backend setup registers current tool/context transforms', asyn
             transformedTool = tool;
           },
         });
+        return Promise.resolve({ dispose: async () => { disposed.push('tool'); } });
       },
     },
     session: {
       hook(name, callback) {
         assert.equal(name, 'context');
         contextHook = callback;
+        return Promise.resolve({ dispose: async () => { disposed.push('context'); } });
       },
     },
   };
 
   const cleanup = await OpencodeSmartQuestions.setup(context);
-  assert.equal(cleanup, undefined);
+  assert.equal(typeof cleanup, 'function');
   assert.match(transformedTool.description, /RECOMMENDED OPTION CONVENTION/);
 
   const event = {
@@ -1795,6 +1801,78 @@ test('OpenCode v2 backend setup registers current tool/context transforms', asyn
 
   await contextHook(event);
   assert.equal(event.system.length, 2, 'guidance must not duplicate');
+  await cleanup();
+  assert.deepEqual(disposed, ['context', 'tool']);
+  await cleanup();
+  assert.deepEqual(disposed, ['context', 'tool'], 'cleanup must be idempotent');
+});
+
+test('V2 backend waits for registration promises and rolls back partial setup', async () => {
+  const disposed = [];
+  let unblockTool;
+  let hookCalled = false;
+  const context = {
+    location: { directory: '/tmp/sq-v2-registration-tests' },
+    options: { enabled: true },
+    tool: {
+      transform() {
+        return new Promise((resolve) => { unblockTool = resolve; });
+      },
+    },
+    session: {
+      hook() {
+        hookCalled = true;
+        return Promise.reject(new Error('context hook unavailable'));
+      },
+    },
+  };
+
+  const setup = OpencodeSmartQuestions.setup(context);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(hookCalled, false, 'context hook must wait for tool registration');
+  unblockTool({ dispose: async () => { disposed.push('tool'); } });
+  await assert.rejects(setup, /V2 backend registration failed/);
+  assert.equal(hookCalled, true);
+  assert.deepEqual(disposed, ['tool'], 'partial tool registration must be rolled back');
+});
+
+test('V2 backend rejects a failed tool transform without registering context hook', async () => {
+  let hookCalled = false;
+  await assert.rejects(OpencodeSmartQuestions.setup({
+    location: { directory: '/tmp/sq-v2-registration-tests' },
+    options: { enabled: true },
+    tool: { transform() { return Promise.reject(new Error('tool transform unavailable')); } },
+    session: { hook() { hookCalled = true; } },
+  }), /V2 backend registration failed/);
+  assert.equal(hookCalled, false);
+});
+
+test('V2 backend rejects an invalid context registration and disposes tool registration', async () => {
+  let toolDisposed = false;
+  await assert.rejects(OpencodeSmartQuestions.setup({
+    location: { directory: '/tmp/sq-v2-registration-tests' },
+    options: { enabled: true },
+    tool: { transform() { return Promise.resolve({
+      dispose: async () => { toolDisposed = true; },
+    }); } },
+    session: { hook() { return Promise.resolve(undefined); } },
+  }), /V2 backend registration failed/);
+  assert.equal(toolDisposed, true);
+});
+
+test('loadConfig honours global config when project config is absent', (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-global-config-'));
+  t.mock.method(os, 'homedir', () => home);
+  try {
+    const globalDir = path.join(home, '.config', 'opencode');
+    const projectDir = path.join(home, 'project');
+    fs.mkdirSync(globalDir, { recursive: true });
+    fs.mkdirSync(projectDir);
+    fs.writeFileSync(path.join(globalDir, 'smart-question.json'), '{"enabled":false}');
+    assert.equal(loadConfig(projectDir), null, 'production global fallback must be retained');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 function createV2TuiMock(tempDir, timeoutMs = 25) {
@@ -2280,8 +2358,9 @@ test('invalid configuration file disables the plugin rather than enabling defaul
   }
 });
 
-test('V1 TUI ignores unrelated settlement and preserves a manual-answer lock on replacement', async () => {
+test('V1 TUI ignores unrelated settlement and preserves a manual-answer lock on replacement', async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-ui-races-'));
+  t.mock.method(os, 'homedir', () => tempDir);
   const events = new Map();
   const input = new Map();
   let dispose;
