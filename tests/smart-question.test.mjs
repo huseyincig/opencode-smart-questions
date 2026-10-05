@@ -1627,6 +1627,8 @@ test('SmartQuestion plugin - tool.definition enriches question tool description 
   await hooks['tool.definition']({ toolID: 'question' }, questionOutput);
 
   assert.match(questionOutput.description, /RECOMMENDED OPTION CONVENTION/);
+  assert.match(questionOutput.description, /native question tool/i);
+  assert.match(questionOutput.description, /plain assistant (?:text|prose)/i);
   assert.match(questionOutput.description, /\(Recommended\)/);
   assert.match(
     questionOutput.jsonSchema.properties.questions.items.properties.options.items.properties.label.description,
@@ -1661,6 +1663,8 @@ test('SmartQuestion plugin - experimental.chat.system.transform injects guidance
 
   assert.equal(systemOutput.system.length, 2);
   assert.match(systemOutput.system[1], /Smart Question Auto-Selection Guidance/);
+  assert.match(systemOutput.system[1], /native question\/form mechanism/i);
+  assert.match(systemOutput.system[1], /plain assistant (?:text|prose)/i);
   assert.match(systemOutput.system[1], /\(Recommended\)/);
 
   await hooks.dispose();
@@ -1789,6 +1793,8 @@ test('OpenCode v2 backend setup registers current tool/context transforms', asyn
   const cleanup = await OpencodeSmartQuestions.setup(context);
   assert.equal(typeof cleanup, 'function');
   assert.match(transformedTool.description, /RECOMMENDED OPTION CONVENTION/);
+  assert.match(transformedTool.description, /native question tool/i);
+  assert.match(transformedTool.description, /plain assistant (?:text|prose)/i);
 
   const event = {
     system: [{ type: 'text', text: 'Base system prompt' }],
@@ -1798,6 +1804,8 @@ test('OpenCode v2 backend setup registers current tool/context transforms', asyn
   await contextHook(event);
   assert.equal(event.system.length, 2);
   assert.match(event.system[1].text, /Smart Question Auto-Selection Guidance/);
+  assert.match(event.system[1].text, /native question\/form mechanism/i);
+  assert.match(event.system[1].text, /plain assistant (?:text|prose)/i);
 
   await contextHook(event);
   assert.equal(event.system.length, 2, 'guidance must not duplicate');
@@ -2400,6 +2408,11 @@ test('V1 TUI ignores unrelated settlement and preserves a manual-answer lock on 
     const newLock = lock(path.join(tempDir, '.opencode'), 'second-question');
     assert.equal(fs.existsSync(newLock), true, 'unrelated settlement must not clear active question');
     dispose?.();
+    assert.equal(
+      fs.existsSync(newLock),
+      true,
+      'TUI disposal must preserve a manual-control lock until the backend observes it'
+    );
   } finally {
     dispose?.();
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -2456,10 +2469,669 @@ test('native V1 reply transport error result is not reported as successful', asy
     } });
     await new Promise((resolve) => setTimeout(resolve, 35));
     assert.equal(replyAttempts, 1);
-    assert.ok(logs.some((message) => message.includes('client.question.reply error')));
+    assert.ok(logs.some((message) => message.includes('Auto-selection failed')));
+    assert.ok(logs.every((message) => !message.includes('transport rejected')));
   } finally {
     await dispose?.();
     console.error = originalError;
     fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('V1 auto-selection fails safe when draft coordination is not writable', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-coordination-'));
+  const coordDir = path.join(root, 'coord');
+  fs.mkdirSync(coordDir);
+  fs.writeFileSync(path.join(root, 'smart-question.json'), JSON.stringify({
+    enabled: true,
+    timeoutMs: 20,
+    configDir: coordDir,
+  }));
+
+  const replies = [];
+  const events = new Map();
+  const input = new Map();
+  let disposeTui;
+  let hooks;
+  try {
+    hooks = await SmartQuestion(
+      { directory: root, client: { question: { reply: async (payload) => { replies.push(payload); } } } },
+      { config: { enabled: true, timeoutMs: 20, configDir: coordDir } }
+    );
+
+    const ui = await import('../dist/ui.js');
+    await ui.tui({
+      state: { path: { directory: root } },
+      event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
+      renderer: {
+        keyInput: {
+          on(type, handler) { input.set(type, handler); },
+          off(type) { input.delete(type); },
+        },
+        requestRender() {},
+      },
+      slots: { register() {} },
+      lifecycle: { onDispose(handler) { disposeTui = handler; } },
+    });
+
+    fs.chmodSync(coordDir, 0o555);
+    const data = {
+      id: 'coordination-unwritable',
+      sessionID: 'ses-v1-coordination',
+      questions: [{
+        question: 'Choose',
+        options: [{ label: 'Go [SQ:recommended]' }, { label: 'Stop' }],
+      }],
+    };
+
+    await hooks.event({ event: { type: 'question.asked', properties: data } });
+    events.get('question.asked')?.({ properties: data });
+    input.get('keypress')?.({ name: 'a' });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    assert.equal(
+      replies.length,
+      0,
+      'auto-selection must stay disabled when manual-control coordination cannot be written'
+    );
+  } finally {
+    fs.chmodSync(coordDir, 0o755);
+    disposeTui?.();
+    await hooks?.dispose?.();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('V2 TUI follows the live form location instead of a setup-time location snapshot', async () => {
+  const ui = await import('../dist/ui.js');
+  let currentLocation = { directory: '/tmp/sq-location-a' };
+  const eventHandlers = new Map();
+  const pendingForms = new Map();
+  const replies = [];
+  const keyHandlers = new Map();
+
+  const context = {
+    options: { config: { enabled: true, timeoutMs: 15, recommendedMarkers: ['[SQ:recommended]'] } },
+    get location() { return currentLocation; },
+    data: {
+      on(type, handler) { eventHandlers.set(type, handler); return () => eventHandlers.delete(type); },
+      session: {
+        form: {
+          async sync() {},
+          list(sessionID) {
+            return [...pendingForms.values()].filter((form) => form.sessionID === sessionID);
+          },
+          async reply(input) {
+            replies.push(input);
+            pendingForms.delete(input.formID);
+          },
+          async cancel() {},
+          invalidate() {},
+        },
+      },
+    },
+    renderer: {
+      keyInput: {
+        on(type, handler) { keyHandlers.set(type, handler); },
+        off(type) { keyHandlers.delete(type); },
+      },
+    },
+    ui: {
+      router: { current() { return { type: 'session', sessionID: 'ses-location-b' }; } },
+      slot() { return () => {}; },
+    },
+  };
+
+  const cleanup = await ui.setup(context);
+  try {
+    currentLocation = { directory: '/tmp/sq-location-b' };
+    const form = {
+      id: 'form-location-b',
+      sessionID: 'ses-location-b',
+      fields: [{
+        key: 'choice',
+        type: 'string',
+        options: [
+          { value: 'yes', label: 'Yes [SQ:recommended]' },
+          { value: 'no', label: 'No' },
+        ],
+      }],
+    };
+    pendingForms.set(form.id, form);
+    eventHandlers.get('form.created')?.({
+      type: 'form.created',
+      location: { directory: '/tmp/sq-location-b' },
+      data: { form },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(replies.length, 1, 'a form in the current live location must not be dropped');
+  } finally {
+    cleanup?.();
+  }
+});
+
+test('diagnostic logging does not expose option labels or raw transport errors', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-diagnostic-redaction-'));
+  const debugLog = path.join(root, 'debug.log');
+  const originalError = console.error;
+  const consoleMessages = [];
+  console.error = (...args) => consoleMessages.push(args.join(' '));
+  let hooks;
+  try {
+    hooks = await SmartQuestion(
+      {
+        directory: root,
+        client: {
+          question: {
+            reply: async () => {
+              throw new Error('SECRET_TRANSPORT_DETAIL');
+            },
+          },
+        },
+      },
+      {
+        config: {
+          enabled: true,
+          timeoutMs: 10,
+          debugLog,
+          configDir: root,
+          recommendedMarkers: ['[SQ:recommended]'],
+        },
+      }
+    );
+
+    await hooks.event({ event: {
+      type: 'question.asked',
+      data: {
+        id: 'diagnostic-redaction',
+        questions: [{
+          question: 'private',
+          options: [
+            { label: 'CONFIDENTIAL_OPTION [SQ:recommended]' },
+            { label: 'Other' },
+          ],
+        }],
+      },
+    } });
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const log = fs.readFileSync(debugLog, 'utf8');
+    const consoleText = consoleMessages.join('\n');
+    assert.doesNotMatch(log, /CONFIDENTIAL_OPTION/);
+    assert.doesNotMatch(log, /SECRET_TRANSPORT_DETAIL/);
+    assert.doesNotMatch(consoleText, /SECRET_TRANSPORT_DETAIL/);
+  } finally {
+    await hooks?.dispose?.();
+    console.error = originalError;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('adaptive TUI loader does not hide host-runtime module failures behind standalone fallback', () => {
+  const loader = fs.readFileSync(path.resolve(__dirname, '../dist/tui.js'), 'utf8');
+  const probe = loader.match(/try\s*\{([\s\S]*?)\}\s*catch\s*\{/);
+  assert.ok(probe, 'loader must probe host runtime availability');
+  assert.doesNotMatch(
+    probe[1],
+    /tui-runtime\.js/,
+    'the host-runtime implementation import must execute outside the availability-probe catch'
+  );
+  assert.match(loader, /tui-runtime\.js/);
+  assert.match(loader, /ui\.js/);
+});
+
+test('normalizeSmartQuestionConfig rejects timeout values above the runtime-safe timer limit', async () => {
+  const { normalizeSmartQuestionConfig } = await import('../dist/config.js');
+  assert.equal(
+    normalizeSmartQuestionConfig({ enabled: true, timeoutMs: 2_147_483_648 }),
+    null,
+    'timer overflow must fail closed instead of scheduling an almost-immediate reply'
+  );
+  assert.equal(
+    normalizeSmartQuestionConfig({ enabled: true, timeoutMs: 2_147_483_647 })?.timeoutMs,
+    2_147_483_647
+  );
+});
+
+test('V2 form adapter refuses hidden and conditional selectable fields', () => {
+  const hidden = detectV2FormRecommendations({
+    id: 'hidden-form',
+    sessionID: 'session',
+    fields: [{
+      key: 'choice',
+      type: 'string',
+      hidden: true,
+      options: [{ value: 'yes', label: 'Yes [SQ:recommended]' }],
+    }],
+  });
+  assert.equal(hidden.ok, false);
+  assert.match(hidden.reason, /hidden|conditional/i);
+
+  const conditional = detectV2FormRecommendations({
+    id: 'conditional-form',
+    sessionID: 'session',
+    fields: [{
+      key: 'choice',
+      type: 'string',
+      when: [{ key: 'mode', op: 'eq', value: 'advanced' }],
+      options: [{ value: 'yes', label: 'Yes [SQ:recommended]' }],
+    }],
+  });
+  assert.equal(conditional.ok, false);
+  assert.match(conditional.reason, /hidden|conditional/i);
+});
+
+test('V2 form adapter enforces multiselect minItems and maxItems before auto-reply', () => {
+  const tooFew = detectV2FormRecommendations({
+    id: 'min-items-form',
+    sessionID: 'session',
+    fields: [{
+      key: 'features',
+      type: 'multiselect',
+      minItems: 2,
+      options: [
+        { value: 'a', label: 'A [SQ:recommended]' },
+        { value: 'b', label: 'B' },
+      ],
+    }],
+  });
+  assert.equal(tooFew.ok, false);
+  assert.match(tooFew.reason, /minItems|minimum/i);
+
+  const tooMany = detectV2FormRecommendations({
+    id: 'max-items-form',
+    sessionID: 'session',
+    fields: [{
+      key: 'features',
+      type: 'multiselect',
+      maxItems: 1,
+      options: [
+        { value: 'a', label: 'A [SQ:recommended]' },
+        { value: 'b', label: 'B [SQ:recommended]' },
+      ],
+    }],
+  });
+  assert.equal(tooMany.ok, false);
+  assert.match(tooMany.reason, /maxItems|maximum/i);
+});
+
+test('V1 server honors direct tuple plugin options instead of falling back to disabled file config', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-inline-server-'));
+  fs.writeFileSync(path.join(root, 'smart-question.json'), JSON.stringify({ enabled: false }));
+  const replies = [];
+  let hooks;
+  try {
+    hooks = await SmartQuestion(
+      { directory: root, client: { question: { reply: async (payload) => { replies.push(payload); } } } },
+      {
+        enabled: true,
+        timeoutMs: 10,
+        recommendedMarkers: ['<REC>'],
+        configDir: path.join(root, '.opencode'),
+      }
+    );
+    assert.equal(typeof hooks.event, 'function', 'direct tuple options must enable the V1 server adapter');
+    await hooks.event({ event: {
+      type: 'question.asked',
+      data: {
+        id: 'inline-server',
+        questions: [{
+          question: 'Choose',
+          options: [{ label: 'Go <REC>' }, { label: 'Stop' }],
+        }],
+      },
+    } });
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    assert.equal(replies.length, 1);
+  } finally {
+    await hooks?.dispose?.();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('V1 TUI honors tuple plugin options and uses the same marker/config as the server', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-inline-tui-'));
+  fs.writeFileSync(path.join(root, 'smart-question.json'), JSON.stringify({ enabled: false }));
+  const events = new Map();
+  const input = new Map();
+  let dispose;
+  try {
+    const ui = await import('../dist/ui.js');
+    await ui.tui(
+      {
+        state: { path: { directory: root } },
+        event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
+        renderer: {
+          keyInput: {
+            on(type, handler) { input.set(type, handler); },
+            off(type) { input.delete(type); },
+          },
+          requestRender() {},
+        },
+        slots: { register() {} },
+        lifecycle: { onDispose(handler) { dispose = handler; } },
+      },
+      {
+        enabled: true,
+        timeoutMs: 100,
+        recommendedMarkers: ['<REC>'],
+        configDir: path.join(root, '.opencode'),
+      },
+      {}
+    );
+
+    assert.equal(typeof events.get('question.asked'), 'function', 'tuple options must enable the V1 TUI adapter');
+    events.get('question.asked')({
+      properties: {
+        id: 'inline-tui',
+        sessionID: 'session',
+        questions: [{
+          question: 'Choose',
+          options: [{ label: 'Go <REC>' }, { label: 'Stop' }],
+        }],
+      },
+    });
+    input.get('keypress')?.({ name: 'a' });
+    assert.equal(
+      fs.existsSync(resolveLockPath(path.join(root, '.opencode'), 'inline-tui')),
+      true,
+      'TUI must detect the same configured marker and protect manual input'
+    );
+  } finally {
+    dispose?.();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('recommendedMarkers list fully takes precedence over legacy recommendedMarker', async () => {
+  const { normalizeSmartQuestionConfig } = await import('../dist/config.js');
+  const config = normalizeSmartQuestionConfig({
+    enabled: true,
+    recommendedMarkers: ['<PRIMARY>', '<SECONDARY>'],
+    recommendedMarker: '<LEGACY>',
+  });
+  assert.ok(config);
+  assert.deepEqual(config.recommendedMarkers, ['<PRIMARY>', '<SECONDARY>']);
+  assert.equal(config.recommendedMarker, '<PRIMARY>');
+});
+
+test('V2 backend disposal completes registrations strictly in reverse order', async () => {
+  const order = [];
+  const cleanup = await OpencodeSmartQuestions.setup({
+    location: { directory: '/tmp/sq-v2-disposal-order' },
+    options: { enabled: true },
+    tool: {
+      transform() {
+        return Promise.resolve({
+          async dispose() {
+            order.push('tool:start');
+            await new Promise((resolve) => setTimeout(resolve, 1));
+            order.push('tool:end');
+          },
+        });
+      },
+    },
+    session: {
+      hook() {
+        return Promise.resolve({
+          async dispose() {
+            order.push('context:start');
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            order.push('context:end');
+          },
+        });
+      },
+    },
+  });
+
+  await cleanup?.();
+  assert.deepEqual(order, [
+    'context:start',
+    'context:end',
+    'tool:start',
+    'tool:end',
+  ]);
+});
+
+test('V2 TUI rolls back partial event registrations when setup fails', async () => {
+  const ui = await import('../dist/ui.js');
+  const stopped = [];
+  let registrationCount = 0;
+  const context = {
+    options: { config: { enabled: true, timeoutMs: 10 } },
+    location: { directory: '/tmp/sq-v2-partial-tui' },
+    data: {
+      on(type) {
+        registrationCount++;
+        if (registrationCount === 2) throw new Error('synthetic registration failure');
+        return () => stopped.push(type);
+      },
+      session: { form: {
+        async sync() {},
+        list() { return []; },
+        async reply() {},
+        async cancel() {},
+        invalidate() {},
+      } },
+    },
+    renderer: { keyInput: { on() {}, off() {} } },
+    ui: {
+      router: { current() { return { type: 'home' }; } },
+      slot() { return () => {}; },
+    },
+  };
+
+  await assert.rejects(() => ui.setup(context), /synthetic registration failure/);
+  assert.deepEqual(stopped, ['form.created']);
+});
+
+test('V2 TUI cleanup continues after an individual disposer fails', async () => {
+  const ui = await import('../dist/ui.js');
+  const cleanupEvents = [];
+  const keyHandlers = new Map();
+  let slotStopped = false;
+  const context = {
+    options: { config: { enabled: true, timeoutMs: 10 } },
+    location: { directory: '/tmp/sq-v2-cleanup-failure' },
+    data: {
+      on(type) {
+        return () => {
+          cleanupEvents.push(type);
+          if (type === 'form.replied') throw new Error('synthetic disposer failure');
+        };
+      },
+      session: { form: {
+        async sync() {},
+        list() { return []; },
+        async reply() {},
+        async cancel() {},
+        invalidate() {},
+      } },
+    },
+    renderer: {
+      keyInput: {
+        on(type, handler) { keyHandlers.set(type, handler); },
+        off(type) { cleanupEvents.push('key:' + type); keyHandlers.delete(type); },
+      },
+    },
+    ui: {
+      router: { current() { return { type: 'home' }; } },
+      slot() { return () => { slotStopped = true; cleanupEvents.push('slot'); }; },
+    },
+  };
+
+  const cleanup = await ui.setup(context);
+  assert.equal(typeof cleanup, 'function');
+  assert.doesNotThrow(() => cleanup?.());
+  assert.equal(slotStopped, true);
+  assert.equal(keyHandlers.size, 0);
+  assert.ok(cleanupEvents.includes('form.created'));
+  assert.ok(cleanupEvents.includes('form.replied'));
+  assert.ok(cleanupEvents.includes('form.cancelled'));
+  assert.ok(cleanupEvents.includes('key:keypress'));
+  assert.ok(cleanupEvents.includes('key:paste'));
+});
+
+test('diagnostic error classification never echoes arbitrary error code or name values', async () => {
+  const { diagnosticErrorCode } = await import('../dist/diagnostics.js');
+  const hostile = new Error('SECRET_MESSAGE_VALUE');
+  hostile.code = 'SECRET_CODE_VALUE';
+  hostile.name = 'SECRET_NAME_VALUE';
+  const code = diagnosticErrorCode(hostile);
+  assert.doesNotMatch(code, /SECRET/);
+  assert.match(code, /^(error|object-error|unknown-error)$/);
+});
+
+test('V1 TUI rolls back raw key handlers when setup fails partway', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-partial-tui-'));
+  const events = new Map();
+  const inputs = new Map();
+  try {
+    const ui = await import('../dist/ui.js');
+    await assert.rejects(
+      () => ui.tui({
+        state: { path: { directory: root } },
+        event: {
+          on(type, handler) {
+            events.set(type, handler);
+            return () => events.delete(type);
+          },
+        },
+        renderer: {
+          keyInput: {
+            on(type, handler) {
+              if (type === 'paste') throw new Error('synthetic paste registration failure');
+              inputs.set(type, handler);
+            },
+            off(type) {
+              inputs.delete(type);
+            },
+          },
+          requestRender() {},
+        },
+        slots: { register() { return 'slot'; } },
+        keymap: { intercept() { return () => {}; } },
+        lifecycle: { onDispose() { return () => {}; } },
+      }),
+      /synthetic paste registration failure/
+    );
+    assert.equal(inputs.size, 0, 'failed setup must not leave raw key handlers registered');
+    assert.equal(events.size, 0, 'failed setup must release event subscriptions');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('guidance avoids unnecessary questions when user direction is already sufficient', async () => {
+  const hooks = await SmartQuestion({ client: {} }, {
+    config: { enabled: true, recommendedMarkers: ['[SQ:recommended]'] },
+  });
+  try {
+    const questionOutput = { description: 'Ask the user a question with choices', jsonSchema: {} };
+    await hooks['tool.definition']({ toolID: 'question' }, questionOutput);
+    const systemOutput = { system: ['Base system prompt'] };
+    await hooks['experimental.chat.system.transform'](
+      { sessionID: 'ses-guidance-necessity' },
+      systemOutput
+    );
+
+    assert.match(questionOutput.description, /existing instructions.*determine|already .*direction/i);
+    assert.match(questionOutput.description, /do not .*question|do not create.*form/i);
+    assert.match(systemOutput.system[1], /existing instructions.*determine|already .*direction/i);
+    assert.match(systemOutput.system[1], /do not .*question|do not create.*form/i);
+  } finally {
+    await hooks.dispose();
+  }
+});
+
+test('V1 dedup ignores generic headings and keys only on the SQ sentinel', async () => {
+  const hooks = await SmartQuestion({ client: {} }, {
+    config: { enabled: true, recommendedMarkers: ['[SQ:recommended]'] },
+  });
+  try {
+    const questionOutput = {
+      description: 'Third-party note mentions [RECOMMENDED OPTION CONVENTION] only.',
+      jsonSchema: {},
+    };
+    await hooks['tool.definition']({ toolID: 'question' }, questionOutput);
+    assert.match(questionOutput.description, /\[SQ_GUIDANCE:v1\]/);
+    assert.match(questionOutput.description, /native question tool/i);
+
+    const systemOutput = {
+      system: ['Third-party note: Smart Question Auto-Selection Guidance'],
+    };
+    await hooks['experimental.chat.system.transform'](
+      { sessionID: 'ses-v1-sentinel' },
+      systemOutput
+    );
+    assert.equal(systemOutput.system.length, 2);
+    assert.match(systemOutput.system[1], /\[SQ_GUIDANCE:v1\]/);
+
+    await hooks['experimental.chat.system.transform'](
+      { sessionID: 'ses-v1-sentinel' },
+      systemOutput
+    );
+    assert.equal(
+      systemOutput.system.filter((part) => part.includes('[SQ_GUIDANCE:v1]')).length,
+      1
+    );
+  } finally {
+    await hooks.dispose();
+  }
+});
+
+test('V2 dedup ignores generic headings and keys only on the SQ sentinel', async () => {
+  let toolTransform;
+  let contextHook;
+  const cleanup = await OpencodeSmartQuestions.setup({
+    location: { directory: '/tmp/sq-v2-sentinel' },
+    options: { enabled: true, recommendedMarkers: ['[SQ:recommended]'] },
+    tool: {
+      transform(callback) {
+        toolTransform = callback;
+        return Promise.resolve({ dispose: async () => {} });
+      },
+    },
+    session: {
+      hook(name, callback) {
+        assert.equal(name, 'context');
+        contextHook = callback;
+        return Promise.resolve({ dispose: async () => {} });
+      },
+    },
+  });
+
+  try {
+    const questionTool = {
+      description: 'Third-party note mentions [RECOMMENDED OPTION CONVENTION] only.',
+    };
+    toolTransform({
+      update(id, mutate) {
+        assert.equal(id, 'question');
+        mutate(questionTool);
+      },
+    });
+    assert.match(questionTool.description, /\[SQ_GUIDANCE:v1\]/);
+
+    const event = {
+      system: [{ type: 'text', text: 'Third-party note: Smart Question Auto-Selection Guidance' }],
+      messages: [],
+      tools: [],
+    };
+    await contextHook(event);
+    assert.equal(event.system.length, 2);
+    assert.match(event.system[1].text, /\[SQ_GUIDANCE:v1\]/);
+
+    await contextHook(event);
+    assert.equal(
+      event.system.filter(
+        (part) => typeof part.text === 'string' && part.text.includes('[SQ_GUIDANCE:v1]')
+      ).length,
+      1
+    );
+  } finally {
+    await cleanup?.();
   }
 });

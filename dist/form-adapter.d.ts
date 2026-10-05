@@ -9,7 +9,17 @@ export interface V2FormField {
     type: string;
     title?: string;
     description?: string;
+    required?: boolean;
+    hidden?: boolean;
+    when?: Array<{
+        key: string;
+        op: 'eq' | 'neq';
+        value: string | number | boolean;
+    }>;
     options?: V2FormOption[];
+    minItems?: number;
+    maxItems?: number;
+    custom?: boolean;
 }
 export interface V2FormInfo {
     id: string;

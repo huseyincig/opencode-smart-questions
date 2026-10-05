@@ -135,13 +135,17 @@ writeFileSync(standaloneOut, standaloneBundled, "utf8");
 // 3. Generate adaptive loader dist/tui.js
 const loaderCode = `// Adaptive TUI loader: prefers OpenCode host OpenTUI virtual runtime registry
 // with seamless fallback to standalone implementation for plain Node/test environments.
-let mod;
+let hostRuntimeAvailable = false;
 try {
   await import("opentui:runtime-module:" + encodeURIComponent("@opentui/solid"));
-  mod = await import("./tui-runtime.js");
+  hostRuntimeAvailable = true;
 } catch {
-  mod = await import("./ui.js");
+  // Plain Node/test runtimes do not expose OpenCode's virtual runtime registry.
 }
+
+const mod = hostRuntimeAvailable
+  ? await import("./tui-runtime.js")
+  : await import("./ui.js");
 
 export default mod.default;
 export const tui = mod.tui;

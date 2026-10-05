@@ -50,8 +50,12 @@ export function detectRecommendations(questions, marker = DEFAULT_CONFIG.recomme
                 reason: `Question ${qIndex} has ${matched.length} options ending with marker ${markerDesc} (expected exactly 1)`,
             };
         }
+        const firstMatch = matched[0];
+        if (!firstMatch) {
+            return { ok: false, reason: `Question ${qIndex} has no usable recommended option` };
+        }
         if (!matchedMarker) {
-            matchedMarker = matched[0].marker;
+            matchedMarker = firstMatch.marker;
         }
         if (q.multiple) {
             answers.push(matched.map((m) => m.opt.label));
@@ -59,8 +63,8 @@ export function detectRecommendations(questions, marker = DEFAULT_CONFIG.recomme
         }
         else {
             // Verbatim label copied from event payload
-            answers.push([matched[0].opt.label]);
-            recommendedOptions.push(matched[0].opt);
+            answers.push([firstMatch.opt.label]);
+            recommendedOptions.push(firstMatch.opt);
         }
     }
     return { ok: true, answers, recommendedOptions, matchedMarker };

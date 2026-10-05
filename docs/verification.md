@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v0.3.1** source evaluation on **04 October 2026**. It distinguishes automated host simulations from integration with an actual OpenCode installation. The previous published release is `v0.3.0`; the new GitHub source version is not an npm publication or a real-host acceptance result.
+This document describes the **v0.4.0** source evaluation on **05 October 2026**. It distinguishes automated host simulations from integration with an actual OpenCode installation. The previous release is `v0.3.1`; this source evaluation is not an npm publication or a real-host acceptance result.
 
 ## Automated checks
 
@@ -16,7 +16,7 @@ npm audit
 npm pack --dry-run
 ```
 
-The unit/regression suite includes recommendation parsing in different writing systems, custom Unicode markers, invalid configuration rejection, V1 reply and timer handling, draft-lock cancellation, V1 TUI event ordering, V2 form mapping, malformed fields, user intervention, form replacement, cancellation during asynchronous synchronization, and reply failures. v0.3.1 additionally checks **global configuration isolation in tests**, preservation of production fallback, **awaited V2 registration**, partial setup rollback and idempotent disposal. The separate 10-scenario sandbox exercises a simulated V1 server adapter. CI runs these checks on Node 22 and 24.
+The unit/regression suite covers recommendation parsing in different writing systems, custom Unicode markers, invalid configuration rejection, V1 reply and timer handling, draft-lock cancellation and fail-safe coordination, V1 TUI event ordering and setup rollback, V2 form mapping and constraints, live-location changes, user intervention, form replacement, cancellation during asynchronous synchronization, privacy-safe diagnostics, sequential cleanup and partial setup rollback. The separate 10-scenario sandbox exercises a simulated V1 server adapter. CI runs these checks on Node 22 and 24.
 
 Automated tests validate the tested inputs and mock-host behavior. They do not measure real-world failure rates or prove that every V1/V2 build delivers the expected hooks.
 
@@ -36,19 +36,19 @@ Automated tests validate the tested inputs and mock-host behavior. They do not m
 
 The legacy `requireExactlyOneRecommendation` setting is accepted for compatibility but does not relax single-choice ambiguity checks. `timeoutMs: 0` provides no practical opportunity to cancel an automatic reply.
 
-## v0.3.1 automated acceptance — 04 October 2026
+## Current automated acceptance — 05 October 2026
 
-The local evaluation used Node **24.21.0** in an isolated checkout. The GitHub CI matrix separately runs Node **22.x** and **24.x**. The following results were obtained for the v0.3.1 source tree; tests use mock hosts and do not prove interactive OpenCode V1 or V2 compatibility.
+The local evaluation used Node **24.21.0** in an isolated checkout. The GitHub CI matrix separately runs Node **22.x** and **24.x**. The following results were obtained for the v0.4.0 source tree; tests use mock hosts and do not prove interactive OpenCode V1 or V2 compatibility.
 
 | Check | Observed result |
 | --- | ---: |
-| Unit and regression tests | **73/73 passed** |
-| Same tests with an isolated, disabled global configuration | **73/73 passed** |
+| Unit and regression tests | **91/91 passed** |
+| Strict TypeScript checks (`noUnused*`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) | **Passed** |
 | V1 simulated sandbox scenarios | **10/10 passed** |
 | Smoke test and TypeScript typecheck | **Passed** |
 | Full `npm audit` | **0 reported vulnerabilities** |
-| `npm pack --dry-run` | **30 files**, expected exports present |
-| Real OpenCode V1/V2 host acceptance for v0.3.1 | **Not performed** |
+| `npm pack --dry-run` | **32 files**, expected exports present |
+| Real OpenCode V1/V2 host acceptance for v0.4.0 | **Not performed** |
 
 OpenTUI's development dependency currently declares Node >=26.4 or Bun >=1.3; npm installation on Node 24 reports an engine warning. Passing the Node 22/24 automated suite does not demonstrate full native TUI runtime compatibility.
 

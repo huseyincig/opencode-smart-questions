@@ -1,29 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {
-  loadConfig,
-  normalizeSmartQuestionConfig,
-} from './config.js';
+import { resolveSmartQuestionConfig } from './config.js';
 import { detectRecommendations } from './detector.js';
-import { cleanupStaleDrafts, deleteLockfile, resolveLockPath } from './draft-guard.js';
-import { buildRecommendationGuidance } from './guidance.js';
+import { canUseDraftCoordination, cleanupStaleDrafts, deleteLockfile, resolveLockPath } from './draft-guard.js';
+import { buildRecommendationGuidance, SQ_GUIDANCE_SENTINEL } from './guidance.js';
+import { createDiagnosticError, diagnosticErrorCode } from './diagnostics.js';
 import type {
   Hooks,
   PendingQuestionState,
   PluginInput,
-  SmartQuestionConfig,
 } from './types.js';
-
-function resolveConfig(
-  directory: string | undefined,
-  pluginOptions?: Record<string, unknown>
-): SmartQuestionConfig | null {
-  if (pluginOptions && Object.prototype.hasOwnProperty.call(pluginOptions, 'config')) {
-    const configDir = path.resolve(directory || process.cwd(), '.opencode');
-    return normalizeSmartQuestionConfig(pluginOptions.config, configDir);
-  }
-  return loadConfig(directory);
-}
 
 function describeServer(serverUrl: unknown): { origin: string; protocol: string } {
   if (!serverUrl) return { origin: 'none', protocol: 'none' };
@@ -57,7 +43,7 @@ export async function createSmartQuestionHooks(
 ): Promise<Hooks> {
   const { client, directory } = input;
   const serverUrl = input.serverUrl;
-  const config = resolveConfig(directory, pluginOptions);
+  const config = resolveSmartQuestionConfig(directory, pluginOptions);
 
   if (!config?.enabled) return {};
 
@@ -72,7 +58,8 @@ export async function createSmartQuestionHooks(
     try {
       fs.appendFileSync(
         debugLogPath,
-        `[smart-question] ${new Date().toISOString()} ${msg}\n`
+        `[smart-question] ${new Date().toISOString()} ${msg}\n`,
+        { encoding: 'utf8', mode: 0o600 }
       );
     } catch {
       // Diagnostics must never break the hook.
@@ -83,7 +70,7 @@ export async function createSmartQuestionHooks(
   const clientKeys =
     client && typeof client === 'object' ? Object.keys(client).sort().join(',') : 'none';
   dbg(
-    `hooks registered dir=${directory ?? 'none'} server=${server.origin} ` +
+    `hooks registered directory=${directory ? 'set' : 'none'} server=${server.origin} ` +
       `scheme=${server.protocol} timeoutMs=${config.timeoutMs} clientKeys=[${clientKeys}]`
   );
 
@@ -119,8 +106,14 @@ export async function createSmartQuestionHooks(
         return;
       }
 
+      if (!canUseDraftCoordination(effectiveConfigDir, dbg)) {
+        dbg(`skip request=${requestID} reason=draft-coordination-unavailable`);
+        return;
+      }
+
+      const selectionCount = decision.answers.reduce((sum, answer) => sum + answer.length, 0);
       dbg(
-        `schedule request=${requestID} in ${config.timeoutMs}ms answers=${JSON.stringify(decision.answers)}`
+        `schedule request=${requestID} in ${config.timeoutMs}ms questions=${decision.answers.length} selections=${selectionCount}`
       );
 
       const pending: PendingQuestionState = {
@@ -138,17 +131,16 @@ export async function createSmartQuestionHooks(
 
         const lockPath = resolveLockPath(effectiveConfigDir, requestID);
         let userComposing = false;
+        let lockMissing = false;
         try {
           fs.statSync(lockPath);
           userComposing = true;
         } catch (err) {
           const errCode = (err as { code?: string })?.code;
-          if (errCode !== 'ENOENT') {
-            dbg(
-              `lockfile check error request=${requestID} path=${lockPath} err=${
-                err instanceof Error ? err.message : String(err)
-              }`
-            );
+          if (errCode === 'ENOENT') {
+            lockMissing = true;
+          } else {
+            dbg(`lockfile check error request=${requestID} code=${diagnosticErrorCode(err)}`);
             userComposing = true;
           }
         }
@@ -158,6 +150,13 @@ export async function createSmartQuestionHooks(
           pending.status = 'cancelled';
           if (pendingRequests.get(requestID) === pending) pendingRequests.delete(requestID);
           deleteLockfile(lockPath, dbg);
+          return;
+        }
+
+        if (lockMissing && !canUseDraftCoordination(effectiveConfigDir, dbg)) {
+          dbg(`skip request=${requestID} reason=draft-coordination-unavailable`);
+          pending.status = 'cancelled';
+          if (pendingRequests.get(requestID) === pending) pendingRequests.delete(requestID);
           return;
         }
 
@@ -174,10 +173,10 @@ export async function createSmartQuestionHooks(
             if (res && typeof res === 'object') {
               const outcome = res as { error?: unknown; ok?: boolean };
               if (outcome.error) {
-                throw new Error(`client.question.reply error: ${String(outcome.error instanceof Error ? outcome.error.message : JSON.stringify(outcome.error))}`);
+                throw createDiagnosticError('native-reply-error');
               }
               if (outcome.ok === false) {
-                throw new Error('client.question.reply failed with ok=false');
+                throw createDiagnosticError('native-reply-not-ok');
               }
             }
           } else if (internalClient && typeof internalClient.post === 'function') {
@@ -187,20 +186,10 @@ export async function createSmartQuestionHooks(
             });
             if (res && typeof res === 'object') {
               if (res.error) {
-                const detail =
-                  res.error instanceof Error
-                    ? res.error.message
-                    : typeof res.error === 'string'
-                      ? res.error
-                      : JSON.stringify(res.error);
-                throw new Error(`client._client error: ${detail}`);
+                throw createDiagnosticError('internal-reply-error');
               }
               if (res.ok === false) {
-                throw new Error(
-                  `client._client request failed with ok=false${
-                    res.status ? ` (status ${res.status})` : ''
-                  }`
-                );
+                throw createDiagnosticError('internal-reply-not-ok');
               }
             }
           } else if (serverUrl) {
@@ -219,24 +208,19 @@ export async function createSmartQuestionHooks(
               body: JSON.stringify({ answers: decision.answers }),
             });
             if (!res.ok) {
-              const body = await res.text().catch(() => '');
-              throw new Error(`HTTP ${res.status} ${body.slice(0, 200)}`);
+              throw createDiagnosticError(`HTTP_${res.status}`);
             }
           } else {
-            throw new Error(
-              'no client.question.reply, no client._client.post, and no serverUrl'
-            );
+            throw createDiagnosticError('no-reply-transport');
           }
 
           pending.status = 'replied';
           dbg(`reply OK request=${requestID}`);
           deleteLockfile(lockPath, dbg);
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          dbg(`reply ERROR request=${requestID} err=${message}`);
-          console.error(
-            `[smart-question] Error replying to question ${requestID}: ${message}`
-          );
+          const code = diagnosticErrorCode(err);
+          dbg(`reply ERROR request=${requestID} code=${code}`);
+          console.error(`[smart-question] Auto-selection failed for question ${requestID} (${code})`);
         } finally {
           if (pendingRequests.get(requestID) === pending) {
             pendingRequests.delete(requestID);
@@ -283,7 +267,7 @@ export async function createSmartQuestionHooks(
     if (hookInput?.toolID !== 'question') return;
 
     if (typeof output.description === 'string') {
-      if (!output.description.includes('[RECOMMENDED OPTION CONVENTION]')) {
+      if (!output.description.includes(SQ_GUIDANCE_SENTINEL)) {
         output.description += guidance.tool;
       }
     } else {
@@ -299,7 +283,7 @@ export async function createSmartQuestionHooks(
     output: { system?: string[]; [key: string]: any }
   ): Promise<void> => {
     if (!Array.isArray(output?.system)) return;
-    if (!output.system.some((part) => part.includes('Smart Question Auto-Selection Guidance'))) {
+    if (!output.system.some((part) => part.includes(SQ_GUIDANCE_SENTINEL))) {
       output.system.push(guidance.system);
     }
   };

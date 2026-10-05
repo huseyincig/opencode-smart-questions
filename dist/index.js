@@ -1,42 +1,11 @@
 import { createSmartQuestionHooks } from './backend.js';
-import { loadConfig, normalizeSmartQuestionConfig, } from './config.js';
-import { buildRecommendationGuidance } from './guidance.js';
+import { resolveSmartQuestionConfig } from './config.js';
+import { buildRecommendationGuidance, SQ_GUIDANCE_SENTINEL } from './guidance.js';
 export * from './types.js';
 export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_CONFIG, } from './config.js';
 export * from './detector.js';
-export * from './draft-guard.js';
+export { resolveLockPath, deleteLockfile, cleanupStaleDrafts, } from './draft-guard.js';
 export * from './backend.js';
-function resolveV2Config(context) {
-    const options = context.options;
-    const configDir = context.location?.directory
-        ? `${context.location.directory}/.opencode`
-        : undefined;
-    // An explicitly supplied malformed config must not activate defaults.
-    if (options && Object.prototype.hasOwnProperty.call(options, 'config')) {
-        return normalizeSmartQuestionConfig(options.config, configDir);
-    }
-    const candidate = options;
-    const knownKeys = new Set([
-        'enabled',
-        'timeoutMs',
-        'recommendedMarkers',
-        'recommendedMarker',
-        'requireExactlyOneRecommendation',
-        'uiText',
-        'debugLog',
-        'configDir',
-    ]);
-    const hasInlineConfig = candidate &&
-        typeof candidate === 'object' &&
-        !Array.isArray(candidate) &&
-        Object.keys(candidate).some((key) => knownKeys.has(key));
-    if (hasInlineConfig) {
-        return normalizeSmartQuestionConfig(candidate, context.location?.directory
-            ? `${context.location.directory}/.opencode`
-            : undefined);
-    }
-    return loadConfig(context.location?.directory);
-}
 /**
  * OpenCode v1 plugin factory.
  */
@@ -53,20 +22,28 @@ const setupV2 = async (context) => {
         typeof context.session?.hook !== 'function') {
         return;
     }
-    const config = resolveV2Config(context);
+    const config = resolveSmartQuestionConfig(context.location?.directory, context.options);
     if (!config?.enabled)
         return;
     const guidance = buildRecommendationGuidance(config);
     const registrations = [];
     const disposeRegistrations = async () => {
-        // Reversed order undoes the most recent registration first. Splicing
-        // makes cleanup safe when the host calls the returned disposer twice.
-        await Promise.allSettled(registrations.splice(0).reverse().map((registration) => registration.dispose()));
+        // Complete cleanup strictly in reverse registration order. Each disposer
+        // is isolated so one cleanup failure does not prevent older resources
+        // from being released. Splicing keeps repeated disposal idempotent.
+        for (const registration of registrations.splice(0).reverse()) {
+            try {
+                await registration.dispose();
+            }
+            catch {
+                // Teardown is best effort; continue releasing the remaining resources.
+            }
+        }
     };
     try {
         const toolRegistration = await context.tool.transform((editor) => {
             editor.update('question', (tool) => {
-                if (!tool.description.includes('[RECOMMENDED OPTION CONVENTION]')) {
+                if (!tool.description.includes(SQ_GUIDANCE_SENTINEL)) {
                     tool.description += guidance.tool;
                 }
             });
@@ -78,7 +55,7 @@ const setupV2 = async (context) => {
         const contextRegistration = await context.session.hook('context', (event) => {
             const alreadyInjected = event.system.some((part) => part.type === 'text' &&
                 typeof part.text === 'string' &&
-                part.text.includes('Smart Question Auto-Selection Guidance'));
+                part.text.includes(SQ_GUIDANCE_SENTINEL));
             if (!alreadyInjected) {
                 event.system.push({
                     type: 'text',

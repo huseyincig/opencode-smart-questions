@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { DEFAULT_CONFIG } from './config.js';
+import { diagnosticErrorCode } from './diagnostics.js';
 export function resolveLockPath(configDir, requestID) {
     if (configDir &&
         typeof configDir === 'object' &&
@@ -11,6 +13,26 @@ export function resolveLockPath(configDir, requestID) {
     const safeRequestID = encodeURIComponent(typeof requestID === 'string' ? requestID : 'unknown');
     return path.join(opencodeDir, `.sq-draft-${safeRequestID}`);
 }
+export function canUseDraftCoordination(configDir, dbg) {
+    const opencodeDir = (typeof configDir === 'string' && configDir) || path.resolve(process.cwd(), '.opencode');
+    const probePath = path.join(opencodeDir, `.sq-draft-probe-${randomUUID()}`);
+    try {
+        fs.mkdirSync(opencodeDir, { recursive: true });
+        fs.writeFileSync(probePath, '', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+        fs.unlinkSync(probePath);
+        return true;
+    }
+    catch (error) {
+        try {
+            fs.unlinkSync(probePath);
+        }
+        catch {
+            // Best-effort probe cleanup.
+        }
+        dbg?.(`draft coordination unavailable code=${diagnosticErrorCode(error)}`);
+        return false;
+    }
+}
 export function deleteLockfile(lockPath, dbg) {
     if (lockPath &&
         typeof lockPath === 'object' &&
@@ -20,13 +42,13 @@ export function deleteLockfile(lockPath, dbg) {
     try {
         if (typeof lockPath === 'string' && fs.existsSync(lockPath)) {
             fs.unlinkSync(lockPath);
-            dbg?.(`deleted lockfile path=${lockPath}`);
+            dbg?.(`deleted lockfile file=${path.basename(lockPath)}`);
         }
     }
     catch (err) {
         const errCode = err?.code;
         if (errCode !== 'ENOENT') {
-            dbg?.(`failed to delete lockfile path=${lockPath}: ${err instanceof Error ? err.message : String(err)}`);
+            dbg?.(`failed to delete lockfile file=${typeof lockPath === 'string' ? path.basename(lockPath) : 'unknown'} code=${diagnosticErrorCode(err)}`);
         }
     }
 }
@@ -59,15 +81,15 @@ export function cleanupStaleDrafts(configDir, timeoutMs, dbg) {
                 const ageMs = now - stat.mtimeMs;
                 if (ageMs > staleThresholdMs) {
                     fs.unlinkSync(fullPath);
-                    dbg?.(`cleanupStaleDrafts: deleted stale draft ${fullPath} (age=${Math.round(ageMs)}ms > threshold=${staleThresholdMs}ms)`);
+                    dbg?.(`cleanupStaleDrafts: deleted stale draft ${entry} (age=${Math.round(ageMs)}ms > threshold=${staleThresholdMs}ms)`);
                 }
             }
             catch (fileErr) {
-                dbg?.(`cleanupStaleDrafts: error processing ${fullPath}: ${fileErr instanceof Error ? fileErr.message : String(fileErr)}`);
+                dbg?.(`cleanupStaleDrafts: error processing ${entry} code=${diagnosticErrorCode(fileErr)}`);
             }
         }
     }
     catch (err) {
-        dbg?.(`cleanupStaleDrafts: unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+        dbg?.(`cleanupStaleDrafts: unexpected error code=${diagnosticErrorCode(err)}`);
     }
 }

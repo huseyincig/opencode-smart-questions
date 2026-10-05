@@ -1,4 +1,5 @@
 // src/tui-runtime.js
+import { memo as _$memo } from "opentui:runtime-module:%40opentui%2Fsolid";
 import { createTextNode as _$createTextNode } from "opentui:runtime-module:%40opentui%2Fsolid";
 import { createComponent as _$createComponent } from "opentui:runtime-module:%40opentui%2Fsolid";
 import { insertNode as _$insertNode } from "opentui:runtime-module:%40opentui%2Fsolid";
@@ -13,11 +14,76 @@ import { Show, createMemo, createSignal } from "opentui:runtime-module:solid-js"
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+// src/diagnostics.ts
+var INTERNAL_CODES = /* @__PURE__ */ new Set([
+  "native-reply-error",
+  "native-reply-not-ok",
+  "internal-reply-error",
+  "internal-reply-not-ok",
+  "no-reply-transport",
+  "reply-failed"
+]);
+var OS_CODES = /* @__PURE__ */ new Set([
+  "EACCES",
+  "EPERM",
+  "ENOENT",
+  "EEXIST",
+  "ENOTDIR",
+  "EISDIR",
+  "EROFS",
+  "ENOSPC",
+  "EMFILE",
+  "ENFILE",
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "EPIPE",
+  "ABORT_ERR"
+]);
+function isSafeInternalCode(code) {
+  return INTERNAL_CODES.has(code) || /^HTTP_[1-5]\d\d$/.test(code);
+}
+function diagnosticErrorCode(error) {
+  if (error && typeof error === "object") {
+    const code = error.code;
+    if (typeof code === "string" && (OS_CODES.has(code) || error.name === "SmartQuestionError" && isSafeInternalCode(code))) {
+      return code;
+    }
+    if (error instanceof SyntaxError) return "syntax-error";
+    if (error instanceof TypeError) return "type-error";
+    if (error instanceof RangeError) return "range-error";
+    if (error instanceof Error) return "error";
+    return "object-error";
+  }
+  if (typeof error === "string") return "string-error";
+  if (error === null) return "null-error";
+  if (error === void 0) return "undefined-error";
+  return `${typeof error}-error`;
+}
+
+// src/config.ts
 var DEFAULT_RECOMMENDED_MARKERS = [
   "[SQ:recommended]",
   "(Recommended)",
   "(\xD6nerilen)"
 ];
+var MAX_TIMEOUT_MS = 2147483647;
+var SMART_QUESTION_CONFIG_KEYS = /* @__PURE__ */ new Set([
+  "enabled",
+  "timeoutMs",
+  "recommendedMarkers",
+  "recommendedMarker",
+  "requireExactlyOneRecommendation",
+  "uiText",
+  "debugLog",
+  "configDir"
+]);
+function hasSmartQuestionConfigOptions(options) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) return false;
+  if (Object.prototype.hasOwnProperty.call(options, "config")) return true;
+  return Object.keys(options).some((key) => SMART_QUESTION_CONFIG_KEYS.has(key));
+}
 var DEFAULT_UI_TEXT = {
   recommendation: "Recommendation:",
   disabled: "AUTO-SELECTION DISABLED",
@@ -76,25 +142,38 @@ function normalizeSmartQuestionConfig(raw, configDir) {
   }
   const parsed = raw ?? {};
   if (parsed.enabled === false) return null;
-  if (parsed.enabled !== void 0 && parsed.enabled !== true || parsed.timeoutMs !== void 0 && (typeof parsed.timeoutMs !== "number" || !Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs < 0) || parsed.requireExactlyOneRecommendation !== void 0 && typeof parsed.requireExactlyOneRecommendation !== "boolean" || parsed.recommendedMarkers !== void 0 && (!Array.isArray(parsed.recommendedMarkers) || parsed.recommendedMarkers.length === 0 || parsed.recommendedMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.recommendedMarker !== void 0 && (typeof parsed.recommendedMarker !== "string" || parsed.recommendedMarker.trim().length === 0) || parsed.debugLog !== void 0 && typeof parsed.debugLog !== "string" || parsed.configDir !== void 0 && (typeof parsed.configDir !== "string" || parsed.configDir.trim().length === 0) || parsed.uiText !== void 0 && (parsed.uiText === null || typeof parsed.uiText !== "object" || Array.isArray(parsed.uiText) || Object.values(parsed.uiText).some((value) => typeof value !== "string" || value.trim().length === 0))) {
+  if (parsed.enabled !== void 0 && parsed.enabled !== true || parsed.timeoutMs !== void 0 && (typeof parsed.timeoutMs !== "number" || !Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs < 0 || parsed.timeoutMs > MAX_TIMEOUT_MS) || parsed.requireExactlyOneRecommendation !== void 0 && typeof parsed.requireExactlyOneRecommendation !== "boolean" || parsed.recommendedMarkers !== void 0 && (!Array.isArray(parsed.recommendedMarkers) || parsed.recommendedMarkers.length === 0 || parsed.recommendedMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.recommendedMarker !== void 0 && (typeof parsed.recommendedMarker !== "string" || parsed.recommendedMarker.trim().length === 0) || parsed.debugLog !== void 0 && typeof parsed.debugLog !== "string" || parsed.configDir !== void 0 && (typeof parsed.configDir !== "string" || parsed.configDir.trim().length === 0) || parsed.uiText !== void 0 && (parsed.uiText === null || typeof parsed.uiText !== "object" || Array.isArray(parsed.uiText) || Object.values(parsed.uiText).some((value) => typeof value !== "string" || value.trim().length === 0))) {
     return null;
   }
   const recommendedMarkers = normalizeConfigMarkers(
     parsed.recommendedMarkers,
     parsed.recommendedMarker
   );
-  const recommendedMarker = typeof parsed.recommendedMarker === "string" && parsed.recommendedMarker.trim().length > 0 ? parsed.recommendedMarker.trim() : recommendedMarkers[0] ?? DEFAULT_CONFIG.recommendedMarker;
-  const timeoutMs = typeof parsed.timeoutMs === "number" && Number.isFinite(parsed.timeoutMs) && parsed.timeoutMs >= 0 ? parsed.timeoutMs : DEFAULT_CONFIG.timeoutMs;
-  return {
+  const recommendedMarker = recommendedMarkers[0] ?? DEFAULT_CONFIG.recommendedMarker ?? "[SQ:recommended]";
+  const timeoutMs = typeof parsed.timeoutMs === "number" && Number.isFinite(parsed.timeoutMs) && parsed.timeoutMs >= 0 && parsed.timeoutMs <= MAX_TIMEOUT_MS ? parsed.timeoutMs : DEFAULT_CONFIG.timeoutMs;
+  const normalized = {
     enabled: true,
-    configDir: typeof parsed.configDir === "string" && parsed.configDir ? parsed.configDir : configDir,
     timeoutMs,
     recommendedMarkers,
     recommendedMarker,
     requireExactlyOneRecommendation: typeof parsed.requireExactlyOneRecommendation === "boolean" ? parsed.requireExactlyOneRecommendation : DEFAULT_CONFIG.requireExactlyOneRecommendation,
     uiText: normalizeUIText(parsed.uiText),
-    debugLog: typeof parsed.debugLog === "string" ? parsed.debugLog : DEFAULT_CONFIG.debugLog
+    debugLog: typeof parsed.debugLog === "string" ? parsed.debugLog : DEFAULT_CONFIG.debugLog ?? ""
   };
+  const resolvedConfigDir = typeof parsed.configDir === "string" && parsed.configDir ? parsed.configDir : configDir;
+  if (resolvedConfigDir) normalized.configDir = resolvedConfigDir;
+  return normalized;
+}
+function resolveSmartQuestionConfig(projectDir, pluginOptions) {
+  const directory = typeof projectDir === "string" && projectDir ? projectDir : process.cwd();
+  const configDir = path.resolve(directory, ".opencode");
+  if (pluginOptions && Object.prototype.hasOwnProperty.call(pluginOptions, "config")) {
+    return normalizeSmartQuestionConfig(pluginOptions.config, configDir);
+  }
+  if (hasSmartQuestionConfigOptions(pluginOptions)) {
+    return normalizeSmartQuestionConfig(pluginOptions, configDir);
+  }
+  return loadConfig(projectDir);
 }
 function loadConfig(projectDir) {
   if (projectDir && typeof projectDir === "object" && ("client" in projectDir || "directory" in projectDir)) {
@@ -121,14 +200,12 @@ function loadConfig(projectDir) {
     const parsed = JSON.parse(raw);
     const normalized = normalizeSmartQuestionConfig(parsed, path.dirname(configPath));
     if (!normalized && parsed?.enabled !== false) {
-      console.error(
-        `[smart-question] Invalid config at ${configPath}; auto-selection disabled`
-      );
+      console.error("[smart-question] Invalid smart-question config; auto-selection disabled");
     }
     return normalized;
   } catch (err) {
     console.error(
-      `[smart-question] Failed to load config at ${configPath}: ${err instanceof Error ? err.message : String(err)}`
+      `[smart-question] Failed to load smart-question config (${diagnosticErrorCode(err)}); auto-selection disabled`
     );
     return null;
   }
@@ -177,15 +254,19 @@ function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMar
         reason: `Question ${qIndex} has ${matched.length} options ending with marker ${markerDesc} (expected exactly 1)`
       };
     }
+    const firstMatch = matched[0];
+    if (!firstMatch) {
+      return { ok: false, reason: `Question ${qIndex} has no usable recommended option` };
+    }
     if (!matchedMarker) {
-      matchedMarker = matched[0].marker;
+      matchedMarker = firstMatch.marker;
     }
     if (q.multiple) {
       answers.push(matched.map((m) => m.opt.label));
       recommendedOptions.push(...matched.map((m) => m.opt));
     } else {
-      answers.push([matched[0].opt.label]);
-      recommendedOptions.push(matched[0].opt);
+      answers.push([firstMatch.opt.label]);
+      recommendedOptions.push(firstMatch.opt);
     }
   }
   return { ok: true, answers, recommendedOptions, matchedMarker };
@@ -194,6 +275,7 @@ function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMar
 // src/draft-guard.ts
 import fs2 from "node:fs";
 import path2 from "node:path";
+import { randomUUID } from "node:crypto";
 function resolveLockPath(configDir, requestID) {
   if (configDir && typeof configDir === "object" && ("client" in configDir || "directory" in configDir)) {
     return {};
@@ -202,6 +284,23 @@ function resolveLockPath(configDir, requestID) {
   const safeRequestID = encodeURIComponent(typeof requestID === "string" ? requestID : "unknown");
   return path2.join(opencodeDir, `.sq-draft-${safeRequestID}`);
 }
+function canUseDraftCoordination(configDir, dbg) {
+  const opencodeDir = typeof configDir === "string" && configDir || path2.resolve(process.cwd(), ".opencode");
+  const probePath = path2.join(opencodeDir, `.sq-draft-probe-${randomUUID()}`);
+  try {
+    fs2.mkdirSync(opencodeDir, { recursive: true });
+    fs2.writeFileSync(probePath, "", { encoding: "utf8", flag: "wx", mode: 384 });
+    fs2.unlinkSync(probePath);
+    return true;
+  } catch (error) {
+    try {
+      fs2.unlinkSync(probePath);
+    } catch {
+    }
+    dbg?.(`draft coordination unavailable code=${diagnosticErrorCode(error)}`);
+    return false;
+  }
+}
 function deleteLockfile(lockPath, dbg) {
   if (lockPath && typeof lockPath === "object" && ("client" in lockPath || "directory" in lockPath)) {
     return {};
@@ -209,12 +308,12 @@ function deleteLockfile(lockPath, dbg) {
   try {
     if (typeof lockPath === "string" && fs2.existsSync(lockPath)) {
       fs2.unlinkSync(lockPath);
-      dbg?.(`deleted lockfile path=${lockPath}`);
+      dbg?.(`deleted lockfile file=${path2.basename(lockPath)}`);
     }
   } catch (err) {
     const errCode = err?.code;
     if (errCode !== "ENOENT") {
-      dbg?.(`failed to delete lockfile path=${lockPath}: ${err instanceof Error ? err.message : String(err)}`);
+      dbg?.(`failed to delete lockfile file=${typeof lockPath === "string" ? path2.basename(lockPath) : "unknown"} code=${diagnosticErrorCode(err)}`);
     }
   }
 }
@@ -229,18 +328,38 @@ function detectV2FormRecommendations(form, markers, options) {
   const seenKeys = /* @__PURE__ */ new Set();
   for (let i = 0; i < form.fields.length; i++) {
     const field = form.fields[i];
-    const isStringChoice = field?.type === "string" && Array.isArray(field.options) && field.options.length > 0;
-    const isMultiChoice = field?.type === "multiselect" && Array.isArray(field.options) && field.options.length > 0;
+    if (!field) {
+      return { ok: false, reason: `Form field ${i + 1} is missing` };
+    }
+    if (field.hidden === true || field.when !== void 0 && (!Array.isArray(field.when) || field.when.length > 0)) {
+      return {
+        ok: false,
+        reason: `Form field ${i + 1} (${field.key ?? "unknown"}) is hidden or conditional`
+      };
+    }
+    const isStringChoice = field.type === "string" && Array.isArray(field.options) && field.options.length > 0;
+    const isMultiChoice = field.type === "multiselect" && Array.isArray(field.options) && field.options.length > 0;
     if (!isStringChoice && !isMultiChoice) {
       return {
         ok: false,
-        reason: `Form field ${i + 1} (${field?.key ?? "unknown"}) is not a supported selectable field`
+        reason: `Form field ${i + 1} (${field.key ?? "unknown"}) is not a supported selectable field`
       };
     }
     if (typeof field.key !== "string" || !field.key || seenKeys.has(field.key)) {
       return { ok: false, reason: `Form field ${i + 1} has a missing or duplicate key` };
     }
     seenKeys.add(field.key);
+    if (isMultiChoice) {
+      const constraints = [field.minItems, field.maxItems].filter(
+        (value) => value !== void 0
+      );
+      if (constraints.some((value) => !Number.isInteger(value) || value < 0) || field.minItems !== void 0 && field.maxItems !== void 0 && field.minItems > field.maxItems) {
+        return {
+          ok: false,
+          reason: `Form field ${i + 1} has invalid multiselect item constraints`
+        };
+      }
+    }
     const fieldOptions = field.options;
     if (fieldOptions.some(
       (option) => !option || typeof option.value !== "string" || typeof option.label !== "string"
@@ -252,8 +371,8 @@ function detectV2FormRecommendations(form, markers, options) {
     }
     const mappedOptions = fieldOptions.map((option) => ({
       label: option.label,
-      description: option.description,
-      value: option.value
+      value: option.value,
+      ...typeof option.description === "string" ? { description: option.description } : {}
     }));
     questions.push({
       question: field.description ?? field.title ?? field.key,
@@ -265,7 +384,9 @@ function detectV2FormRecommendations(form, markers, options) {
     selectableFields.push({
       key: field.key,
       multiple: isMultiChoice,
-      options: fieldOptions
+      options: fieldOptions,
+      ...isMultiChoice && field.minItems !== void 0 ? { minItems: field.minItems } : {},
+      ...isMultiChoice && field.maxItems !== void 0 ? { maxItems: field.maxItems } : {}
     });
   }
   const detection = detectRecommendations(questions, markers, options);
@@ -273,10 +394,13 @@ function detectV2FormRecommendations(form, markers, options) {
   const answer = {};
   for (let i = 0; i < selectableFields.length; i++) {
     const field = selectableFields[i];
+    if (!field) {
+      return { ok: false, reason: `Missing normalized field ${i + 1}` };
+    }
     const selectedLabels = detection.answers[i] ?? [];
     const selectedValues = selectedLabels.map((label) => {
       const matchingOptions = field.options.filter((candidate) => candidate.label === label);
-      return matchingOptions.length === 1 ? matchingOptions[0].value : void 0;
+      return matchingOptions.length === 1 ? matchingOptions[0]?.value : void 0;
     });
     if (selectedValues.length !== selectedLabels.length || selectedValues.some((value) => typeof value !== "string")) {
       return {
@@ -285,6 +409,18 @@ function detectV2FormRecommendations(form, markers, options) {
       };
     }
     if (field.multiple) {
+      if (field.minItems !== void 0 && selectedValues.length < field.minItems) {
+        return {
+          ok: false,
+          reason: `Recommended selections for field ${field.key} do not satisfy minItems`
+        };
+      }
+      if (field.maxItems !== void 0 && selectedValues.length > field.maxItems) {
+        return {
+          ok: false,
+          reason: `Recommended selections for field ${field.key} exceed maxItems`
+        };
+      }
       answer[field.key] = selectedValues;
     } else {
       const value = selectedValues[0];
@@ -313,33 +449,30 @@ function createDiagnosticLogger(config, prefix) {
     if (!logPath) return;
     try {
       fs3.appendFileSync(logPath, `[${prefix}] ${(/* @__PURE__ */ new Date()).toISOString()} ${message}
-`);
+`, {
+        encoding: "utf8",
+        mode: 384
+      });
     } catch {
     }
   };
 }
-function ensureDraftLock(lockPath, payload) {
+function ensureDraftLock(lockPath, _payload) {
   try {
     fs3.mkdirSync(path3.dirname(lockPath), {
       recursive: true
     });
-    fs3.writeFileSync(lockPath, JSON.stringify(payload), "utf8");
+    fs3.writeFileSync(lockPath, "", {
+      encoding: "utf8",
+      mode: 384
+    });
+    return true;
   } catch {
+    return false;
   }
 }
-function resolveV2TuiConfig(context) {
-  const options = context.options;
-  const configDir = context.location?.directory ? path3.resolve(context.location.directory, ".opencode") : void 0;
-  if (options && Object.prototype.hasOwnProperty.call(options, "config")) {
-    return normalizeSmartQuestionConfig(options.config, configDir);
-  }
-  const candidate = options;
-  const knownKeys = /* @__PURE__ */ new Set(["enabled", "timeoutMs", "recommendedMarkers", "recommendedMarker", "requireExactlyOneRecommendation", "uiText", "debugLog", "configDir"]);
-  const hasInlineConfig = candidate && typeof candidate === "object" && !Array.isArray(candidate) && Object.keys(candidate).some((key) => knownKeys.has(key));
-  if (hasInlineConfig) {
-    return normalizeSmartQuestionConfig(candidate, context.location?.directory ? path3.resolve(context.location.directory, ".opencode") : void 0);
-  }
-  return loadConfig2(context.location?.directory);
+function resolveV2TuiConfig(context, directory = context.location?.directory) {
+  return resolveSmartQuestionConfig(directory, context.options);
 }
 function resolveAgentName(api, sessionID, eventProps) {
   if (typeof eventProps?.agent === "string" && eventProps.agent.trim().length > 0) {
@@ -495,11 +628,12 @@ function SmartQuestionOverlay(props) {
     }
   });
 }
-var tui = async (api) => {
+var tui = async (api, options) => {
   const projectDir = api.state?.path?.directory ?? process.cwd();
-  const config = loadConfig2(projectDir);
+  const config = resolveSmartQuestionConfig(projectDir, options);
   if (!config?.enabled) return;
   const log = createDiagnosticLogger(config, "smart-question-ui");
+  if (!canUseDraftCoordination(config.configDir, log)) return;
   const [activeQuestion, setActiveQuestion] = createSignal(null);
   const [countdownSec, setCountdownSec] = createSignal(0);
   let countdownTimer = null;
@@ -616,30 +750,52 @@ var tui = async (api) => {
       triggerFocusGuard("user paste interaction");
     }
   };
-  api.renderer?.keyInput?.on?.("keypress", onKey);
-  api.renderer?.keyInput?.on?.("paste", onPaste);
-  const stopLegacyKey = api.keymap?.intercept?.("key", onKey);
-  api.lifecycle?.onDispose?.(() => {
+  let stopLegacyKey;
+  let keypressRegistered = false;
+  let pasteRegistered = false;
+  let cleaned = false;
+  const cleanupLocal = () => {
+    if (cleaned) return;
+    cleaned = true;
     stopLegacyKey?.();
     stopAsked?.();
     stopReplied?.();
     stopRejected?.();
-    api.renderer?.keyInput?.off?.("keypress", onKey);
-    api.renderer?.keyInput?.off?.("paste", onPaste);
-    clearActive();
-  });
+    if (keypressRegistered) {
+      api.renderer?.keyInput?.off?.("keypress", onKey);
+      keypressRegistered = false;
+    }
+    if (pasteRegistered) {
+      api.renderer?.keyInput?.off?.("paste", onPaste);
+      pasteRegistered = false;
+    }
+    clearActive(activeQuestion()?.focusDisabled !== true);
+  };
+  api.lifecycle?.onDispose?.(cleanupLocal);
+  try {
+    if (typeof api.renderer?.keyInput?.on === "function") {
+      api.renderer.keyInput.on("keypress", onKey);
+      keypressRegistered = true;
+      api.renderer.keyInput.on("paste", onPaste);
+      pasteRegistered = true;
+    }
+    stopLegacyKey = api.keymap?.intercept?.("key", onKey);
+  } catch (error) {
+    cleanupLocal();
+    throw error;
+  }
 };
 var setup = async (context) => {
   const formApi = context?.data?.session?.form;
   if (!context || typeof context !== "object" || typeof context.data?.on !== "function" || typeof formApi?.sync !== "function" || typeof formApi?.list !== "function" || typeof formApi?.reply !== "function" || typeof formApi?.invalidate !== "function" || typeof context.renderer?.keyInput?.on !== "function" || typeof context.renderer?.keyInput?.off !== "function" || typeof context.ui?.router?.current !== "function" || typeof context.ui?.slot !== "function") {
     return;
   }
-  const config = resolveV2TuiConfig(context);
-  if (!config?.enabled) return;
-  const log = createDiagnosticLogger(config, "smart-question-v2-ui");
+  if (hasSmartQuestionConfigOptions(context.options)) {
+    const explicitConfig = resolveV2TuiConfig(context);
+    if (!explicitConfig?.enabled) return;
+  }
   const [activeBySession, setActiveBySession] = createSignal({});
   const pending = /* @__PURE__ */ new Map();
-  const location = context.location;
   const updateSessionState = (sessionID, updater) => {
     setActiveBySession((current) => {
       const next = {
@@ -659,7 +815,7 @@ var setup = async (context) => {
     item.status = "cancelled";
     pending.delete(formID);
     if (options.removeLock !== false) {
-      deleteLockfile(item.lockPath, log);
+      deleteLockfile(item.lockPath, item.log);
     }
     if (options.removeOverlay !== false) {
       updateSessionState(item.sessionID, (current) => current?.formID === formID ? void 0 : current);
@@ -686,12 +842,9 @@ var setup = async (context) => {
       ...current,
       focusDisabled: true
     } : current);
-    log(`manual interaction form=${item.formID} session=${sessionID} reason=${reason}`);
+    item.log(`manual interaction form=${item.formID} session=${sessionID} reason=${reason}`);
   };
   const onFormCreated = (event) => {
-    if (event?.location?.directory && location?.directory && event.location.directory !== location.directory) {
-      return;
-    }
     const form = event?.data?.form;
     if (!form?.id || !form.sessionID || form.sessionID === "global") return;
     for (const [id, existing] of pending.entries()) {
@@ -699,6 +852,11 @@ var setup = async (context) => {
         clearPending(id);
       }
     }
+    const sessionLocation = context.data.session?.get?.(form.sessionID)?.location;
+    const location = event?.location ?? sessionLocation ?? context.location;
+    const config = resolveV2TuiConfig(context, location?.directory);
+    if (!config?.enabled) return;
+    const log = createDiagnosticLogger(config, "smart-question-v2-ui");
     const decision = detectV2FormRecommendations(form, config.recommendedMarkers, {
       requireExactlyOneRecommendation: config.requireExactlyOneRecommendation
     });
@@ -719,7 +877,9 @@ var setup = async (context) => {
       agentName: form.sessionID.slice(0, 8),
       agentFound: false,
       focusDisabled: false,
-      countdown: initialCountdown
+      countdown: initialCountdown,
+      markers: config.recommendedMarkers,
+      uiText: config.uiText
     };
     const item = {
       formID: form.id,
@@ -729,6 +889,8 @@ var setup = async (context) => {
       expiresAt,
       status: "pending",
       lockPath,
+      location,
+      log,
       timeout: void 0,
       interval: null
     };
@@ -740,8 +902,8 @@ var setup = async (context) => {
         item.interval = null;
       }
       try {
-        await context.data.session.form.sync(form.sessionID, location);
-        const forms = context.data.session.form.list(form.sessionID, location);
+        await context.data.session.form.sync(form.sessionID, item.location);
+        const forms = context.data.session.form.list(form.sessionID, item.location);
         const stillPending = Array.isArray(forms) && forms.some((candidate) => candidate.id === form.id);
         if (!stillPending || pending.get(form.id) !== item || item.status !== "firing" || activeBySession()[form.sessionID]?.formID !== form.id || activeBySession()[form.sessionID]?.focusDisabled) {
           log(`skip reply form=${form.id} reason=no longer pending or manual interaction`);
@@ -756,21 +918,21 @@ var setup = async (context) => {
           sessionID: form.sessionID,
           formID: form.id,
           answer: decision.answer
-        }, location);
+        }, item.location);
         item.status = "replied";
         try {
-          context.data.session.form.invalidate(form.sessionID, location);
+          context.data.session.form.invalidate(form.sessionID, item.location);
         } catch (error) {
-          log(`form cache invalidation failed form=${form.id} err=${error instanceof Error ? error.message : String(error)}`);
+          log(`form cache invalidation failed form=${form.id} code=${diagnosticErrorCode(error)}`);
         }
         deleteLockfile(lockPath, log);
         pending.delete(form.id);
         updateSessionState(form.sessionID, (current) => current?.formID === form.id ? void 0 : current);
         log(`reply OK form=${form.id}`);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        log(`reply ERROR form=${form.id} err=${message}`);
-        console.error(`[smart-question] Auto-selection failed for form ${form.id}: ${message}`);
+        const code = diagnosticErrorCode(error);
+        log(`reply ERROR form=${form.id} code=${code}`);
+        console.error(`[smart-question] Auto-selection failed for form ${form.id} (${code})`);
         if (pending.get(form.id) === item) {
           pending.delete(form.id);
           deleteLockfile(lockPath, log);
@@ -803,9 +965,15 @@ var setup = async (context) => {
     const formID = event?.data?.id ?? event?.data?.form?.id ?? event?.properties?.id;
     if (typeof formID === "string") clearPending(formID);
   };
-  const stopCreated = context.data.on("form.created", onFormCreated);
-  const stopReplied = context.data.on("form.replied", onFormSettled);
-  const stopCancelled = context.data.on("form.cancelled", onFormSettled);
+  const cleanups = [];
+  const disposeCleanups = () => {
+    for (const cleanup of cleanups.splice(0).reverse()) {
+      try {
+        cleanup();
+      } catch {
+      }
+    }
+  };
   const onKey = () => {
     const route = context.ui.router.current();
     if (route.type === "session") {
@@ -818,30 +986,38 @@ var setup = async (context) => {
       cancelSessionAutoSelection(route.sessionID, "user paste interaction");
     }
   };
-  context.renderer.keyInput.on("keypress", onKey);
-  context.renderer.keyInput.on("paste", onPaste);
-  const stopSlot = context.ui.slot({
-    append: "session.composer.top",
-    render: ({
-      sessionID
-    }) => _$createComponent(SmartQuestionOverlay, {
-      state: () => activeBySession()[sessionID] ?? null,
-      countdown: () => activeBySession()[sessionID]?.countdown ?? 0,
-      get markers() {
-        return config.recommendedMarkers;
-      },
-      get uiText() {
-        return config.uiText;
-      }
-    })
-  });
+  try {
+    cleanups.push(context.data.on("form.created", onFormCreated));
+    cleanups.push(context.data.on("form.replied", onFormSettled));
+    cleanups.push(context.data.on("form.cancelled", onFormSettled));
+    context.renderer.keyInput.on("keypress", onKey);
+    cleanups.push(() => context.renderer.keyInput.off("keypress", onKey));
+    context.renderer.keyInput.on("paste", onPaste);
+    cleanups.push(() => context.renderer.keyInput.off("paste", onPaste));
+    cleanups.push(context.ui.slot({
+      append: "session.composer.top",
+      render: ({
+        sessionID
+      }) => _$createComponent(SmartQuestionOverlay, {
+        state: () => activeBySession()[sessionID] ?? null,
+        countdown: () => activeBySession()[sessionID]?.countdown ?? 0,
+        get markers() {
+          return activeBySession()[sessionID]?.markers ?? DEFAULT_CONFIG.recommendedMarkers;
+        },
+        get uiText() {
+          return activeBySession()[sessionID]?.uiText ?? DEFAULT_CONFIG.uiText;
+        }
+      })
+    }));
+  } catch (error) {
+    disposeCleanups();
+    for (const formID of [...pending.keys()]) {
+      clearPending(formID);
+    }
+    throw error;
+  }
   return () => {
-    stopCreated();
-    stopReplied();
-    stopCancelled();
-    stopSlot();
-    context.renderer.keyInput.off("keypress", onKey);
-    context.renderer.keyInput.off("paste", onPaste);
+    disposeCleanups();
     for (const formID of [...pending.keys()]) {
       clearPending(formID);
     }

@@ -1,10 +1,12 @@
 import type { SmartQuestionConfig, SmartQuestionUIText } from './types.js';
 export declare const DEFAULT_RECOMMENDED_MARKERS: string[];
+export declare function hasSmartQuestionConfigOptions(options?: Record<string, unknown>): boolean;
 export declare const DEFAULT_UI_TEXT: SmartQuestionUIText;
 export declare const DEFAULT_CONFIG: SmartQuestionConfig;
 export declare function normalizeConfigMarkers(rawMarkers?: unknown, legacyMarker?: unknown): string[];
 export declare function normalizeParamMarkers(marker?: string | string[]): string[];
 export declare function normalizeSmartQuestionConfig(raw: unknown, configDir?: string): SmartQuestionConfig | null;
+export declare function resolveSmartQuestionConfig(projectDir?: string, pluginOptions?: Record<string, unknown>): SmartQuestionConfig | null;
 /**
  * Load smart-question configuration from project or global config.
  * Missing configuration uses safe defaults; malformed configuration disables

@@ -84,8 +84,13 @@ export function detectRecommendations(
       };
     }
 
+    const firstMatch = matched[0];
+    if (!firstMatch) {
+      return { ok: false, reason: `Question ${qIndex} has no usable recommended option` };
+    }
+
     if (!matchedMarker) {
-      matchedMarker = matched[0].marker;
+      matchedMarker = firstMatch.marker;
     }
 
     if (q.multiple) {
@@ -93,8 +98,8 @@ export function detectRecommendations(
       recommendedOptions.push(...matched.map((m) => m.opt));
     } else {
       // Verbatim label copied from event payload
-      answers.push([matched[0].opt.label]);
-      recommendedOptions.push(matched[0].opt);
+      answers.push([firstMatch.opt.label]);
+      recommendedOptions.push(firstMatch.opt);
     }
   }
 

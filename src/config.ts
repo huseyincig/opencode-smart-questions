@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { diagnosticErrorCode } from './diagnostics.js';
 import type { SmartQuestionConfig, SmartQuestionUIText } from './types.js';
 
 export const DEFAULT_RECOMMENDED_MARKERS: string[] = [
@@ -8,6 +9,27 @@ export const DEFAULT_RECOMMENDED_MARKERS: string[] = [
   '(Recommended)',
   '(Önerilen)',
 ];
+
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
+const SMART_QUESTION_CONFIG_KEYS = new Set([
+  'enabled',
+  'timeoutMs',
+  'recommendedMarkers',
+  'recommendedMarker',
+  'requireExactlyOneRecommendation',
+  'uiText',
+  'debugLog',
+  'configDir',
+]);
+
+export function hasSmartQuestionConfigOptions(
+  options?: Record<string, unknown>
+): boolean {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) return false;
+  if (Object.prototype.hasOwnProperty.call(options, 'config')) return true;
+  return Object.keys(options).some((key) => SMART_QUESTION_CONFIG_KEYS.has(key));
+}
 
 export const DEFAULT_UI_TEXT: SmartQuestionUIText = {
   recommendation: 'Recommendation:',
@@ -92,7 +114,10 @@ export function normalizeSmartQuestionConfig(
   if (
     (parsed.enabled !== undefined && parsed.enabled !== true) ||
     (parsed.timeoutMs !== undefined &&
-      (typeof parsed.timeoutMs !== 'number' || !Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs < 0)) ||
+      (typeof parsed.timeoutMs !== 'number' ||
+        !Number.isFinite(parsed.timeoutMs) ||
+        parsed.timeoutMs < 0 ||
+        parsed.timeoutMs > MAX_TIMEOUT_MS)) ||
     (parsed.requireExactlyOneRecommendation !== undefined &&
       typeof parsed.requireExactlyOneRecommendation !== 'boolean') ||
     (parsed.recommendedMarkers !== undefined &&
@@ -119,23 +144,18 @@ export function normalizeSmartQuestionConfig(
     parsed.recommendedMarker
   );
   const recommendedMarker =
-    typeof parsed.recommendedMarker === 'string' && parsed.recommendedMarker.trim().length > 0
-      ? parsed.recommendedMarker.trim()
-      : recommendedMarkers[0] ?? DEFAULT_CONFIG.recommendedMarker;
+    recommendedMarkers[0] ?? DEFAULT_CONFIG.recommendedMarker ?? '[SQ:recommended]';
 
   const timeoutMs =
     typeof parsed.timeoutMs === 'number' &&
     Number.isFinite(parsed.timeoutMs) &&
-    parsed.timeoutMs >= 0
+    parsed.timeoutMs >= 0 &&
+    parsed.timeoutMs <= MAX_TIMEOUT_MS
       ? parsed.timeoutMs
       : DEFAULT_CONFIG.timeoutMs;
 
-  return {
+  const normalized: SmartQuestionConfig = {
     enabled: true,
-    configDir:
-      typeof parsed.configDir === 'string' && parsed.configDir
-        ? parsed.configDir
-        : configDir,
     timeoutMs,
     recommendedMarkers,
     recommendedMarker,
@@ -144,8 +164,28 @@ export function normalizeSmartQuestionConfig(
         ? parsed.requireExactlyOneRecommendation
         : DEFAULT_CONFIG.requireExactlyOneRecommendation,
     uiText: normalizeUIText(parsed.uiText),
-    debugLog: typeof parsed.debugLog === 'string' ? parsed.debugLog : DEFAULT_CONFIG.debugLog,
+    debugLog: typeof parsed.debugLog === 'string' ? parsed.debugLog : DEFAULT_CONFIG.debugLog ?? '',
   };
+  const resolvedConfigDir =
+    typeof parsed.configDir === 'string' && parsed.configDir ? parsed.configDir : configDir;
+  if (resolvedConfigDir) normalized.configDir = resolvedConfigDir;
+  return normalized;
+}
+
+export function resolveSmartQuestionConfig(
+  projectDir?: string,
+  pluginOptions?: Record<string, unknown>
+): SmartQuestionConfig | null {
+  const directory = typeof projectDir === 'string' && projectDir ? projectDir : process.cwd();
+  const configDir = path.resolve(directory, '.opencode');
+
+  if (pluginOptions && Object.prototype.hasOwnProperty.call(pluginOptions, 'config')) {
+    return normalizeSmartQuestionConfig(pluginOptions.config, configDir);
+  }
+  if (hasSmartQuestionConfigOptions(pluginOptions)) {
+    return normalizeSmartQuestionConfig(pluginOptions, configDir);
+  }
+  return loadConfig(projectDir);
 }
 
 /**
@@ -191,14 +231,12 @@ export function loadConfig(
     const normalized = normalizeSmartQuestionConfig(parsed, path.dirname(configPath));
 
     if (!normalized && parsed?.enabled !== false) {
-      console.error(
-        `[smart-question] Invalid config at ${configPath}; auto-selection disabled`
-      );
+      console.error('[smart-question] Invalid smart-question config; auto-selection disabled');
     }
     return normalized;
   } catch (err) {
     console.error(
-      `[smart-question] Failed to load config at ${configPath}: ${err instanceof Error ? err.message : String(err)}`
+      `[smart-question] Failed to load smart-question config (${diagnosticErrorCode(err)}); auto-selection disabled`
     );
     return null;
   }

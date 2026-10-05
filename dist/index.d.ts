@@ -3,7 +3,7 @@ import type { Plugin as OpenCodeV2 } from '@opencode/plugin';
 export * from './types.js';
 export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_CONFIG, } from './config.js';
 export * from './detector.js';
-export * from './draft-guard.js';
+export { resolveLockPath, deleteLockfile, cleanupStaleDrafts, } from './draft-guard.js';
 export * from './backend.js';
 /**
  * OpenCode v1 plugin factory.

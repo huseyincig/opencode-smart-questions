@@ -16,22 +16,44 @@ export function detectV2FormRecommendations(form, markers, options) {
     const seenKeys = new Set();
     for (let i = 0; i < form.fields.length; i++) {
         const field = form.fields[i];
-        const isStringChoice = field?.type === 'string' &&
+        if (!field) {
+            return { ok: false, reason: `Form field ${i + 1} is missing` };
+        }
+        if (field.hidden === true ||
+            (field.when !== undefined && (!Array.isArray(field.when) || field.when.length > 0))) {
+            return {
+                ok: false,
+                reason: `Form field ${i + 1} (${field.key ?? 'unknown'}) is hidden or conditional`,
+            };
+        }
+        const isStringChoice = field.type === 'string' &&
             Array.isArray(field.options) &&
             field.options.length > 0;
-        const isMultiChoice = field?.type === 'multiselect' &&
+        const isMultiChoice = field.type === 'multiselect' &&
             Array.isArray(field.options) &&
             field.options.length > 0;
         if (!isStringChoice && !isMultiChoice) {
             return {
                 ok: false,
-                reason: `Form field ${i + 1} (${field?.key ?? 'unknown'}) is not a supported selectable field`,
+                reason: `Form field ${i + 1} (${field.key ?? 'unknown'}) is not a supported selectable field`,
             };
         }
         if (typeof field.key !== 'string' || !field.key || seenKeys.has(field.key)) {
             return { ok: false, reason: `Form field ${i + 1} has a missing or duplicate key` };
         }
         seenKeys.add(field.key);
+        if (isMultiChoice) {
+            const constraints = [field.minItems, field.maxItems].filter((value) => value !== undefined);
+            if (constraints.some((value) => !Number.isInteger(value) || value < 0) ||
+                (field.minItems !== undefined &&
+                    field.maxItems !== undefined &&
+                    field.minItems > field.maxItems)) {
+                return {
+                    ok: false,
+                    reason: `Form field ${i + 1} has invalid multiselect item constraints`,
+                };
+            }
+        }
         const fieldOptions = field.options;
         if (fieldOptions.some((option) => !option ||
             typeof option.value !== 'string' ||
@@ -43,8 +65,8 @@ export function detectV2FormRecommendations(form, markers, options) {
         }
         const mappedOptions = fieldOptions.map((option) => ({
             label: option.label,
-            description: option.description,
             value: option.value,
+            ...(typeof option.description === 'string' ? { description: option.description } : {}),
         }));
         questions.push({
             question: field.description ?? field.title ?? field.key,
@@ -57,6 +79,8 @@ export function detectV2FormRecommendations(form, markers, options) {
             key: field.key,
             multiple: isMultiChoice,
             options: fieldOptions,
+            ...(isMultiChoice && field.minItems !== undefined ? { minItems: field.minItems } : {}),
+            ...(isMultiChoice && field.maxItems !== undefined ? { maxItems: field.maxItems } : {}),
         });
     }
     const detection = detectRecommendations(questions, markers, options);
@@ -65,11 +89,14 @@ export function detectV2FormRecommendations(form, markers, options) {
     const answer = {};
     for (let i = 0; i < selectableFields.length; i++) {
         const field = selectableFields[i];
+        if (!field) {
+            return { ok: false, reason: `Missing normalized field ${i + 1}` };
+        }
         const selectedLabels = detection.answers[i] ?? [];
         const selectedValues = selectedLabels.map((label) => {
             const matchingOptions = field.options.filter((candidate) => candidate.label === label);
             // A repeated label can point at different form values: require an unambiguous mapping.
-            return matchingOptions.length === 1 ? matchingOptions[0].value : undefined;
+            return matchingOptions.length === 1 ? matchingOptions[0]?.value : undefined;
         });
         if (selectedValues.length !== selectedLabels.length ||
             selectedValues.some((value) => typeof value !== 'string')) {
@@ -79,6 +106,18 @@ export function detectV2FormRecommendations(form, markers, options) {
             };
         }
         if (field.multiple) {
+            if (field.minItems !== undefined && selectedValues.length < field.minItems) {
+                return {
+                    ok: false,
+                    reason: `Recommended selections for field ${field.key} do not satisfy minItems`,
+                };
+            }
+            if (field.maxItems !== undefined && selectedValues.length > field.maxItems) {
+                return {
+                    ok: false,
+                    reason: `Recommended selections for field ${field.key} exceed maxItems`,
+                };
+            }
             answer[field.key] = selectedValues;
         }
         else {

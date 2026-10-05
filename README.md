@@ -7,7 +7,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[Installation](#-installation) · [How It Works](#-how-selection-works) · [Configuration](#-configuration) · [Changes](#-v031-changes) · [Validation](#-validation--testing) · [Architecture](#-project-layout)
+[Installation](#-installation) · [How It Works](#-how-selection-works) · [Configuration](#-configuration) · [Validation](#-validation--testing) · [Architecture](#-project-layout)
 
 A standalone OpenCode plugin that selects an agent-recommended answer after a configurable countdown, unless the user intervenes. It supports single-choice and multiple-choice questions with separate OpenCode V1 and V2 adapters.
 
@@ -15,18 +15,9 @@ A standalone OpenCode plugin that selects an agent-recommended answer after a co
 
 ---
 
-## 🚀 v0.3.1 Changes
-
-- V2 tool-transform and session-context registrations are awaited, tracked and disposed on teardown; partial setup failures roll back registered hooks.
-- Missing-project-configuration tests and V1 TUI race tests no longer depend on the user's global OpenCode settings. Production configuration precedence is unchanged.
-- Updated the V2 development SDK to `@opencode/plugin` **2.0.22** and the resolved `http-cache-semantics` dependency to **4.3.0**.
-- Expanded regression coverage for registration, partial failure, repeat cleanup and global configuration fallback. See [verification and limitations](docs/verification.md) for measured results and host-test boundaries.
-
----
-
 ## 📦 Installation
 
-The source version is **0.3.1**. As of 04 October 2026, npm publishes **0.3.0**; `@latest` installs the latest *published* version, not unpublished GitHub changes. To use the 0.3.1 source before npm publication, follow [local development](#-local-development).
+The current source version is **0.4.0**. The `@latest` selector always follows the version currently published to npm; for unreleased source changes, use [local development](#-local-development).
 
 ### 🟢 OpenCode V1
 

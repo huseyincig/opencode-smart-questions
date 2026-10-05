@@ -7,6 +7,8 @@ export declare function detectRecommendations(...args: any[]): DetectionResult;
 interface OverlayState extends ActiveQuestionState {
     countdown?: number;
     formID?: string;
+    markers?: string[];
+    uiText?: SmartQuestionUIText;
 }
 /**
  * Resolve a best-effort agent/session label for the v1 TUI.

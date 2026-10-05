@@ -12,11 +12,13 @@ import type { Plugin as OpenCodeV2Tui } from '@opencode/plugin/tui';
 
 import {
   DEFAULT_CONFIG,
+  hasSmartQuestionConfigOptions,
   loadConfig as loadSharedConfig,
-  normalizeSmartQuestionConfig,
+  resolveSmartQuestionConfig,
 } from './config.js';
 import { detectRecommendations as detectSharedRecommendations } from './detector.js';
 import {
+  canUseDraftCoordination,
   deleteLockfile,
   resolveLockPath,
 } from './draft-guard.js';
@@ -24,6 +26,7 @@ import {
   detectV2FormRecommendations,
   type V2FormInfo,
 } from './form-adapter.js';
+import { diagnosticErrorCode } from './diagnostics.js';
 import type {
   ActiveQuestionState,
   DetectionResult,
@@ -43,6 +46,8 @@ export function detectRecommendations(...args: any[]) {
 interface OverlayState extends ActiveQuestionState {
   countdown?: number;
   formID?: string;
+  markers?: string[];
+  uiText?: SmartQuestionUIText;
 }
 
 interface V2Pending {
@@ -55,6 +60,8 @@ interface V2Pending {
   expiresAt: number;
   status: 'pending' | 'firing' | 'cancelled' | 'replied';
   lockPath: string;
+  location?: { directory: string; workspaceID?: string };
+  log: (message: string) => void;
 }
 
 function createDiagnosticLogger(config: SmartQuestionConfig, prefix: string) {
@@ -65,7 +72,8 @@ function createDiagnosticLogger(config: SmartQuestionConfig, prefix: string) {
     try {
       fs.appendFileSync(
         logPath,
-        `[${prefix}] ${new Date().toISOString()} ${message}\n`
+        `[${prefix}] ${new Date().toISOString()} ${message}\n`,
+        { encoding: 'utf8', mode: 0o600 }
       );
     } catch {
       // Diagnostics must never break the UI.
@@ -73,53 +81,26 @@ function createDiagnosticLogger(config: SmartQuestionConfig, prefix: string) {
   };
 }
 
-function ensureDraftLock(lockPath: string, payload: Record<string, unknown>): void {
+function ensureDraftLock(lockPath: string, _payload: Record<string, unknown>): boolean {
   try {
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify(payload), 'utf8');
+    fs.writeFileSync(lockPath, '', { encoding: 'utf8', mode: 0o600 });
+    return true;
   } catch {
-    // Lock creation is best effort; callers also cancel their local timers.
+    return false;
   }
 }
 
-function resolveV2TuiConfig(context: OpenCodeV2Tui.Context): SmartQuestionConfig | null {
-  const options = context.options as Record<string, unknown> | undefined;
-  const configDir = context.location?.directory
-    ? path.resolve(context.location.directory, '.opencode')
-    : undefined;
-  // An explicit but invalid inline configuration must not enable auto-selection.
-  if (options && Object.prototype.hasOwnProperty.call(options, 'config')) {
-    return normalizeSmartQuestionConfig(options.config, configDir);
-  }
-  const candidate = options;
-
-  const knownKeys = new Set([
-    'enabled',
-    'timeoutMs',
-    'recommendedMarkers',
-    'recommendedMarker',
-    'requireExactlyOneRecommendation',
-    'uiText',
-    'debugLog',
-    'configDir',
-  ]);
-  const hasInlineConfig =
-    candidate &&
-    typeof candidate === 'object' &&
-    !Array.isArray(candidate) &&
-    Object.keys(candidate as Record<string, unknown>).some((key) => knownKeys.has(key));
-
-  if (hasInlineConfig) {
-    return normalizeSmartQuestionConfig(
-      candidate,
-      context.location?.directory
-        ? path.resolve(context.location.directory, '.opencode')
-        : undefined
-    );
-  }
-
-  return loadConfig(context.location?.directory);
+function resolveV2TuiConfig(
+  context: OpenCodeV2Tui.Context,
+  directory: string | undefined = context.location?.directory
+): SmartQuestionConfig | null {
+  return resolveSmartQuestionConfig(
+    directory,
+    context.options as Record<string, unknown> | undefined
+  );
 }
+
 
 /**
  * Resolve a best-effort agent/session label for the v1 TUI.
@@ -289,12 +270,13 @@ export function SmartQuestionOverlay(props: {
 /**
  * OpenCode v1 TUI adapter.
  */
-export const tui: TuiPlugin = async (api) => {
+export const tui: TuiPlugin = async (api, options) => {
   const projectDir = api.state?.path?.directory ?? process.cwd();
-  const config = loadConfig(projectDir);
+  const config = resolveSmartQuestionConfig(projectDir, options);
   if (!config?.enabled) return;
 
   const log = createDiagnosticLogger(config, 'smart-question-ui');
+  if (!canUseDraftCoordination(config.configDir, log)) return;
   const [activeQuestion, setActiveQuestion] =
     createSignal<OverlayState | null>(null);
   const [countdownSec, setCountdownSec] = createSignal(0);
@@ -434,20 +416,45 @@ export const tui: TuiPlugin = async (api) => {
     }
   };
 
-  api.renderer?.keyInput?.on?.('keypress', onKey);
-  api.renderer?.keyInput?.on?.('paste', onPaste);
+  let stopLegacyKey: (() => void) | undefined;
+  let keypressRegistered = false;
+  let pasteRegistered = false;
+  let cleaned = false;
 
-  const stopLegacyKey = (api.keymap as any)?.intercept?.('key', onKey);
-
-  api.lifecycle?.onDispose?.(() => {
+  const cleanupLocal = () => {
+    if (cleaned) return;
+    cleaned = true;
     stopLegacyKey?.();
     stopAsked?.();
     stopReplied?.();
     stopRejected?.();
-    api.renderer?.keyInput?.off?.('keypress', onKey);
-    api.renderer?.keyInput?.off?.('paste', onPaste);
-    clearActive();
-  });
+    if (keypressRegistered) {
+      api.renderer?.keyInput?.off?.('keypress', onKey);
+      keypressRegistered = false;
+    }
+    if (pasteRegistered) {
+      api.renderer?.keyInput?.off?.('paste', onPaste);
+      pasteRegistered = false;
+    }
+    // Preserve a manual-control lock across a TUI-only reload so the
+    // independently running backend timer cannot auto-reply afterwards.
+    clearActive(activeQuestion()?.focusDisabled !== true);
+  };
+
+  api.lifecycle?.onDispose?.(cleanupLocal);
+
+  try {
+    if (typeof api.renderer?.keyInput?.on === 'function') {
+      api.renderer.keyInput.on('keypress', onKey);
+      keypressRegistered = true;
+      api.renderer.keyInput.on('paste', onPaste);
+      pasteRegistered = true;
+    }
+    stopLegacyKey = (api.keymap as any)?.intercept?.('key', onKey);
+  } catch (error) {
+    cleanupLocal();
+    throw error;
+  }
 };
 
 /**
@@ -473,15 +480,15 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     return;
   }
 
-  const config = resolveV2TuiConfig(context);
-  if (!config?.enabled) return;
+  if (hasSmartQuestionConfigOptions(context.options as Record<string, unknown> | undefined)) {
+    const explicitConfig = resolveV2TuiConfig(context);
+    if (!explicitConfig?.enabled) return;
+  }
 
-  const log = createDiagnosticLogger(config, 'smart-question-v2-ui');
   const [activeBySession, setActiveBySession] = createSignal<
     Record<string, OverlayState>
   >({});
   const pending = new Map<string, V2Pending>();
-  const location = context.location;
 
   const updateSessionState = (
     sessionID: string,
@@ -507,7 +514,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     item.status = 'cancelled';
     pending.delete(formID);
     if (options.removeLock !== false) {
-      deleteLockfile(item.lockPath, log);
+      deleteLockfile(item.lockPath, item.log);
     }
     if (options.removeOverlay !== false) {
       updateSessionState(item.sessionID, (current) =>
@@ -539,18 +546,10 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         ? { ...current, focusDisabled: true }
         : current
     );
-    log(`manual interaction form=${item.formID} session=${sessionID} reason=${reason}`);
+    item.log(`manual interaction form=${item.formID} session=${sessionID} reason=${reason}`);
   };
 
   const onFormCreated = (event: any) => {
-    if (
-      event?.location?.directory &&
-      location?.directory &&
-      event.location.directory !== location.directory
-    ) {
-      return;
-    }
-
     const form = event?.data?.form as V2FormInfo | undefined;
     if (!form?.id || !form.sessionID || form.sessionID === 'global') return;
 
@@ -561,6 +560,12 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         clearPending(id);
       }
     }
+
+    const sessionLocation = (context.data.session as any)?.get?.(form.sessionID)?.location;
+    const location = event?.location ?? sessionLocation ?? context.location;
+    const config = resolveV2TuiConfig(context, location?.directory);
+    if (!config?.enabled) return;
+    const log = createDiagnosticLogger(config, 'smart-question-v2-ui');
 
     const decision = detectV2FormRecommendations(
       form,
@@ -587,6 +592,8 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       agentFound: false,
       focusDisabled: false,
       countdown: initialCountdown,
+      markers: config.recommendedMarkers,
+      uiText: config.uiText,
     };
 
     const item: V2Pending = {
@@ -597,6 +604,8 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       expiresAt,
       status: 'pending',
       lockPath,
+      location,
+      log,
       timeout: undefined as unknown as NodeJS.Timeout,
       interval: null,
     };
@@ -610,8 +619,8 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       }
 
       try {
-        await context.data.session.form.sync(form.sessionID, location);
-        const forms = context.data.session.form.list(form.sessionID, location);
+        await context.data.session.form.sync(form.sessionID, item.location);
+        const forms = context.data.session.form.list(form.sessionID, item.location);
         const stillPending =
           Array.isArray(forms) && forms.some((candidate) => candidate.id === form.id);
 
@@ -638,15 +647,15 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
             formID: form.id,
             answer: decision.answer,
           },
-          location
+          item.location
         );
         item.status = 'replied';
         try {
-          context.data.session.form.invalidate(form.sessionID, location);
+          context.data.session.form.invalidate(form.sessionID, item.location);
         } catch (error) {
           // Reply was already sent. A cache refresh error must not be reported
           // as a failed reply or cause the user to submit the form twice.
-          log(`form cache invalidation failed form=${form.id} err=${error instanceof Error ? error.message : String(error)}`);
+          log(`form cache invalidation failed form=${form.id} code=${diagnosticErrorCode(error)}`);
         }
         deleteLockfile(lockPath, log);
         pending.delete(form.id);
@@ -655,9 +664,9 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         );
         log(`reply OK form=${form.id}`);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        log(`reply ERROR form=${form.id} err=${message}`);
-        console.error(`[smart-question] Auto-selection failed for form ${form.id}: ${message}`);
+        const code = diagnosticErrorCode(error);
+        log(`reply ERROR form=${form.id} code=${code}`);
+        console.error(`[smart-question] Auto-selection failed for form ${form.id} (${code})`);
         if (pending.get(form.id) === item) {
           pending.delete(form.id);
           deleteLockfile(lockPath, log);
@@ -698,9 +707,16 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     if (typeof formID === 'string') clearPending(formID);
   };
 
-  const stopCreated = context.data.on('form.created', onFormCreated);
-  const stopReplied = context.data.on('form.replied', onFormSettled);
-  const stopCancelled = context.data.on('form.cancelled', onFormSettled);
+  const cleanups: Array<() => unknown> = [];
+  const disposeCleanups = () => {
+    for (const cleanup of cleanups.splice(0).reverse()) {
+      try {
+        cleanup();
+      } catch {
+        // Keep tearing down the remaining resources.
+      }
+    }
+  };
 
   const onKey = () => {
     const route = context.ui.router.current();
@@ -715,28 +731,37 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     }
   };
 
-  context.renderer.keyInput.on('keypress', onKey);
-  context.renderer.keyInput.on('paste', onPaste);
+  try {
+    cleanups.push(context.data.on('form.created', onFormCreated));
+    cleanups.push(context.data.on('form.replied', onFormSettled));
+    cleanups.push(context.data.on('form.cancelled', onFormSettled));
 
-  const stopSlot = context.ui.slot({
-    append: 'session.composer.top',
-    render: ({ sessionID }) => (
-      <SmartQuestionOverlay
-        state={() => activeBySession()[sessionID] ?? null}
-        countdown={() => activeBySession()[sessionID]?.countdown ?? 0}
-        markers={config.recommendedMarkers}
-        uiText={config.uiText}
-      />
-    ),
-  });
+    context.renderer.keyInput.on('keypress', onKey);
+    cleanups.push(() => context.renderer.keyInput.off('keypress', onKey));
+    context.renderer.keyInput.on('paste', onPaste);
+    cleanups.push(() => context.renderer.keyInput.off('paste', onPaste));
+
+    cleanups.push(context.ui.slot({
+      append: 'session.composer.top',
+      render: ({ sessionID }) => (
+        <SmartQuestionOverlay
+          state={() => activeBySession()[sessionID] ?? null}
+          countdown={() => activeBySession()[sessionID]?.countdown ?? 0}
+          markers={activeBySession()[sessionID]?.markers ?? DEFAULT_CONFIG.recommendedMarkers}
+          uiText={activeBySession()[sessionID]?.uiText ?? DEFAULT_CONFIG.uiText}
+        />
+      ),
+    }));
+  } catch (error) {
+    disposeCleanups();
+    for (const formID of [...pending.keys()]) {
+      clearPending(formID);
+    }
+    throw error;
+  }
 
   return () => {
-    stopCreated();
-    stopReplied();
-    stopCancelled();
-    stopSlot();
-    context.renderer.keyInput.off('keypress', onKey);
-    context.renderer.keyInput.off('paste', onPaste);
+    disposeCleanups();
     for (const formID of [...pending.keys()]) {
       clearPending(formID);
     }

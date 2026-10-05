@@ -6,6 +6,7 @@
  */
 export declare function resolveLockPath(pluginInput: Record<string, unknown>): Record<string, unknown>;
 export declare function resolveLockPath(configDir: string | undefined, requestID: string): string;
+export declare function canUseDraftCoordination(configDir?: string, dbg?: (msg: string) => void): boolean;
 /**
  * Idempotently deletes a lockfile. Never throws if file is absent or inaccessible.
  */
