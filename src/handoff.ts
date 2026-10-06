@@ -5,7 +5,10 @@
 
 export const OPENCODE_HANDOFF_HEADER = '[OPENCODE_HANDOFF:v1]';
 export const GUARDIAN_REMEDIATION_MARKER = '[opencode-guardian remediation]';
+export const GUARDIAN_PROVENANCE_KEY = 'opencode-guardian';
 export const DEFAULT_HANDOFF_TTL_MS = 120_000;
+export const CLOSED_HANDOFF_TTL_MS = 10 * 60_000;
+export const MAX_CLOSED_HANDOFF_IDS = 512;
 
 export type HandoffKind = 'clarification' | 'choice' | 'approval';
 export type HandoffAutoSelect = 'allowed' | 'forbidden';
@@ -25,6 +28,7 @@ export interface ParseHandoffOptions {
 
 export interface ExtractHandoffOptions {
   requireRemediationMarker?: boolean;
+  requireGuardianProvenance?: boolean;
 }
 
 export const COORDINATION_SYMBOL = Symbol.for('opencode.coordination.v1');
@@ -41,12 +45,65 @@ export interface OpenCodeCoordinationRegistry {
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
 function isPluginInput(arg: unknown): boolean {
   return Boolean(
     arg &&
       typeof arg === 'object' &&
       ('client' in arg || 'directory' in arg || 'project' in arg)
   );
+}
+
+function hasGuardianMetadata(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const metadata = isRecord(value.metadata) ? value.metadata : undefined;
+  return metadata?.[GUARDIAN_PROVENANCE_KEY] === true;
+}
+
+function messageRole(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.role === 'string') return value.role;
+  if (typeof value.type === 'string' && value.type === 'user') return 'user';
+
+  if (isRecord(value.info) && typeof value.info.role === 'string') {
+    return value.info.role;
+  }
+  if (isRecord(value.message)) {
+    return messageRole(value.message);
+  }
+  return undefined;
+}
+
+function messageParts(value: unknown): unknown[] | undefined {
+  if (!isRecord(value)) return undefined;
+  if (Array.isArray(value.parts)) return value.parts;
+  if (Array.isArray(value.content)) return value.content;
+  if (isRecord(value.message)) return messageParts(value.message);
+  return undefined;
+}
+
+function messageTextCandidates(value: unknown): string[] {
+  if (!isRecord(value)) return [];
+  const out: string[] = [];
+  if (typeof value.text === 'string') out.push(value.text);
+  if (typeof value.content === 'string') out.push(value.content);
+
+  const parts = messageParts(value);
+  if (parts) {
+    for (const part of parts) {
+      if (isRecord(part) && typeof part.text === 'string') {
+        out.push(part.text);
+      }
+    }
+  }
+
+  if (isRecord(value.message)) {
+    out.push(...messageTextCandidates(value.message));
+  }
+  return out;
 }
 
 /**
@@ -80,7 +137,9 @@ export function getGuardianCapability(arg?: unknown):
 }
 
 /**
- * Parse an OpenCode handoff block from remediation or message text.
+ * Parse a syntactically valid OpenCode handoff block.
+ * This is a pure protocol parser; callers handling untrusted messages must use
+ * extractTrustedGuardianHandoff() or extractHandoffFromParts() with provenance enabled.
  */
 export function parseOpenCodeHandoff(
   text: unknown,
@@ -155,8 +214,8 @@ export function formatOpenCodeHandoff(
 }
 
 /**
- * Extract an OpenCode handoff from an array of message parts.
- * By default enforces that the message contains the Guardian remediation marker (anti-spoofing).
+ * Extract a handoff from V1-style message parts.
+ * Marker and host provenance are both required by default.
  */
 export function extractHandoffFromParts(
   parts: unknown,
@@ -169,29 +228,82 @@ export function extractHandoffFromParts(
     typeof options === 'boolean'
       ? options
       : (options?.requireRemediationMarker ?? true);
-
-  if (requireMarker) {
-    const hasRemediationMarker = parts.some(
-      (part) =>
-        Boolean(
-          part &&
-            typeof part === 'object' &&
-            typeof (part as { text?: unknown }).text === 'string' &&
-            (part as { text: string }).text.includes(GUARDIAN_REMEDIATION_MARKER)
-        )
-    );
-    if (!hasRemediationMarker) return null;
-  }
+  const requireProvenance =
+    typeof options === 'boolean'
+      ? true
+      : (options?.requireGuardianProvenance ?? true);
 
   for (const part of parts) {
-    if (part && typeof part === 'object') {
-      const text = (part as { text?: unknown }).text;
-      if (typeof text === 'string') {
-        const parsed = parseOpenCodeHandoff(text, false);
-        if (parsed && typeof parsed === 'object' && 'version' in parsed) {
-          return parsed as OpenCodeHandoff;
-        }
+    if (!isRecord(part) || typeof part.text !== 'string') continue;
+    if (requireProvenance && !hasGuardianMetadata(part)) continue;
+    if (requireMarker && !part.text.includes(GUARDIAN_REMEDIATION_MARKER)) continue;
+
+    const parsed = parseOpenCodeHandoff(part.text, false);
+    if (parsed && typeof parsed === 'object' && 'version' in parsed) {
+      return parsed as OpenCodeHandoff;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract a Guardian handoff only when the host object carries Guardian provenance.
+ * Supports V1 part metadata and V2 synthetic/message metadata without importing Guardian.
+ */
+export function extractTrustedGuardianHandoff(
+  source: unknown
+): OpenCodeHandoff | Record<string, unknown> | null {
+  if (isPluginInput(source)) return {};
+  if (!isRecord(source)) return null;
+
+  const message = isRecord(source.message) ? source.message : undefined;
+  const directProvenance =
+    hasGuardianMetadata(source) ||
+    hasGuardianMetadata(source.info) ||
+    hasGuardianMetadata(message) ||
+    (message ? hasGuardianMetadata(message.info) : false);
+
+  const parts = messageParts(source);
+  if (parts) {
+    const fromParts = extractHandoffFromParts(parts, {
+      requireRemediationMarker: true,
+      requireGuardianProvenance: !directProvenance,
+    });
+    if (fromParts && typeof fromParts === 'object' && 'version' in fromParts) {
+      return fromParts as OpenCodeHandoff;
+    }
+  }
+
+  if (directProvenance) {
+    for (const text of messageTextCandidates(source)) {
+      const parsed = parseOpenCodeHandoff(text, { requireRemediationMarker: true });
+      if (parsed && typeof parsed === 'object' && 'version' in parsed) {
+        return parsed as OpenCodeHandoff;
       }
+    }
+  }
+  return null;
+}
+
+/**
+ * Return the latest trusted Guardian handoff in the current human turn.
+ * Scanning stops at the first newer ordinary user message, so an older
+ * remediation cannot be resurrected for a later user request.
+ */
+export function extractCurrentTurnGuardianHandoff(
+  messages: unknown
+): OpenCodeHandoff | Record<string, unknown> | null {
+  if (isPluginInput(messages)) return {};
+  if (!Array.isArray(messages)) return null;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    const handoff = extractTrustedGuardianHandoff(message);
+    if (handoff && typeof handoff === 'object' && 'version' in handoff) {
+      return handoff as OpenCodeHandoff;
+    }
+    if (messageRole(message) === 'user') {
+      return null;
     }
   }
   return null;
@@ -210,22 +322,70 @@ interface TrackedHandoff {
 
 interface HandoffGlobalState {
   activeHandoffsBySession: Map<string, TrackedHandoff>;
-  consumedHandoffIds: Set<string>;
+  closedHandoffIds: Map<string, number>;
+  consumedHandoffIds?: Set<string>;
 }
 
 function getHandoffState(): HandoffGlobalState {
   const g = globalThis as unknown as {
     [HANDOFF_STATE_SYMBOL]?: HandoffGlobalState;
   };
-  return (g[HANDOFF_STATE_SYMBOL] ??= {
-    activeHandoffsBySession: new Map(),
-    consumedHandoffIds: new Set(),
-  });
+  let state = g[HANDOFF_STATE_SYMBOL];
+  if (!state) {
+    state = {
+      activeHandoffsBySession: new Map(),
+      closedHandoffIds: new Map(),
+    };
+    g[HANDOFF_STATE_SYMBOL] = state;
+  }
+
+  if (!(state.activeHandoffsBySession instanceof Map)) {
+    state.activeHandoffsBySession = new Map();
+  }
+  if (!(state.closedHandoffIds instanceof Map)) {
+    state.closedHandoffIds = new Map();
+  }
+
+  // Hot-reload compatibility with v1 state that used an unbounded Set.
+  if (state.consumedHandoffIds instanceof Set && state.consumedHandoffIds.size > 0) {
+    const now = Date.now();
+    for (const id of state.consumedHandoffIds) {
+      state.closedHandoffIds.set(id, now);
+    }
+    state.consumedHandoffIds.clear();
+  }
+
+  return state;
+}
+
+function pruneClosedHandoffs(state: HandoffGlobalState, now = Date.now()): void {
+  for (const [handoffId, closedAt] of state.closedHandoffIds) {
+    if (now - closedAt > CLOSED_HANDOFF_TTL_MS) {
+      state.closedHandoffIds.delete(handoffId);
+    }
+  }
+
+  while (state.closedHandoffIds.size > MAX_CLOSED_HANDOFF_IDS) {
+    const oldest = state.closedHandoffIds.keys().next().value as string | undefined;
+    if (!oldest) break;
+    state.closedHandoffIds.delete(oldest);
+  }
+}
+
+function closeHandoffId(
+  state: HandoffGlobalState,
+  handoffId: string,
+  now = Date.now()
+): void {
+  pruneClosedHandoffs(state, now);
+  state.closedHandoffIds.delete(handoffId);
+  state.closedHandoffIds.set(handoffId, now);
+  pruneClosedHandoffs(state, now);
 }
 
 /**
  * Store an active handoff for a session.
- * Fails safe and ignores already-consumed handoff IDs to prevent loops.
+ * Fails safe and ignores recently closed handoff IDs to prevent replay loops.
  */
 export function setActiveHandoff(
   sessionID: unknown,
@@ -236,10 +396,13 @@ export function setActiveHandoff(
   const sID = String(sessionID ?? '');
   const h = handoff as OpenCodeHandoff | undefined;
   if (!sID || !h?.handoffId) return false;
+
   const state = getHandoffState();
-  if (state.consumedHandoffIds.has(h.handoffId)) {
+  pruneClosedHandoffs(state);
+  if (state.closedHandoffIds.has(h.handoffId)) {
     return false;
   }
+
   state.activeHandoffsBySession.set(sID, {
     handoff: h,
     createdAt: typeof timestamp === 'number' ? timestamp : Date.now(),
@@ -249,7 +412,7 @@ export function setActiveHandoff(
 
 /**
  * Retrieve the active handoff for a session, if any.
- * Automatically discards entries older than maxAgeMs (default 120s TTL).
+ * Expired IDs are closed so message-history fallback cannot revive them.
  */
 export function getActiveHandoff(
   sessionID: unknown,
@@ -258,13 +421,16 @@ export function getActiveHandoff(
   if (isPluginInput(sessionID)) return {};
   const sID = String(sessionID ?? '');
   if (!sID) return undefined;
+
   const state = getHandoffState();
+  pruneClosedHandoffs(state);
   const entry = state.activeHandoffsBySession.get(sID);
   if (!entry) return undefined;
 
   const age = Date.now() - entry.createdAt;
   if (age > maxAgeMs) {
     state.activeHandoffsBySession.delete(sID);
+    closeHandoffId(state, entry.handoff.handoffId);
     return undefined;
   }
   return entry.handoff;
@@ -272,7 +438,6 @@ export function getActiveHandoff(
 
 /**
  * Check if automatic selection is permitted under the current handoff for this session.
- * Returns false if an active handoff requires explicit human approval (autoSelect === 'forbidden').
  */
 export function isHandoffAutoSelectAllowed(
   sessionID: unknown,
@@ -287,7 +452,7 @@ export function isHandoffAutoSelectAllowed(
 }
 
 /**
- * Mark an active handoff as consumed and remove it from active tracking.
+ * Mark an active handoff as consumed and prevent immediate replay.
  */
 export function consumeActiveHandoff(
   sessionID: unknown
@@ -295,18 +460,39 @@ export function consumeActiveHandoff(
   if (isPluginInput(sessionID)) return {};
   const sID = String(sessionID ?? '');
   if (!sID) return undefined;
+
   const state = getHandoffState();
   const entry = state.activeHandoffsBySession.get(sID);
-  if (entry) {
-    state.consumedHandoffIds.add(entry.handoff.handoffId);
-    state.activeHandoffsBySession.delete(sID);
-    return entry.handoff;
-  }
-  return undefined;
+  if (!entry) return undefined;
+
+  closeHandoffId(state, entry.handoff.handoffId);
+  state.activeHandoffsBySession.delete(sID);
+  return entry.handoff;
 }
 
 /**
- * Clear the active handoff for a session without adding it to consumed history.
+ * Invalidate an active handoff because its human turn ended.
+ * Unlike a plain clear, invalidation also prevents history-based resurrection.
+ */
+export function invalidateActiveHandoff(
+  sessionID: unknown
+): OpenCodeHandoff | Record<string, unknown> | undefined {
+  if (isPluginInput(sessionID)) return {};
+  const sID = String(sessionID ?? '');
+  if (!sID) return undefined;
+
+  const state = getHandoffState();
+  const entry = state.activeHandoffsBySession.get(sID);
+  if (!entry) return undefined;
+
+  closeHandoffId(state, entry.handoff.handoffId);
+  state.activeHandoffsBySession.delete(sID);
+  return entry.handoff;
+}
+
+/**
+ * Clear the active handoff for a session without closing its ID.
+ * Use invalidateActiveHandoff() when a new human turn makes replay invalid.
  */
 export function clearActiveHandoff(sessionID: unknown): void | Record<string, unknown> {
   if (isPluginInput(sessionID)) return {};
@@ -322,5 +508,6 @@ export function resetHandoffTracking(arg?: unknown): void | Record<string, unkno
   if (isPluginInput(arg)) return {};
   const state = getHandoffState();
   state.activeHandoffsBySession.clear();
-  state.consumedHandoffIds.clear();
+  state.closedHandoffIds.clear();
+  state.consumedHandoffIds?.clear();
 }

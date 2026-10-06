@@ -11,8 +11,9 @@ import {
   setActiveHandoff,
   consumeActiveHandoff,
   clearActiveHandoff,
-  extractHandoffFromParts,
-  parseOpenCodeHandoff,
+  invalidateActiveHandoff,
+  extractTrustedGuardianHandoff,
+  extractCurrentTurnGuardianHandoff,
 } from './handoff.js';
 import type {
   Hooks,
@@ -96,19 +97,15 @@ export async function createSmartQuestionHooks(
     if (event.type === 'message.created' || event.type === 'message.updated') {
       const sessionID = String(payload?.sessionID ?? event?.sessionID ?? '');
       if (sessionID && (await isRootSession(sessionID))) {
-        const parts = payload?.parts ?? payload?.message?.parts;
-        const handoff =
-          extractHandoffFromParts(parts) ??
-          (typeof payload?.content === 'string' ? parseOpenCodeHandoff(payload.content, { requireRemediationMarker: true }) : null) ??
-          (typeof payload?.text === 'string' ? parseOpenCodeHandoff(payload.text, { requireRemediationMarker: true }) : null);
+        const handoff = extractTrustedGuardianHandoff(payload);
         if (handoff && typeof handoff === 'object' && 'version' in handoff) {
           setActiveHandoff(sessionID, handoff);
           dbg(`handoff received via event session=${sessionID} handoffId=${handoff.handoffId} kind=${handoff.kind} autoSelect=${handoff.autoSelect}`);
         } else {
           const role = payload?.role ?? payload?.info?.role ?? payload?.message?.role ?? payload?.message?.info?.role;
           if (event.type === 'message.created' && role === 'user') {
-            clearActiveHandoff(sessionID);
-            dbg(`cleared stale handoff on new user turn session=${sessionID}`);
+            invalidateActiveHandoff(sessionID);
+            dbg(`invalidated stale handoff on new user turn session=${sessionID}`);
           }
         }
       }
@@ -144,15 +141,10 @@ export async function createSmartQuestionHooks(
           const res = await client.session.messages({ path: { id: sessionID } });
           const msgs = (res as any)?.data ?? res;
           if (Array.isArray(msgs)) {
-            for (let i = msgs.length - 1; i >= 0 && i >= msgs.length - 5; i--) {
-              const m = msgs[i];
-              const extracted =
-                extractHandoffFromParts(m?.parts) ??
-                (typeof m?.content === 'string' ? parseOpenCodeHandoff(m.content, { requireRemediationMarker: true }) : null);
-              if (extracted && typeof extracted === 'object' && 'version' in extracted) {
-                setActiveHandoff(sessionID, extracted);
-                handoff = extracted as any;
-                break;
+            const extracted = extractCurrentTurnGuardianHandoff(msgs);
+            if (extracted && typeof extracted === 'object' && 'version' in extracted) {
+              if (setActiveHandoff(sessionID, extracted) === true) {
+                handoff = extracted;
               }
             }
           }
@@ -360,19 +352,15 @@ export async function createSmartQuestionHooks(
   ): Promise<void> => {
     const sessionID = typeof input?.sessionID === 'string' ? input.sessionID : '';
     if (!sessionID || !(await isRootSession(sessionID))) return;
-    const handoff =
-      extractHandoffFromParts(output?.parts) ??
-      (typeof output?.message?.content === 'string'
-        ? parseOpenCodeHandoff(output.message.content, { requireRemediationMarker: true })
-        : null);
+    const handoff = extractTrustedGuardianHandoff(output);
     if (handoff && typeof handoff === 'object' && 'version' in handoff) {
       setActiveHandoff(sessionID, handoff);
       dbg(`handoff received via chat.message session=${sessionID} handoffId=${handoff.handoffId} kind=${handoff.kind} autoSelect=${handoff.autoSelect}`);
     } else {
       const role = output?.message?.role ?? output?.message?.info?.role;
       if (role === 'user') {
-        clearActiveHandoff(sessionID);
-        dbg(`cleared stale handoff on new user turn in chat.message session=${sessionID}`);
+        invalidateActiveHandoff(sessionID);
+        dbg(`invalidated stale handoff on new user turn in chat.message session=${sessionID}`);
       }
     }
   };

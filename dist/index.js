@@ -8,7 +8,7 @@ export * from './detector.js';
 export { resolveLockPath, deleteLockfile, cleanupStaleDrafts, } from './draft-guard.js';
 export * from './backend.js';
 export * from './handoff.js';
-import { registerSmartQuestionsCapability, setActiveHandoff, parseOpenCodeHandoff, extractHandoffFromParts, } from './handoff.js';
+import { registerSmartQuestionsCapability, setActiveHandoff, extractCurrentTurnGuardianHandoff, } from './handoff.js';
 /**
  * OpenCode v1 plugin factory.
  */
@@ -76,19 +76,9 @@ const setupV2 = async (context) => {
                 });
             }
             if (Array.isArray(event.messages)) {
-                for (let i = event.messages.length - 1; i >= 0 && i >= event.messages.length - 5; i--) {
-                    const msg = event.messages[i];
-                    const parts = msg?.parts;
-                    const text = msg?.content ??
-                        msg?.text;
-                    const handoff = extractHandoffFromParts(parts) ??
-                        (typeof text === 'string'
-                            ? parseOpenCodeHandoff(text, { requireRemediationMarker: true })
-                            : null);
-                    if (handoff) {
-                        setActiveHandoff(String(event.sessionID ?? ''), handoff);
-                        break;
-                    }
+                const handoff = extractCurrentTurnGuardianHandoff(event.messages);
+                if (handoff && typeof handoff === 'object' && 'version' in handoff) {
+                    setActiveHandoff(String(event.sessionID ?? ''), handoff);
                 }
             }
         });

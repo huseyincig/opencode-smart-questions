@@ -23,8 +23,7 @@ export * from './handoff.js';
 import {
   registerSmartQuestionsCapability,
   setActiveHandoff,
-  parseOpenCodeHandoff,
-  extractHandoffFromParts,
+  extractCurrentTurnGuardianHandoff,
 } from './handoff.js';
 
 /**
@@ -107,21 +106,9 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
         });
       }
       if (Array.isArray(event.messages)) {
-        for (let i = event.messages.length - 1; i >= 0 && i >= event.messages.length - 5; i--) {
-          const msg = event.messages[i];
-          const parts = (msg as { parts?: unknown })?.parts;
-          const text =
-            (msg as { content?: unknown })?.content ??
-            (msg as { text?: unknown })?.text;
-          const handoff =
-            extractHandoffFromParts(parts) ??
-            (typeof text === 'string'
-              ? parseOpenCodeHandoff(text, { requireRemediationMarker: true })
-              : null);
-          if (handoff) {
-            setActiveHandoff(String(event.sessionID ?? ''), handoff);
-            break;
-          }
+        const handoff = extractCurrentTurnGuardianHandoff(event.messages);
+        if (handoff && typeof handoff === 'object' && 'version' in handoff) {
+          setActiveHandoff(String(event.sessionID ?? ''), handoff);
         }
       }
     });

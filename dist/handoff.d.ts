@@ -4,7 +4,10 @@
  */
 export declare const OPENCODE_HANDOFF_HEADER = "[OPENCODE_HANDOFF:v1]";
 export declare const GUARDIAN_REMEDIATION_MARKER = "[opencode-guardian remediation]";
+export declare const GUARDIAN_PROVENANCE_KEY = "opencode-guardian";
 export declare const DEFAULT_HANDOFF_TTL_MS = 120000;
+export declare const CLOSED_HANDOFF_TTL_MS: number;
+export declare const MAX_CLOSED_HANDOFF_IDS = 512;
 export type HandoffKind = 'clarification' | 'choice' | 'approval';
 export type HandoffAutoSelect = 'allowed' | 'forbidden';
 export interface OpenCodeHandoff {
@@ -20,6 +23,7 @@ export interface ParseHandoffOptions {
 }
 export interface ExtractHandoffOptions {
     requireRemediationMarker?: boolean;
+    requireGuardianProvenance?: boolean;
 }
 export declare const COORDINATION_SYMBOL: unique symbol;
 export interface OpenCodeCoordinationRegistry {
@@ -42,7 +46,9 @@ export declare function registerSmartQuestionsCapability(arg?: unknown): void | 
  */
 export declare function getGuardianCapability(arg?: unknown): OpenCodeCoordinationRegistry['guardian'] | Record<string, unknown> | undefined;
 /**
- * Parse an OpenCode handoff block from remediation or message text.
+ * Parse a syntactically valid OpenCode handoff block.
+ * This is a pure protocol parser; callers handling untrusted messages must use
+ * extractTrustedGuardianHandoff() or extractHandoffFromParts() with provenance enabled.
  */
 export declare function parseOpenCodeHandoff(text: unknown, options?: ParseHandoffOptions | boolean): OpenCodeHandoff | Record<string, unknown> | null;
 /**
@@ -50,31 +56,47 @@ export declare function parseOpenCodeHandoff(text: unknown, options?: ParseHando
  */
 export declare function formatOpenCodeHandoff(handoff: unknown): string | Record<string, unknown>;
 /**
- * Extract an OpenCode handoff from an array of message parts.
- * By default enforces that the message contains the Guardian remediation marker (anti-spoofing).
+ * Extract a handoff from V1-style message parts.
+ * Marker and host provenance are both required by default.
  */
 export declare function extractHandoffFromParts(parts: unknown, options?: ExtractHandoffOptions | boolean): OpenCodeHandoff | Record<string, unknown> | null;
 /**
+ * Extract a Guardian handoff only when the host object carries Guardian provenance.
+ * Supports V1 part metadata and V2 synthetic/message metadata without importing Guardian.
+ */
+export declare function extractTrustedGuardianHandoff(source: unknown): OpenCodeHandoff | Record<string, unknown> | null;
+/**
+ * Return the latest trusted Guardian handoff in the current human turn.
+ * Scanning stops at the first newer ordinary user message, so an older
+ * remediation cannot be resurrected for a later user request.
+ */
+export declare function extractCurrentTurnGuardianHandoff(messages: unknown): OpenCodeHandoff | Record<string, unknown> | null;
+/**
  * Store an active handoff for a session.
- * Fails safe and ignores already-consumed handoff IDs to prevent loops.
+ * Fails safe and ignores recently closed handoff IDs to prevent replay loops.
  */
 export declare function setActiveHandoff(sessionID: unknown, handoff?: unknown, timestamp?: number): boolean | Record<string, unknown>;
 /**
  * Retrieve the active handoff for a session, if any.
- * Automatically discards entries older than maxAgeMs (default 120s TTL).
+ * Expired IDs are closed so message-history fallback cannot revive them.
  */
 export declare function getActiveHandoff(sessionID: unknown, maxAgeMs?: number): OpenCodeHandoff | Record<string, unknown> | undefined;
 /**
  * Check if automatic selection is permitted under the current handoff for this session.
- * Returns false if an active handoff requires explicit human approval (autoSelect === 'forbidden').
  */
 export declare function isHandoffAutoSelectAllowed(sessionID: unknown, maxAgeMs?: number): boolean | Record<string, unknown>;
 /**
- * Mark an active handoff as consumed and remove it from active tracking.
+ * Mark an active handoff as consumed and prevent immediate replay.
  */
 export declare function consumeActiveHandoff(sessionID: unknown): OpenCodeHandoff | Record<string, unknown> | undefined;
 /**
- * Clear the active handoff for a session without adding it to consumed history.
+ * Invalidate an active handoff because its human turn ended.
+ * Unlike a plain clear, invalidation also prevents history-based resurrection.
+ */
+export declare function invalidateActiveHandoff(sessionID: unknown): OpenCodeHandoff | Record<string, unknown> | undefined;
+/**
+ * Clear the active handoff for a session without closing its ID.
+ * Use invalidateActiveHandoff() when a new human turn makes replay invalid.
  */
 export declare function clearActiveHandoff(sessionID: unknown): void | Record<string, unknown>;
 /**

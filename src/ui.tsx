@@ -33,8 +33,9 @@ import {
   setActiveHandoff,
   consumeActiveHandoff,
   clearActiveHandoff,
-  extractHandoffFromParts,
-  parseOpenCodeHandoff,
+  invalidateActiveHandoff,
+  extractTrustedGuardianHandoff,
+  extractCurrentTurnGuardianHandoff,
 } from './handoff.js';
 import type {
   ActiveQuestionState,
@@ -348,17 +349,10 @@ export const tui: TuiPlugin = async (api, options) => {
       try {
         const msgs = (api as any)?.state?.session?.messages?.(sessionID);
         if (Array.isArray(msgs)) {
-          for (let i = msgs.length - 1; i >= 0 && i >= msgs.length - 5; i--) {
-            const m = msgs[i];
-            const extracted =
-              extractHandoffFromParts(m?.parts) ??
-              (typeof m?.content === 'string'
-                ? parseOpenCodeHandoff(m.content, { requireRemediationMarker: true })
-                : null);
-            if (extracted && typeof extracted === 'object' && 'version' in extracted) {
-              setActiveHandoff(sessionID, extracted);
-              handoff = extracted as any;
-              break;
+          const extracted = extractCurrentTurnGuardianHandoff(msgs);
+          if (extracted && typeof extracted === 'object' && 'version' in extracted) {
+            if (setActiveHandoff(sessionID, extracted) === true) {
+              handoff = extracted;
             }
           }
         }
@@ -450,18 +444,13 @@ export const tui: TuiPlugin = async (api, options) => {
       | undefined;
     const sessionID = String(data?.sessionID ?? event?.sessionID ?? '');
     if (!sessionID) return;
-    const parts = data?.parts ?? (data?.message as any)?.parts;
-    const handoff =
-      extractHandoffFromParts(parts) ??
-      (typeof data?.content === 'string'
-        ? parseOpenCodeHandoff(data.content, { requireRemediationMarker: true })
-        : null);
+    const handoff = extractTrustedGuardianHandoff(data);
     if (handoff && typeof handoff === 'object' && 'version' in handoff) {
       setActiveHandoff(sessionID, handoff);
     } else {
       const role = data?.role ?? (data?.message as any)?.role;
       if (role === 'user') {
-        clearActiveHandoff(sessionID);
+        invalidateActiveHandoff(sessionID);
       }
     }
   };
@@ -686,17 +675,10 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       try {
         const msgs = (context.data?.session as any)?.messages?.(form.sessionID);
         if (Array.isArray(msgs)) {
-          for (let i = msgs.length - 1; i >= 0 && i >= msgs.length - 5; i--) {
-            const m = msgs[i];
-            const extracted =
-              extractHandoffFromParts(m?.parts) ??
-              (typeof m?.content === 'string'
-                ? parseOpenCodeHandoff(m.content, { requireRemediationMarker: true })
-                : null);
-            if (extracted) {
-              setActiveHandoff(form.sessionID, extracted);
+          const extracted = extractCurrentTurnGuardianHandoff(msgs);
+          if (extracted && typeof extracted === 'object' && 'version' in extracted) {
+            if (setActiveHandoff(form.sessionID, extracted) === true) {
               handoff = extracted;
-              break;
             }
           }
         }
@@ -879,18 +861,13 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       const msgDisposer = (context.data as any)?.on?.('message.created', (event: any) => {
         const sessionID = String(event?.data?.sessionID ?? event?.sessionID ?? '');
         if (!sessionID || sessionID === 'global') return;
-        const parts = event?.data?.parts ?? event?.data?.message?.parts;
-        const handoff =
-          extractHandoffFromParts(parts) ??
-          (typeof event?.data?.content === 'string'
-            ? parseOpenCodeHandoff(event.data.content, { requireRemediationMarker: true })
-            : null);
+        const handoff = extractTrustedGuardianHandoff(event?.data);
         if (handoff && typeof handoff === 'object' && 'version' in handoff) {
           setActiveHandoff(sessionID, handoff);
         } else {
           const role = event?.data?.role ?? event?.data?.info?.role ?? event?.data?.message?.role;
           if (role === 'user') {
-            clearActiveHandoff(sessionID);
+            invalidateActiveHandoff(sessionID);
           }
         }
       });
