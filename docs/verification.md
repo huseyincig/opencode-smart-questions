@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v0.4.0** source evaluation on **05 October 2026**. It distinguishes automated host simulations from integration with an actual OpenCode installation. The previous release is `v0.3.1`; this source evaluation is not an npm publication or a real-host acceptance result.
+This document describes the **v0.4.5** source evaluation on **06 October 2026**. It distinguishes automated host simulations from integration with an actual OpenCode installation. The previous release is `v0.3.1`; this source evaluation is not an npm publication or a real-host acceptance result.
 
 ## Automated checks
 
@@ -36,19 +36,19 @@ Automated tests validate the tested inputs and mock-host behavior. They do not m
 
 The legacy `requireExactlyOneRecommendation` setting is accepted for compatibility but does not relax single-choice ambiguity checks. `timeoutMs: 0` provides no practical opportunity to cancel an automatic reply.
 
-## Current automated acceptance — 05 October 2026
+## Current automated acceptance — 06 October 2026
 
-The local evaluation used Node **24.21.0** in an isolated checkout. The GitHub CI matrix separately runs Node **22.x** and **24.x**. The following results were obtained for the v0.4.0 source tree; tests use mock hosts and do not prove interactive OpenCode V1 or V2 compatibility.
+The local evaluation used Node **24.21.0** in an isolated checkout. The GitHub CI matrix separately runs Node **22.x** and **24.x**. The following results were obtained for the v0.4.5 source tree; tests use mock hosts and do not prove interactive OpenCode V1 or V2 compatibility.
 
 | Check | Observed result |
 | --- | ---: |
-| Unit and regression tests | **91/91 passed** |
+| Unit and regression tests | **113/113 passed** |
 | Strict TypeScript checks (`noUnused*`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) | **Passed** |
 | V1 simulated sandbox scenarios | **10/10 passed** |
 | Smoke test and TypeScript typecheck | **Passed** |
 | Full `npm audit` | **0 reported vulnerabilities** |
-| `npm pack --dry-run` | **32 files**, expected exports present |
-| Real OpenCode V1/V2 host acceptance for v0.4.0 | **Not performed** |
+| `npm pack --dry-run` | **36 files**, expected exports present |
+| Real OpenCode V1/V2 host acceptance for v0.4.5 | **Not performed** |
 
 OpenTUI's development dependency currently declares Node >=26.4 or Bun >=1.3; npm installation on Node 24 reports an engine warning. Passing the Node 22/24 automated suite does not demonstrate full native TUI runtime compatibility.
 

@@ -18,7 +18,7 @@ A standalone OpenCode plugin that selects an agent-recommended answer after a co
 
 ## 📦 Installation
 
-The current source version is **0.4.0**. The `@latest` selector always follows the version currently published to npm; for unreleased source changes, use [local development](#-local-development).
+The current source version is **0.4.5**. The `@latest` selector always follows the version currently published to npm; for unreleased source changes, use [local development](#-local-development).
 
 ### 🟢 OpenCode V1
 
