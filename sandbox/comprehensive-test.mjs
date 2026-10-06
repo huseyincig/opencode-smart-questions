@@ -8,6 +8,19 @@ console.log('   OPENCODE-SMART-QUESTIONS — COMPREHENSIVE END-TO-END SCENARIO T
 console.log('================================================================================');
 
 const sandboxDir = path.dirname(new URL(import.meta.url).pathname);
+const ROOT_SESSION_ID = 'sandbox-root-session';
+
+function rootClient(client = {}) {
+  return {
+    ...client,
+    session: {
+      ...(client.session ?? {}),
+      async get({ path: requestPath }) {
+        return { data: { id: requestPath.id, directory: sandboxDir } };
+      },
+    },
+  };
+}
 
 let totalPassed = 0;
 
@@ -35,13 +48,14 @@ await runScenario('SCENARIO-1', 'Single recommended option auto-selection', asyn
   };
 
   const hooks = await createSmartQuestionHooks({
-    client: mockClient,
+    client: rootClient(mockClient),
     directory: sandboxDir,
   }, { config: { enabled: true, timeoutMs: 30, recommendedMarkers: ['(Recommended)'], requireExactlyOneRecommendation: true } });
 
   await hooks.event({
     event: {
       type: 'question.asked',
+      sessionID: ROOT_SESSION_ID,
       data: {
         id: 's1',
         questions: [{ question: 'Env?', options: [{ label: 'Dev' }, { label: 'Prod (Recommended)' }] }],
@@ -66,13 +80,14 @@ await runScenario('SCENARIO-2', 'Turkish marker (Önerilen) auto-selection', asy
   };
 
   const hooks = await createSmartQuestionHooks({
-    client: mockClient,
+    client: rootClient(mockClient),
     directory: sandboxDir,
   }, { config: { enabled: true, timeoutMs: 30, recommendedMarkers: ['(Recommended)', '(Önerilen)'], requireExactlyOneRecommendation: true } });
 
   await hooks.event({
     event: {
       type: 'question.asked',
+      sessionID: ROOT_SESSION_ID,
       data: {
         id: 's2',
         questions: [{ question: 'Ortam?', options: [{ label: 'Test' }, { label: 'Canlı (Önerilen)' }] }],
@@ -96,13 +111,14 @@ await runScenario('SCENARIO-3', 'Fail-safe: multiple recommendations disabled', 
   };
 
   const hooks = await createSmartQuestionHooks({
-    client: mockClient,
+    client: rootClient(mockClient),
     directory: sandboxDir,
   }, { config: { enabled: true, timeoutMs: 30, recommendedMarkers: ['(Recommended)'], requireExactlyOneRecommendation: true } });
 
   await hooks.event({
     event: {
       type: 'question.asked',
+      sessionID: ROOT_SESSION_ID,
       data: {
         id: 's3',
         questions: [{ question: 'Choice?', options: [{ label: 'A (Recommended)' }, { label: 'B (Recommended)' }] }],
@@ -125,13 +141,14 @@ await runScenario('SCENARIO-4', 'Fail-safe: zero recommendations disabled', asyn
   };
 
   const hooks = await createSmartQuestionHooks({
-    client: mockClient,
+    client: rootClient(mockClient),
     directory: sandboxDir,
   }, { config: { enabled: true, timeoutMs: 30, recommendedMarkers: ['(Recommended)'], requireExactlyOneRecommendation: true } });
 
   await hooks.event({
     event: {
       type: 'question.asked',
+      sessionID: ROOT_SESSION_ID,
       data: {
         id: 's4',
         questions: [{ question: 'Choice?', options: [{ label: 'A' }, { label: 'B' }] }],
@@ -155,7 +172,7 @@ await runScenario('SCENARIO-5', 'Human draft lockfile blocks auto-selection', as
 
   const config = { enabled: true, timeoutMs: 40, recommendedMarkers: ['(Recommended)'], requireExactlyOneRecommendation: true };
   const hooks = await createSmartQuestionHooks({
-    client: mockClient,
+    client: rootClient(mockClient),
     directory: sandboxDir,
   }, { config });
 
@@ -166,6 +183,7 @@ await runScenario('SCENARIO-5', 'Human draft lockfile blocks auto-selection', as
   await hooks.event({
     event: {
       type: 'question.asked',
+      sessionID: ROOT_SESSION_ID,
       data: {
         id: 's5',
         questions: [{ question: 'Database?', options: [{ label: 'Postgres (Recommended)' }, { label: 'Mongo' }] }],
@@ -189,13 +207,14 @@ await runScenario('SCENARIO-6', 'Manual answer cancels auto-reply timer', async 
   };
 
   const hooks = await createSmartQuestionHooks({
-    client: mockClient,
+    client: rootClient(mockClient),
     directory: sandboxDir,
   }, { config: { enabled: true, timeoutMs: 50, recommendedMarkers: ['(Recommended)'], requireExactlyOneRecommendation: true } });
 
   await hooks.event({
     event: {
       type: 'question.asked',
+      sessionID: ROOT_SESSION_ID,
       data: {
         id: 's6',
         questions: [{ question: 'Proceed?', options: [{ label: 'Yes (Recommended)' }, { label: 'No' }] }],
@@ -228,13 +247,14 @@ await runScenario('SCENARIO-7', 'Question rejection cancels timer', async () => 
   };
 
   const hooks = await createSmartQuestionHooks({
-    client: mockClient,
+    client: rootClient(mockClient),
     directory: sandboxDir,
   }, { config: { enabled: true, timeoutMs: 50, recommendedMarkers: ['(Recommended)'], requireExactlyOneRecommendation: true } });
 
   await hooks.event({
     event: {
       type: 'question.asked',
+      sessionID: ROOT_SESSION_ID,
       data: {
         id: 's7',
         questions: [{ question: 'Accept?', options: [{ label: 'Accept (Recommended)' }] }],
@@ -269,13 +289,14 @@ await runScenario('SCENARIO-8', 'OpenCode v1 _client.post fallback routing', asy
   };
 
   const hooks = await createSmartQuestionHooks({
-    client: mockClient,
+    client: rootClient(mockClient),
     directory: sandboxDir,
   }, { config: { enabled: true, timeoutMs: 30, recommendedMarkers: ['(Recommended)'], requireExactlyOneRecommendation: true } });
 
   await hooks.event({
     event: {
       type: 'question.asked',
+      sessionID: ROOT_SESSION_ID,
       data: {
         id: 's8',
         questions: [{ question: 'Format?', options: [{ label: 'JSON (Recommended)' }] }],
@@ -300,13 +321,14 @@ await runScenario('SCENARIO-9', 'Multi-question sequential answer order', async 
   };
 
   const hooks = await createSmartQuestionHooks({
-    client: mockClient,
+    client: rootClient(mockClient),
     directory: sandboxDir,
   }, { config: { enabled: true, timeoutMs: 30, recommendedMarkers: ['(Recommended)'], requireExactlyOneRecommendation: true } });
 
   await hooks.event({
     event: {
       type: 'question.asked',
+      sessionID: ROOT_SESSION_ID,
       data: {
         id: 's9',
         questions: [
@@ -333,13 +355,14 @@ await runScenario('SCENARIO-10', 'Dispose cleans up all active timers', async ()
   };
 
   const hooks = await createSmartQuestionHooks({
-    client: mockClient,
+    client: rootClient(mockClient),
     directory: sandboxDir,
   }, { config: { enabled: true, timeoutMs: 50, recommendedMarkers: ['(Recommended)'], requireExactlyOneRecommendation: true } });
 
   await hooks.event({
     event: {
       type: 'question.asked',
+      sessionID: ROOT_SESSION_ID,
       data: {
         id: 's10',
         questions: [{ question: 'Run?', options: [{ label: 'Run (Recommended)' }] }],

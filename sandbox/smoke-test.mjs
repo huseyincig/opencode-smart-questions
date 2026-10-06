@@ -8,10 +8,16 @@ console.log('  OPENCODE-SMART-QUESTIONS ISOLATED SANDBOX TEST');
 console.log('==================================================');
 
 const sandboxDir = path.dirname(new URL(import.meta.url).pathname);
+const ROOT_SESSION_ID = 'sandbox-root-session';
 
 // Mock client that tracks replies
 let lastReply = null;
 const mockClient = {
+  session: {
+    async get({ path: requestPath }) {
+      return { data: { id: requestPath.id, directory: sandboxDir } };
+    },
+  },
   question: {
     reply: async (payload) => {
       lastReply = payload;
@@ -34,6 +40,7 @@ const requestID = 'sandbox-req-001';
 await hooks.event({
   event: {
     type: 'question.asked',
+    sessionID: ROOT_SESSION_ID,
     data: {
       id: requestID,
       questions: [
