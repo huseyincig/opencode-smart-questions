@@ -12,8 +12,10 @@ Guardian ve Smart Questions, gerçek OpenCode V2 hostunda hem bağımsız hem bi
 | OpenCode version | 2.0.24 |
 | Runtime | V2 |
 | Test model | `opencode-go/mimo-v2.6-flash` |
-| Guardian commit | `c8a05bf35ea316fda7d52ccf798e3798d5c51f32` |
-| Smart Questions commit | `513fad1a696172f5820ee12c234bda2e2f77fd84` |
+| Guardian commit | `cb1cb140797f9bd775c621f8fae42a426a2f8459` |
+| Guardian version/tag | `v0.6.7` |
+| Smart Questions commit | `ecd43c879a9d74b8323fc316370a3b6247166909` |
+| Smart Questions version/tag | `v0.4.7` |
 | Platform | Linux x86_64 |
 
 The repositories were tested from fresh source checkouts in an isolated sandbox.
@@ -34,6 +36,9 @@ The repositories were tested from fresh source checkouts in an isolated sandbox.
 | Handoff provenance / anti-spoofing | PASS |
 | TTL / turn binding | PASS |
 | Subagent isolation | PASS |
+| Capability-aware subagent remediation | PASS |
+| Read-only reviewer remediation isolation | PASS |
+| Write-allowed subagent bounded remediation | PASS |
 | Handoff replay prevention | PASS |
 | Loop prevention | PASS |
 | Independent plugin fallback | PASS |
@@ -141,17 +146,34 @@ A newer human user turn also prevented an older handoff from being rediscovered 
 
 **Result: PASS**
 
-### Subagent Isolation
+### Subagent Isolation & Capability-Aware Remediation Policy
 
-The same blocking condition was evaluated for both root and child sessions.
+The same blocking condition was evaluated for both root and child sessions across the V2 plugin runtime:
 
-Observed result:
+1. **Handoff Isolation**:
+   - root session: handoff generated
+   - child/subagent session: handoff `null`
+   - SQ classified the child session as `child` and did not activate coordination
 
-- root session: handoff generated
-- child/subagent session: handoff `null`
-- SQ classified the child session as `child` and did not activate coordination
+2. **Capability-Aware Remediation Policy (v0.6.7 Fix)**:
+   - Evaluated via `resolveV2AgentCapability` and `evaluateAgentMutationProfile` against live V2 tool/permission surfaces.
+   - **Read-Only Subagents (Reviewer / Oracle / Explorer)**:
+     - Reviewer subagent completes analysis and yields findings to parent.
+     - Guardian inspects the completion gate with `isSubagent: true` and resolves `canSelfRemediate: false` (read-only mutation profile: read/grep/glob only, file editing prohibited).
+     - Guardian emits **0 synthetic remediation prompts** (`remediationCount: 0`).
+     - Reviewer does **NOT** re-enter `Thinking` state or initiate redundant review loops.
+     - Findings are transferred cleanly and intact to parent.
+   - **Write-Allowed Subagents (Fixer / Editor / Designer)**:
+     - Subagents with granted file modification capabilities (`write_allowed` mutation profile) receive bounded Guardian remediation when a controlled blocking condition occurs.
+     - Bounded retry counter (`maxRounds: 6`) is preserved and respected.
+   - **Write-Requires-Approval & Unknown Subagents**:
+     - Subagents with approval-required mutation or unknown capabilities fail safe with zero remediation.
+   - **Root Agent Sessions**:
+     - Completion-gate blocking and remediation prompt generation remain fully active.
+   - **Guardian + SQ Root Coordination**:
+     - Trusted handoff activation and automatic selection operate without regression.
 
-Guardian/SQ handoff coordination remains root-agent only.
+Guardian/SQ handoff coordination remains root-agent only, and subagent remediation is strictly capability-aware.
 
 **Result: PASS**
 
@@ -175,7 +197,7 @@ This verifies consumed-ID tombstoning and prevents immediate Guardian ↔ SQ han
 
 At the tested revisions:
 
-- Guardian: `474 / 474` tests passed
+- Guardian: `484 / 484` tests passed (including 10 dedicated regression tests for capability-aware remediation)
 - Smart Questions: `113 / 113` tests passed
 
 These automated tests supplement, but do not replace, the real-host acceptance and direct runtime integration checks described above.
@@ -191,6 +213,7 @@ The acceptance used two complementary evidence levels:
    - Guardian preflight
    - destructive-operation prevention
    - native agent/subagent behavior
+   - capability-aware subagent remediation execution
    - simultaneous Guardian + SQ loading
 
 2. **Live runtime integration evidence**
@@ -200,6 +223,8 @@ The acceptance used two complementary evidence levels:
    - anti-spoofing
    - TTL and turn boundaries
    - root/subagent isolation
+   - read-only reviewer remediation isolation (0 remediation, no thinking loop)
+   - write-allowed subagent bounded remediation
    - replay/tombstone behavior
 
 The second category directly exercised the built plugin runtime, hooks and shared handoff state on the test host. It should not be described as external black-box UI automation.
@@ -212,10 +237,19 @@ OpenCode version: 2.0.24
 Runtime: V2
 Model: opencode-go/mimo-v2.6-flash
 
+Guardian SHA: cb1cb140797f9bd775c621f8fae42a426a2f8459
+Guardian version: v0.6.7
+Smart Questions SHA: ecd43c879a9d74b8323fc316370a3b6247166909
+Smart Questions version: v0.4.7
+
 GUARDIAN ONLY: PASS
 SMART QUESTIONS ONLY: PASS
 GUARDIAN + SMART QUESTIONS: PASS
 
+Capability-aware remediation: PASS
+Read-only reviewer isolation: PASS
+Write-allowed bounded remediation: PASS
+Root completion gate: PASS
 Handoff allowed: PASS
 Handoff forbidden: PASS
 Anti-spoofing: PASS
