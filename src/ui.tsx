@@ -27,6 +27,7 @@ import {
   type V2FormInfo,
 } from './form-adapter.js';
 import { diagnosticErrorCode } from './diagnostics.js';
+import { isRootSessionInfo } from './session-scope.js';
 import type {
   ActiveQuestionState,
   DetectionResult,
@@ -312,11 +313,20 @@ export const tui: TuiPlugin = async (api, options) => {
 
     if (
       typeof requestID !== 'string' ||
+      !sessionID ||
       !Array.isArray(questions) ||
       questions.length === 0
     ) {
       return;
     }
+
+    let sessionInfo: unknown;
+    try {
+      sessionInfo = (api as any)?.state?.session?.get?.(sessionID);
+    } catch {
+      return;
+    }
+    if (!isRootSessionInfo(sessionInfo)) return;
 
     const decision = detectRecommendations(
       questions,
@@ -553,6 +563,14 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     const form = event?.data?.form as V2FormInfo | undefined;
     if (!form?.id || !form.sessionID || form.sessionID === 'global') return;
 
+    let sessionInfo: unknown;
+    try {
+      sessionInfo = (context.data.session as any)?.get?.(form.sessionID);
+    } catch {
+      return;
+    }
+    if (!isRootSessionInfo(sessionInfo)) return;
+
     // A newer form supersedes any prior timer in the same session, even if
     // the new form is not eligible for automatic selection.
     for (const [id, existing] of pending.entries()) {
@@ -561,7 +579,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       }
     }
 
-    const sessionLocation = (context.data.session as any)?.get?.(form.sessionID)?.location;
+    const sessionLocation = (sessionInfo as any)?.location;
     const location = event?.location ?? sessionLocation ?? context.location;
     const config = resolveV2TuiConfig(context, location?.directory);
     if (!config?.enabled) return;

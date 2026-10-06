@@ -436,6 +436,35 @@ function detectV2FormRecommendations(form, markers, options) {
   return { ok: true, answer, detection, questions };
 }
 
+// src/session-scope.ts
+function asRecord(value) {
+  return value && typeof value === "object" ? value : null;
+}
+function unwrapSessionInfo(value) {
+  const record = asRecord(value);
+  if (!record) return null;
+  const data = asRecord(record.data);
+  if (data) return data;
+  return record;
+}
+function classifySessionScope(value) {
+  const session = unwrapSessionInfo(value);
+  if (!session || typeof session.id !== "string" || !session.id) {
+    return "unknown";
+  }
+  const parentID = session.parentID;
+  if (typeof parentID === "string") {
+    return parentID.trim() ? "child" : "root";
+  }
+  if (parentID === void 0 || parentID === null) {
+    return "root";
+  }
+  return "unknown";
+}
+function isRootSessionInfo(value) {
+  return classifySessionScope(value) === "root";
+}
+
 // src/tui-runtime.js
 function loadConfig2(...args) {
   return loadConfig(...args);
@@ -659,9 +688,16 @@ var tui = async (api, options) => {
     const requestID = data?.id ?? data?.requestID ?? event?.id;
     const sessionID = String(data?.sessionID ?? event?.sessionID ?? "");
     const questions = data?.questions ?? event?.questions ?? [];
-    if (typeof requestID !== "string" || !Array.isArray(questions) || questions.length === 0) {
+    if (typeof requestID !== "string" || !sessionID || !Array.isArray(questions) || questions.length === 0) {
       return;
     }
+    let sessionInfo;
+    try {
+      sessionInfo = api?.state?.session?.get?.(sessionID);
+    } catch {
+      return;
+    }
+    if (!isRootSessionInfo(sessionInfo)) return;
     const decision = detectRecommendations2(questions, config.recommendedMarkers, {
       requireExactlyOneRecommendation: config.requireExactlyOneRecommendation
     });
@@ -847,12 +883,19 @@ var setup = async (context) => {
   const onFormCreated = (event) => {
     const form = event?.data?.form;
     if (!form?.id || !form.sessionID || form.sessionID === "global") return;
+    let sessionInfo;
+    try {
+      sessionInfo = context.data.session?.get?.(form.sessionID);
+    } catch {
+      return;
+    }
+    if (!isRootSessionInfo(sessionInfo)) return;
     for (const [id, existing] of pending.entries()) {
       if (existing.sessionID === form.sessionID) {
         clearPending(id);
       }
     }
-    const sessionLocation = context.data.session?.get?.(form.sessionID)?.location;
+    const sessionLocation = sessionInfo?.location;
     const location = event?.location ?? sessionLocation ?? context.location;
     const config = resolveV2TuiConfig(context, location?.directory);
     if (!config?.enabled) return;

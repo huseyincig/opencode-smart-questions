@@ -4,6 +4,7 @@ import { createSmartQuestionHooks } from './backend.js';
 import { resolveSmartQuestionConfig } from './config.js';
 import { buildRecommendationGuidance, SQ_GUIDANCE_SENTINEL } from './guidance.js';
 import type { PluginInput } from './types.js';
+import { resolveV2SessionScope } from './session-scope.js';
 
 export * from './types.js';
 export {
@@ -36,8 +37,8 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
   if (
     !context ||
     typeof context !== 'object' ||
-    typeof context.tool?.transform !== 'function' ||
-    typeof context.session?.hook !== 'function'
+    typeof context.session?.hook !== 'function' ||
+    typeof context.session?.get !== 'function'
   ) {
     return;
   }
@@ -49,6 +50,7 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
   if (!config?.enabled) return;
 
   const guidance = buildRecommendationGuidance(config);
+  const sessionScope = new Map<string, boolean>();
   const registrations: Array<{ dispose(): Promise<void> }> = [];
   const disposeRegistrations = async (): Promise<void> => {
     // Complete cleanup strictly in reverse registration order. Each disposer
@@ -63,20 +65,25 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
     }
   };
 
-  try {
-    const toolRegistration = await context.tool.transform((editor) => {
-      editor.update('question', (tool) => {
-        if (!tool.description.includes(SQ_GUIDANCE_SENTINEL)) {
-          tool.description += guidance.tool;
-        }
-      });
-    });
-    if (!toolRegistration || typeof toolRegistration.dispose !== 'function') {
-      throw new Error('V2 tool transform did not return a valid registration');
-    }
-    registrations.push(toolRegistration);
+  const isRootSession = async (sessionID: string): Promise<boolean> => {
+    if (!sessionID) return false;
+    if (sessionScope.has(sessionID)) return sessionScope.get(sessionID) === true;
 
-    const contextRegistration = await context.session.hook('context', (event) => {
+    const scope = await resolveV2SessionScope(context.session, sessionID);
+    if (scope === 'root') {
+      sessionScope.set(sessionID, true);
+      return true;
+    }
+    if (scope === 'child') {
+      sessionScope.set(sessionID, false);
+      return false;
+    }
+    return false;
+  };
+
+  try {
+    const contextRegistration = await context.session.hook('context', async (event) => {
+      if (!(await isRootSession(String(event.sessionID ?? '')))) return;
       const alreadyInjected = event.system.some(
         (part) =>
           part.type === 'text' &&

@@ -5,6 +5,7 @@ import { detectRecommendations } from './detector.js';
 import { canUseDraftCoordination, cleanupStaleDrafts, deleteLockfile, resolveLockPath } from './draft-guard.js';
 import { buildRecommendationGuidance, SQ_GUIDANCE_SENTINEL } from './guidance.js';
 import { createDiagnosticError, diagnosticErrorCode } from './diagnostics.js';
+import { resolveV1SessionScope } from './session-scope.js';
 function describeServer(serverUrl) {
     if (!serverUrl)
         return { origin: 'none', protocol: 'none' };
@@ -16,21 +17,6 @@ function describeServer(serverUrl) {
         return { origin: 'invalid', protocol: 'invalid' };
     }
 }
-function enhanceQuestionSchema(schema, marker) {
-    try {
-        const optionsProp = schema?.properties?.questions?.items?.properties?.options?.items?.properties;
-        const label = optionsProp?.label;
-        if (label && typeof label.description === 'string') {
-            const suffix = ` (Append "${marker}" to indicate a recommended option)`;
-            if (!label.description.includes(suffix)) {
-                label.description += suffix;
-            }
-        }
-    }
-    catch {
-        // Best-effort schema enhancement.
-    }
-}
 export async function createSmartQuestionHooks(input, pluginOptions) {
     const { client, directory } = input;
     const serverUrl = input.serverUrl;
@@ -39,6 +25,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
         return {};
     const effectiveConfigDir = config.configDir || path.resolve(directory || process.cwd(), '.opencode');
     const pendingRequests = new Map();
+    const sessionScope = new Map();
     const debugLogPath = typeof config.debugLog === 'string' && config.debugLog ? config.debugLog : null;
     const dbg = (msg) => {
         if (!debugLogPath)
@@ -55,6 +42,23 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
     dbg(`hooks registered directory=${directory ? 'set' : 'none'} server=${server.origin} ` +
         `scheme=${server.protocol} timeoutMs=${config.timeoutMs} clientKeys=[${clientKeys}]`);
     cleanupStaleDrafts(effectiveConfigDir, config.timeoutMs, dbg);
+    const isRootSession = async (sessionID) => {
+        if (!sessionID)
+            return false;
+        if (sessionScope.has(sessionID))
+            return sessionScope.get(sessionID) === true;
+        const scope = await resolveV1SessionScope(client, sessionID, directory);
+        if (scope === 'root') {
+            sessionScope.set(sessionID, true);
+            return true;
+        }
+        if (scope === 'child') {
+            sessionScope.set(sessionID, false);
+            return false;
+        }
+        dbg(`skip session=${sessionID} reason=session-scope-unknown`);
+        return false;
+    };
     const eventHook = async ({ event }) => {
         if (!event || typeof event.type !== 'string')
             return;
@@ -62,8 +66,13 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
         if (event.type === 'question.asked') {
             const data = payload;
             const requestID = data?.id ?? data?.requestID;
+            const sessionID = String(data?.sessionID ?? event?.sessionID ?? '');
             if (!requestID || typeof requestID !== 'string') {
                 dbg('question.asked: no request id');
+                return;
+            }
+            if (!(await isRootSession(sessionID))) {
+                dbg(`skip request=${requestID} reason=non-root-session`);
                 return;
             }
             const existing = pendingRequests.get(requestID);
@@ -222,22 +231,11 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
         pendingRequests.clear();
     };
     const guidance = buildRecommendationGuidance(config);
-    const toolDefinitionHook = async (hookInput, output) => {
-        if (hookInput?.toolID !== 'question')
-            return;
-        if (typeof output.description === 'string') {
-            if (!output.description.includes(SQ_GUIDANCE_SENTINEL)) {
-                output.description += guidance.tool;
-            }
-        }
-        else {
-            output.description = guidance.tool.trim();
-        }
-        enhanceQuestionSchema(output.jsonSchema, guidance.primaryMarker);
-        enhanceQuestionSchema(output.parameters, guidance.primaryMarker);
-    };
-    const systemTransformHook = async (_hookInput, output) => {
+    const systemTransformHook = async (hookInput, output) => {
         if (!Array.isArray(output?.system))
+            return;
+        const sessionID = typeof hookInput?.sessionID === 'string' ? hookInput.sessionID : '';
+        if (!(await isRootSession(sessionID)))
             return;
         if (!output.system.some((part) => part.includes(SQ_GUIDANCE_SENTINEL))) {
             output.system.push(guidance.system);
@@ -246,7 +244,6 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
     return {
         event: eventHook,
         dispose: disposeHook,
-        'tool.definition': toolDefinitionHook,
         'experimental.chat.system.transform': systemTransformHook,
     };
 }

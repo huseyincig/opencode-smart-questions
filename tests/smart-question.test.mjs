@@ -9,7 +9,7 @@ const esbuild = (await import('esbuild')).default;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 import {
-  SmartQuestion,
+  SmartQuestion as SmartQuestionPlugin,
   detectRecommendations,
   loadConfig,
   resolveLockPath,
@@ -17,6 +17,76 @@ import {
   OpencodeSmartQuestions,
 } from '../dist/index.js';
 import { detectV2FormRecommendations } from '../dist/form-adapter.js';
+
+const TEST_ROOT_SESSION_ID = 'ses-test-root';
+
+function withRootSessionClient(client = {}) {
+  const existingSession =
+    client && typeof client.session === 'object' && client.session
+      ? client.session
+      : {};
+  return {
+    ...client,
+    session: {
+      ...existingSession,
+      async get({ path }) {
+        if (typeof existingSession.get === 'function') {
+          return existingSession.get({ path });
+        }
+        return { data: { id: path?.id ?? TEST_ROOT_SESSION_ID } };
+      },
+    },
+  };
+}
+
+async function SmartQuestion(input, options) {
+  const hooks = await SmartQuestionPlugin(
+    {
+      ...input,
+      client: withRootSessionClient(input?.client ?? {}),
+    },
+    options
+  );
+
+  const event = hooks.event;
+  const systemTransform = hooks['experimental.chat.system.transform'];
+  return {
+    ...hooks,
+    ...(event
+      ? {
+          event: async (payload) => {
+            const source = payload?.event;
+            if (
+              source &&
+              source.type === 'question.asked' &&
+              source.data &&
+              !source.data.sessionID
+            ) {
+              source.data.sessionID = TEST_ROOT_SESSION_ID;
+            }
+            if (
+              source &&
+              source.type === 'question.asked' &&
+              source.properties &&
+              !source.properties.sessionID
+            ) {
+              source.properties.sessionID = TEST_ROOT_SESSION_ID;
+            }
+            return event(payload);
+          },
+        }
+      : {}),
+    ...(systemTransform
+      ? {
+          'experimental.chat.system.transform': (hookInput, output) =>
+            systemTransform(
+              { ...hookInput, sessionID: hookInput?.sessionID ?? TEST_ROOT_SESSION_ID },
+              output
+            ),
+        }
+      : {}),
+  };
+}
 
 test('detectRecommendations - valid case: exactly one recommended per question', () => {
   const questions = [
@@ -1586,7 +1656,7 @@ test('SmartQuestion plugin - valid question with Turkish marker (Önerilen) auto
   await hooks.dispose();
 });
 
-test('SmartQuestion plugin - tool.definition enriches question tool description and schema', async () => {
+test('SmartQuestion plugin - does not expose global tool.definition guidance', async () => {
   const hooks = await SmartQuestion(
     { client: {} },
     {
@@ -1599,45 +1669,11 @@ test('SmartQuestion plugin - tool.definition enriches question tool description 
     }
   );
 
-  assert.ok(typeof hooks['tool.definition'] === 'function');
-
-  // Case 1: question tool
-  const questionOutput = {
-    description: 'Ask the user a question with choices',
-    jsonSchema: {
-      properties: {
-        questions: {
-          items: {
-            properties: {
-              options: {
-                items: {
-                  properties: {
-                    label: { description: 'Display text' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-  };
-
-  await hooks['tool.definition']({ toolID: 'question' }, questionOutput);
-
-  assert.match(questionOutput.description, /RECOMMENDED OPTION CONVENTION/);
-  assert.match(questionOutput.description, /native question tool/i);
-  assert.match(questionOutput.description, /plain assistant (?:text|prose)/i);
-  assert.match(questionOutput.description, /\(Recommended\)/);
-  assert.match(
-    questionOutput.jsonSchema.properties.questions.items.properties.options.items.properties.label.description,
-    /\(Recommended\)/
+  assert.equal(
+    hooks['tool.definition'],
+    undefined,
+    'global tool guidance would leak Smart Questions instructions into subagents'
   );
-
-  // Case 2: other tool (e.g. bash)
-  const bashOutput = { description: 'Execute a bash command' };
-  await hooks['tool.definition']({ toolID: 'bash' }, bashOutput);
-  assert.equal(bashOutput.description, 'Execute a bash command');
 
   await hooks.dispose();
 });
@@ -1753,9 +1789,9 @@ test('detectV2FormRecommendations - refuses free-text forms fail-safe', () => {
   assert.match(result.reason, /not a supported selectable field/i);
 });
 
-test('OpenCode v2 backend setup registers current tool/context transforms', async () => {
-  let transformedTool;
+test('OpenCode v2 backend setup registers root-only context guidance', async () => {
   let contextHook;
+  let toolTransformCalls = 0;
   const disposed = [];
 
   const context = {
@@ -1766,21 +1802,15 @@ test('OpenCode v2 backend setup registers current tool/context transforms', asyn
       timeoutMs: 10,
     },
     tool: {
-      transform(callback) {
-        callback({
-          update(id, mutate) {
-            assert.equal(id, 'question');
-            const tool = {
-              description: 'Ask the user a question with choices',
-            };
-            mutate(tool);
-            transformedTool = tool;
-          },
-        });
-        return Promise.resolve({ dispose: async () => { disposed.push('tool'); } });
+      transform() {
+        toolTransformCalls++;
+        return Promise.resolve({ dispose: async () => {} });
       },
     },
     session: {
+      async get({ sessionID }) {
+        return { id: sessionID };
+      },
       hook(name, callback) {
         assert.equal(name, 'context');
         contextHook = callback;
@@ -1791,14 +1821,15 @@ test('OpenCode v2 backend setup registers current tool/context transforms', asyn
 
   const cleanup = await OpencodeSmartQuestions.setup(context);
   assert.equal(typeof cleanup, 'function');
-  assert.match(transformedTool.description, /RECOMMENDED OPTION CONVENTION/);
-  assert.match(transformedTool.description, /native question tool/i);
-  assert.match(transformedTool.description, /plain assistant (?:text|prose)/i);
+  assert.equal(toolTransformCalls, 0);
 
   const event = {
+    sessionID: 'ses-v2-root',
     system: [{ type: 'text', text: 'Base system prompt' }],
     messages: [],
-    tools: [],
+    tools: {},
+    agent: 'main',
+    model: {},
   };
   await contextHook(event);
   assert.equal(event.system.length, 2);
@@ -1809,62 +1840,64 @@ test('OpenCode v2 backend setup registers current tool/context transforms', asyn
   await contextHook(event);
   assert.equal(event.system.length, 2, 'guidance must not duplicate');
   await cleanup();
-  assert.deepEqual(disposed, ['context', 'tool']);
+  assert.deepEqual(disposed, ['context']);
   await cleanup();
-  assert.deepEqual(disposed, ['context', 'tool'], 'cleanup must be idempotent');
+  assert.deepEqual(disposed, ['context'], 'cleanup must be idempotent');
 });
 
-test('V2 backend waits for registration promises and rolls back partial setup', async () => {
-  const disposed = [];
-  let unblockTool;
+test('V2 backend surfaces a failed context registration', async () => {
+  await assert.rejects(
+    OpencodeSmartQuestions.setup({
+      location: { directory: '/tmp/sq-v2-registration-tests' },
+      options: { enabled: true },
+      session: {
+        async get({ sessionID }) {
+          return { id: sessionID };
+        },
+        hook() {
+          return Promise.reject(new Error('context hook unavailable'));
+        },
+      },
+    }),
+    /V2 backend registration failed/
+  );
+});
+
+test('V2 backend does not require the global tool transform capability', async () => {
   let hookCalled = false;
-  const context = {
+  const cleanup = await OpencodeSmartQuestions.setup({
     location: { directory: '/tmp/sq-v2-registration-tests' },
     options: { enabled: true },
-    tool: {
-      transform() {
-        return new Promise((resolve) => { unblockTool = resolve; });
-      },
-    },
     session: {
+      async get({ sessionID }) {
+        return { id: sessionID };
+      },
       hook() {
         hookCalled = true;
-        return Promise.reject(new Error('context hook unavailable'));
+        return Promise.resolve({ dispose: async () => {} });
       },
     },
-  };
-
-  const setup = OpencodeSmartQuestions.setup(context);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(hookCalled, false, 'context hook must wait for tool registration');
-  unblockTool({ dispose: async () => { disposed.push('tool'); } });
-  await assert.rejects(setup, /V2 backend registration failed/);
+  });
   assert.equal(hookCalled, true);
-  assert.deepEqual(disposed, ['tool'], 'partial tool registration must be rolled back');
+  await cleanup?.();
 });
 
-test('V2 backend rejects a failed tool transform without registering context hook', async () => {
-  let hookCalled = false;
-  await assert.rejects(OpencodeSmartQuestions.setup({
-    location: { directory: '/tmp/sq-v2-registration-tests' },
-    options: { enabled: true },
-    tool: { transform() { return Promise.reject(new Error('tool transform unavailable')); } },
-    session: { hook() { hookCalled = true; } },
-  }), /V2 backend registration failed/);
-  assert.equal(hookCalled, false);
-});
-
-test('V2 backend rejects an invalid context registration and disposes tool registration', async () => {
-  let toolDisposed = false;
-  await assert.rejects(OpencodeSmartQuestions.setup({
-    location: { directory: '/tmp/sq-v2-registration-tests' },
-    options: { enabled: true },
-    tool: { transform() { return Promise.resolve({
-      dispose: async () => { toolDisposed = true; },
-    }); } },
-    session: { hook() { return Promise.resolve(undefined); } },
-  }), /V2 backend registration failed/);
-  assert.equal(toolDisposed, true);
+test('V2 backend rejects an invalid context registration', async () => {
+  await assert.rejects(
+    OpencodeSmartQuestions.setup({
+      location: { directory: '/tmp/sq-v2-registration-tests' },
+      options: { enabled: true },
+      session: {
+        async get({ sessionID }) {
+          return { id: sessionID };
+        },
+        hook() {
+          return Promise.resolve(undefined);
+        },
+      },
+    }),
+    /V2 backend registration failed/
+  );
 });
 
 test('loadConfig honours global config when project config is absent', (t) => {
@@ -1905,6 +1938,9 @@ function createV2TuiMock(tempDir, timeoutMs = 25) {
         return () => eventHandlers.delete(type);
       },
       session: {
+        get(sessionID) {
+          return { id: sessionID, location: { directory: tempDir } };
+        },
         form: {
           async sync() {},
           list(sessionID) {
@@ -2374,7 +2410,10 @@ test('V1 TUI ignores unrelated settlement and preserves a manual-answer lock on 
   try {
     const ui = await import('../dist/ui.js');
     await ui.tui({
-      state: { path: { directory: tempDir } },
+      state: {
+        path: { directory: tempDir },
+        session: { get(sessionID) { return { id: sessionID }; } },
+      },
       event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
       renderer: {
         keyInput: {
@@ -2500,7 +2539,10 @@ test('V1 auto-selection fails safe when draft coordination is not writable', asy
 
     const ui = await import('../dist/ui.js');
     await ui.tui({
-      state: { path: { directory: root } },
+      state: {
+        path: { directory: root },
+        session: { get(sessionID) { return { id: sessionID }; } },
+      },
       event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
       renderer: {
         keyInput: {
@@ -2555,6 +2597,9 @@ test('V2 TUI follows the live form location instead of a setup-time location sna
     data: {
       on(type, handler) { eventHandlers.set(type, handler); return () => eventHandlers.delete(type); },
       session: {
+        get(sessionID) {
+          return { id: sessionID, location: currentLocation };
+        },
         form: {
           async sync() {},
           list(sessionID) {
@@ -2799,7 +2844,10 @@ test('V1 TUI honors tuple plugin options and uses the same marker/config as the 
     const ui = await import('../dist/ui.js');
     await ui.tui(
       {
-        state: { path: { directory: root } },
+        state: {
+          path: { directory: root },
+          session: { get(sessionID) { return { id: sessionID }; } },
+        },
         event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
         renderer: {
           keyInput: {
@@ -2855,23 +2903,15 @@ test('recommendedMarkers list fully takes precedence over legacy recommendedMark
   assert.equal(config.recommendedMarker, '<PRIMARY>');
 });
 
-test('V2 backend disposal completes registrations strictly in reverse order', async () => {
+test('V2 backend disposal releases the root-only context registration', async () => {
   const order = [];
   const cleanup = await OpencodeSmartQuestions.setup({
     location: { directory: '/tmp/sq-v2-disposal-order' },
     options: { enabled: true },
-    tool: {
-      transform() {
-        return Promise.resolve({
-          async dispose() {
-            order.push('tool:start');
-            await new Promise((resolve) => setTimeout(resolve, 1));
-            order.push('tool:end');
-          },
-        });
-      },
-    },
     session: {
+      async get({ sessionID }) {
+        return { id: sessionID };
+      },
       hook() {
         return Promise.resolve({
           async dispose() {
@@ -2888,8 +2928,6 @@ test('V2 backend disposal completes registrations strictly in reverse order', as
   assert.deepEqual(order, [
     'context:start',
     'context:end',
-    'tool:start',
-    'tool:end',
   ]);
 });
 
@@ -3028,16 +3066,12 @@ test('guidance avoids unnecessary questions when user direction is already suffi
     config: { enabled: true, recommendedMarkers: ['[SQ:recommended]'] },
   });
   try {
-    const questionOutput = { description: 'Ask the user a question with choices', jsonSchema: {} };
-    await hooks['tool.definition']({ toolID: 'question' }, questionOutput);
     const systemOutput = { system: ['Base system prompt'] };
     await hooks['experimental.chat.system.transform'](
       { sessionID: 'ses-guidance-necessity' },
       systemOutput
     );
 
-    assert.match(questionOutput.description, /existing instructions.*determine|already .*direction/i);
-    assert.match(questionOutput.description, /do not .*question|do not create.*form/i);
     assert.match(systemOutput.system[1], /existing instructions.*determine|already .*direction/i);
     assert.match(systemOutput.system[1], /do not .*question|do not create.*form/i);
   } finally {
@@ -3050,14 +3084,6 @@ test('V1 dedup ignores generic headings and keys only on the SQ sentinel', async
     config: { enabled: true, recommendedMarkers: ['[SQ:recommended]'] },
   });
   try {
-    const questionOutput = {
-      description: 'Third-party note mentions [RECOMMENDED OPTION CONVENTION] only.',
-      jsonSchema: {},
-    };
-    await hooks['tool.definition']({ toolID: 'question' }, questionOutput);
-    assert.match(questionOutput.description, /\[SQ_GUIDANCE:v1\]/);
-    assert.match(questionOutput.description, /native question tool/i);
-
     const systemOutput = {
       system: ['Third-party note: Smart Question Auto-Selection Guidance'],
     };
@@ -3082,18 +3108,14 @@ test('V1 dedup ignores generic headings and keys only on the SQ sentinel', async
 });
 
 test('V2 dedup ignores generic headings and keys only on the SQ sentinel', async () => {
-  let toolTransform;
   let contextHook;
   const cleanup = await OpencodeSmartQuestions.setup({
     location: { directory: '/tmp/sq-v2-sentinel' },
     options: { enabled: true, recommendedMarkers: ['[SQ:recommended]'] },
-    tool: {
-      transform(callback) {
-        toolTransform = callback;
-        return Promise.resolve({ dispose: async () => {} });
-      },
-    },
     session: {
+      async get({ sessionID }) {
+        return { id: sessionID };
+      },
       hook(name, callback) {
         assert.equal(name, 'context');
         contextHook = callback;
@@ -3103,21 +3125,13 @@ test('V2 dedup ignores generic headings and keys only on the SQ sentinel', async
   });
 
   try {
-    const questionTool = {
-      description: 'Third-party note mentions [RECOMMENDED OPTION CONVENTION] only.',
-    };
-    toolTransform({
-      update(id, mutate) {
-        assert.equal(id, 'question');
-        mutate(questionTool);
-      },
-    });
-    assert.match(questionTool.description, /\[SQ_GUIDANCE:v1\]/);
-
     const event = {
+      sessionID: 'ses-v2-sentinel',
       system: [{ type: 'text', text: 'Third-party note: Smart Question Auto-Selection Guidance' }],
       messages: [],
-      tools: [],
+      tools: {},
+      agent: 'main',
+      model: {},
     };
     await contextHook(event);
     assert.equal(event.system.length, 2);
