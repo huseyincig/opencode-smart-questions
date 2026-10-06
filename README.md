@@ -9,11 +9,11 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[Installation](#-installation) · [How Selection Works](#-how-selection-works) · [Coordination Handoff](#-guardian--smart-questions-coordination) · [Architecture & Flowchart](#-architecture--selection-lifecycle) · [Configuration](#-configuration) · [Validation](#-validation--testing)
+[Installation](#-installation) · [How Selection Works](#-how-selection-works) · [Architecture & Flowchart](#-architecture--selection-lifecycle) · [Guardian Coordination (Optional)](#-optional-coordination-with-opencode-guardian) · [Configuration](#-configuration) · [Validation](#-validation--testing)
 
-A high-performance, deterministic OpenCode plugin that selects an agent-recommended answer after a configurable countdown, unless the user intervenes. It supports single-choice and multiple-choice questions with decoupled, versioned OpenCode V1 and V2 host adapters.
+A high-performance, deterministic OpenCode plugin that automatically answers agent-recommended choices after a configurable countdown, unless the user intervenes. It operates completely standalone and supports single-choice and multiple-choice questions across OpenCode V1 and V2 host architectures.
 
-**Language-independent selection:** Question text and options can be written in any language. The plugin recognizes exact configured markers such as `[SQ:recommended]`; it does not translate or alter recommendations. The alternative `(Recommended)` and `(Önerilen)` markers are also accepted by default.
+**Language-independent selection:** Question text and options can be written in any language. The plugin recognizes exact configured markers such as `[SQ:recommended]`; it does not translate or alter recommendations. Alternative markers like `(Recommended)` and `(Önerilen)` are also recognized by default.
 
 ---
 
@@ -21,9 +21,9 @@ A high-performance, deterministic OpenCode plugin that selects an agent-recommen
 
 ![Automated and host acceptance results](docs/assets/verification-overview.svg)
 
-> The graphic displays the current **v0.4.5 automated verification** along with real host acceptance on **OpenCode V1 (`1.18.34`)** and **OpenCode V2 (`2.0.24`)** executed with the mandatory test model `opencode-go/mimo-v2.6-flash`.
+> The graphic displays the current **v0.4.6 automated verification** along with real host acceptance on **OpenCode V1 (`1.18.34`)** and **OpenCode V2 (`2.0.24`)** executed with the mandatory test model `opencode-go/mimo-v2.6-flash`.
 
-Smart Questions **v0.4.5** is validated as follows:
+Smart Questions **v0.4.6** is validated as follows:
 
 - **Current Automated Verification:** **113 / 113** unit and regression tests passing.
 - **Sandbox Scenarios:** **8 / 8** isolated smoke and comprehensive test suites passing.
@@ -37,20 +37,20 @@ Read the detailed [V1 Acceptance Report](docs/acceptance-v1.md), [V2 Acceptance 
 
 ## ✨ Key Highlights
 
-- **Dual-Mode Architecture:** Seamlessly supports both **OpenCode v1** (`@opencode-ai/plugin`) and **OpenCode v2** (`@opencode/plugin`) with unified runtime adapters.
-- **Language-Independent Selection:** Suffix matching works identically across all natural languages (`Kaydet [SQ:recommended]`, `Save [SQ:recommended]`, `保存 [SQ:recommended]`) with Unicode NFC normalization.
+- **100% Standalone Operation:** Operates independently without requiring any other plugins, external services, or background daemons.
+- **Dual-Mode Host Support:** Seamlessly supports both **OpenCode v1** (`@opencode-ai/plugin`) and **OpenCode v2** (`@opencode/plugin`) with decoupled runtime adapters.
+- **Language-Independent Matching:** Suffix matching works identically across all natural languages (`Kaydet [SQ:recommended]`, `Save [SQ:recommended]`, `保存 [SQ:recommended]`) with Unicode NFC normalization.
 - **Fail-Safe Ambiguity Gates:** Automatically aborts auto-selection when a single-select question contains multiple recommendations, or zero recommendations are present.
-- **User Intervention & Draft-Guard:** Cancels auto-reply immediately upon user typing, keyboard entry, draft file locking, or manual form response.
-- **Decoupled Guardian Handoff (`[OPENCODE_HANDOFF:v1]`):** Integrates seamlessly with OpenCode Guardian without npm dependencies. Strictly blocks auto-reply when Guardian designates `auto_select=forbidden` for destructive/approval actions.
-- **Anti-Spoofing & Replay Protection:** Rejects untrusted handoff blocks lacking Guardian provenance, invalidates stale handoffs after 120s TTL, and tombstones consumed IDs against replay attacks.
-- **Main Agent Scope Enforcement:** Excludes child/subagent sessions from auto-reply, preventing recursive subagent interference.
-- **Zero Runtime Dependencies:** Pure TypeScript precompiled to `dist/` with no heavy third-party runtime dependencies.
+- **Instant User Intervention:** Cancels countdown immediately upon user typing, keyboard entry, draft file locking, or manual form selection.
+- **Subagent & Child Scope Isolation:** Operates strictly in the interactive root session; background child sessions and subagents are ignored without interference.
+- **Zero Runtime Dependencies:** Pure TypeScript compiled to `dist/` with no heavy third-party runtime dependencies.
+- **Decoupled Guardian Protocol:** Optional, zero-dependency handoff coordination when paired with [OpenCode Guardian](https://github.com/huseyincig/opencode-guardian).
 
 ---
 
 ## 📦 Installation
 
-The current source version is **0.4.5**.
+The current version is **0.4.6**.
 
 ### 🟢 OpenCode V1 (1.x)
 
@@ -110,87 +110,50 @@ Use the `file:///` URL in `opencode.json`:
 5. If the request remains eligible upon expiry, V1 issues `client.question.reply`; V2 validates the pending form and submits `session.form.reply`.
 
 > [!IMPORTANT]
-> **Selection is not permission.** The plugin cannot determine whether a recommendation is correct, safe, or authorized. Destructive, irreversible, or privileged operations must require human approval. When paired with OpenCode Guardian, destructive actions are marked `auto_select=forbidden`, which strictly disables auto-selection.
-
----
-
-## 🤝 Guardian + Smart Questions Coordination
-
-OpenCode Guardian and Smart Questions coordinate through a decoupled, versioned handoff protocol without importing each other as package dependencies:
-
-```text
-[OPENCODE_HANDOFF:v1]
-source=guardian
-action=question_required
-kind=choice
-auto_select=allowed
-handoff_id=gq_c47f9a12b0
-```
-
-### Security & Coordination Matrix:
-
-| Guardian Classification | Handoff Directive | Smart Questions Action |
-| :--- | :--- | :--- |
-| **Clarification / Choice** | `kind=choice`<br>`auto_select=allowed` | Validates recommendation, schedules countdown, auto-selects if uninterrupted. |
-| **Destructive / Irreversible** | `kind=approval`<br>`auto_select=forbidden` | Displays choices but **strictly blocks** countdown and auto-selection. Manual user approval required. |
-| **Untrusted / Spoofed Text** | Missing Guardian metadata | **Rejected** by anti-spoof extractor (`null`). No handoff activated. |
-| **Stale / Prior Turn** | Exceeded 120s TTL or new user turn | **Purged & tombstoned**. Cannot be resurrected via message history. |
+> **Selection is not permission.** The plugin cannot determine whether a recommendation is safe, reversible, or authorized. Destructive operations should always require explicit human approval.
 
 ---
 
 ## 🔄 Architecture & Selection Lifecycle
 
-### 1. Decision Flowchart
+The decision flow below illustrates Smart Questions' native, standalone operation:
 
 ```mermaid
 flowchart TD
-    Event[Question / Form event received] --> Scope{Root session?}
-    Scope -->|Child / Subagent| Ignore[Ignore event; no timer started]
-    Scope -->|Root session| HandoffCheck{Active Guardian handoff?}
+    Event[Question / Form event received from OpenCode] --> Scope{Root session?}
+    Scope -->|Child / Subagent session| Ignore[Bypass event; no auto-reply]
+    Scope -->|Root session| Detect[Scan options for recommendation markers]
 
-    HandoffCheck -->|auto_select=forbidden| BlockAuto[Suppress countdown; require manual user answer]
-    HandoffCheck -->|None or auto_select=allowed| Detect[Detect recommendation markers]
-
-    Detect --> DetectCheck{Detection status?}
-    DetectCheck -->|Zero recommendations| Fallback[Fail-safe: leave to user]
+    Detect --> DetectCheck{Recommendation status?}
+    DetectCheck -->|Zero recommendations| Fallback[Leave to user manual selection]
     DetectCheck -->|Multiple in single-select| Fallback
-    DetectCheck -->|Exactly one recommendation| DraftCheck{User draft lock active?}
+    DetectCheck -->|Single valid recommendation| DraftCheck{User draft lock active?}
 
-    DraftCheck -->|Lock present / composing| Fallback
-    DraftCheck -->|Lock free| Schedule[Schedule countdown timer (timeoutMs)]
+    DraftCheck -->|Lock exists / typing active| Fallback
+    DraftCheck -->|Lock clear| Timer[Start countdown timer (timeoutMs)]
 
-    Schedule --> Intervene{User intervention before timeout?}
-    Intervene -->|Manual click / keypress| Cancel[Cancel timer and clear handoff]
-    Intervene -->|Timeout expires cleanly| Recheck{Still valid & unlocked?}
+    Timer --> Intervene{User intervention before timeout?}
+    Intervene -->|Option click / keyboard press| Cancel[Cancel countdown immediately]
+    Intervene -->|Timer expires cleanly| Recheck{Form / question still pending?}
 
-    Recheck -->|No| Cancel
-    Recheck -->|Yes| Dispatch[Execute question / form reply transport]
-    Dispatch --> Consume[Tombstone handoff ID against replay]
-    Consume --> Complete[Agent resumes execution with selected answer]
+    Recheck -->|No / answered| Cancel
+    Recheck -->|Yes / pending| Reply[Dispatch native reply transport]
+    Reply --> Complete[Agent resumes turn with selected answer]
 ```
 
-### 2. Coordination Sequence Diagram
+---
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant U as User / Agent
-    participant G as Guardian
-    participant SQ as Smart Questions
-    participant Host as OpenCode Host
+## 🤝 Optional: Coordination with OpenCode Guardian
 
-    U->>G: Agent proposes choice or remediation
-    G->>Host: Remediation with [OPENCODE_HANDOFF:v1]
-    Host->>SQ: message.created (Verified Guardian metadata)
-    SQ->>SQ: Activate handoff (autoSelect=allowed, TTL=120s)
-    U->>Host: question.asked (Choice with [SQ:recommended])
-    Host->>SQ: Question event received
-    SQ->>SQ: Detect marker & start countdown
-    Note over SQ,Host: Countdown running (timeoutMs)
-    SQ->>Host: client.question.reply([Recommended Option])
-    SQ->>SQ: Tombstone handoff ID (prevent duplicate reuse)
-    Host->>U: Turn resumes with selected decision
-```
+Smart Questions is **100% standalone and has no dependencies on Guardian**.
+
+However, when used together in the same OpenCode environment, they optionally coordinate through a decoupled, zero-dependency handoff protocol (`[OPENCODE_HANDOFF:v1]`):
+
+- **Destructive Action Safety:** If Guardian classifies an action as destructive or high-risk, it marks `auto_select=forbidden`. Smart Questions immediately suppresses the countdown timer and locks the choice to manual user approval.
+- **Safe Clarifications:** For routine choices, Guardian sets `auto_select=allowed`, allowing Smart Questions to execute its standard countdown.
+- **Anti-Spoofing & Replay Protection:** Handshakes without valid provenance are rejected; handoffs expire after 120s TTL and are tombstoned once consumed.
+
+📖 For architecture diagrams, sequence flows, and contract details, see the [Guardian + Smart Questions Coordination Guide](docs/guardian-integration.md).
 
 ---
 
@@ -247,7 +210,7 @@ npm audit
 npm pack --dry-run
 ```
 
-- **CI Matrix:** Runs on Node 22 and Node 24 with strict typechecking and Oxlint verification.
+- **CI Matrix:** Runs on Node 22, 24, and 26 with strict typechecking and Oxlint verification.
 - **Acceptance Reports:** See [V1 Acceptance](docs/acceptance-v1.md) and [V2 Acceptance](docs/acceptance-v2.md) for live host benchmarks.
 - **Technical Specifications:** Detailed boundaries and limitations are documented in [Technical Verification](docs/verification.md).
 
