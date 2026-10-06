@@ -120,25 +120,25 @@ The decision flow below illustrates Smart Questions' native, standalone operatio
 
 ```mermaid
 flowchart TD
-    Event[Question / Form event received from OpenCode] --> Scope{Root session?}
-    Scope -->|Child / Subagent session| Ignore[Bypass event; no auto-reply]
-    Scope -->|Root session| Detect[Scan options for recommendation markers]
+    Event["Question or form event received from OpenCode"] --> Scope{"Root session?"}
+    Scope -->|Child or subagent session| Ignore["Bypass event; no auto-reply"]
+    Scope -->|Root session| Detect["Scan options for recommendation markers"]
 
-    Detect --> DetectCheck{Recommendation status?}
-    DetectCheck -->|Zero recommendations| Fallback[Leave to user manual selection]
+    Detect --> DetectCheck{"Recommendation status?"}
+    DetectCheck -->|Zero recommendations| Fallback["Leave to user manual selection"]
     DetectCheck -->|Multiple in single-select| Fallback
-    DetectCheck -->|Single valid recommendation| DraftCheck{User draft lock active?}
+    DetectCheck -->|Single valid recommendation| DraftCheck{"User draft lock active?"}
 
-    DraftCheck -->|Lock exists / typing active| Fallback
-    DraftCheck -->|Lock clear| Timer[Start countdown timer (timeoutMs)]
+    DraftCheck -->|Lock exists or typing active| Fallback
+    DraftCheck -->|Lock clear| Timer["Start countdown timer"]
 
-    Timer --> Intervene{User intervention before timeout?}
-    Intervene -->|Option click / keyboard press| Cancel[Cancel countdown immediately]
-    Intervene -->|Timer expires cleanly| Recheck{Form / question still pending?}
+    Timer --> Intervene{"User intervention before timeout?"}
+    Intervene -->|Option click or keyboard press| Cancel["Cancel countdown immediately"]
+    Intervene -->|Timer expires cleanly| Recheck{"Form or question still pending?"}
 
-    Recheck -->|No / answered| Cancel
-    Recheck -->|Yes / pending| Reply[Dispatch native reply transport]
-    Reply --> Complete[Agent resumes turn with selected answer]
+    Recheck -->|No or answered| Cancel
+    Recheck -->|Yes and pending| Reply["Dispatch native reply transport"]
+    Reply --> Complete["Agent resumes turn with selected answer"]
 ```
 
 ---

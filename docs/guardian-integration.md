@@ -42,23 +42,23 @@ handoff_id=gq_c47f9a12b0
 
 ```mermaid
 flowchart TD
-    Agent[Agent requests user decision] --> GCheck{Guardian active?}
-    GCheck -->|No / Standalone| Native[Smart Questions standalone flow]
-    GCheck -->|Yes| GRules{Guardian evaluates rules}
+    Agent["Agent requests user decision"] --> GCheck{"Guardian active?"}
+    GCheck -->|No or standalone| Native["Smart Questions standalone flow"]
+    GCheck -->|Yes| GRules{"Guardian evaluates rules"}
 
-    GRules -->|Destructive / High Risk| GHandoffForbidden[Generate handoff: auto_select=forbidden]
-    GRules -->|Clarification / Choice| GHandoffAllowed[Generate handoff: auto_select=allowed]
+    GRules -->|Destructive or high risk| GHandoffForbidden["Generate handoff: auto_select=forbidden"]
+    GRules -->|Clarification or choice| GHandoffAllowed["Generate handoff: auto_select=allowed"]
 
-    GHandoffForbidden --> SQReceive[Smart Questions receives handoff]
+    GHandoffForbidden --> SQReceive["Smart Questions receives handoff"]
     GHandoffAllowed --> SQReceive
 
-    SQReceive --> SQCheck{auto_select policy}
-    SQCheck -->|forbidden| LockManual[Lock UI: Manual user approval required]
-    SQCheck -->|allowed| StartCountdown[Start countdown for recommended option]
+    SQReceive --> SQCheck{"auto_select policy"}
+    SQCheck -->|forbidden| LockManual["Lock UI: Manual user approval required"]
+    SQCheck -->|allowed| StartCountdown["Start countdown for recommended option"]
 
-    StartCountdown --> UserAction{User intervenes?}
-    UserAction -->|Yes| CancelTimer[Cancel timer; accept user input]
-    UserAction -->|No (timeout)| AutoSelect[Auto-select recommended option]
+    StartCountdown --> UserAction{"User intervenes?"}
+    UserAction -->|Yes| CancelTimer["Cancel timer and accept user input"]
+    UserAction -->|No timeout expires| AutoSelect["Auto-select recommended option"]
 ```
 
 ---
