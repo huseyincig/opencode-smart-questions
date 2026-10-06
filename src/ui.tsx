@@ -32,6 +32,7 @@ import {
   getActiveHandoff,
   setActiveHandoff,
   consumeActiveHandoff,
+  clearActiveHandoff,
   extractHandoffFromParts,
   parseOpenCodeHandoff,
 } from './handoff.js';
@@ -342,6 +343,42 @@ export const tui: TuiPlugin = async (api, options) => {
     );
     if (!decision.ok) return;
 
+    let handoff = getActiveHandoff(sessionID);
+    if (!handoff) {
+      try {
+        const msgs = (api as any)?.state?.session?.messages?.(sessionID);
+        if (Array.isArray(msgs)) {
+          for (let i = msgs.length - 1; i >= 0 && i >= msgs.length - 5; i--) {
+            const m = msgs[i];
+            const extracted =
+              extractHandoffFromParts(m?.parts) ??
+              (typeof m?.content === 'string'
+                ? parseOpenCodeHandoff(m.content, { requireRemediationMarker: true })
+                : null);
+            if (extracted && typeof extracted === 'object' && 'version' in extracted) {
+              setActiveHandoff(sessionID, extracted);
+              handoff = extracted as any;
+              break;
+            }
+          }
+        }
+      } catch {
+        // Best effort
+      }
+    }
+
+    if (
+      handoff &&
+      typeof handoff === 'object' &&
+      'autoSelect' in handoff &&
+      handoff.autoSelect === 'forbidden'
+    ) {
+      log(
+        `skip request=${requestID} reason=guardian-handoff-auto-select-forbidden handoffId=${handoff.handoffId}`
+      );
+      return;
+    }
+
     // Preserve a lock for a prior question if the user already took control;
     // its backend timer must still observe the lock and refrain from replying.
     clearActive(!activeQuestion()?.focusDisabled);
@@ -397,15 +434,54 @@ export const tui: TuiPlugin = async (api, options) => {
       | Record<string, unknown>
       | undefined;
     const requestID = data?.requestID ?? data?.id ?? event?.id;
+    const sessionID = String(data?.sessionID ?? event?.sessionID ?? '');
+    if (sessionID) {
+      consumeActiveHandoff(sessionID);
+    }
     const current = activeQuestion();
     if (current && typeof requestID === 'string' && requestID === current.requestID) {
       clearActive();
     }
   };
 
+  const onMessageCreated = (event: Record<string, unknown>) => {
+    const data = (event?.properties ?? event?.data ?? event) as
+      | Record<string, unknown>
+      | undefined;
+    const sessionID = String(data?.sessionID ?? event?.sessionID ?? '');
+    if (!sessionID) return;
+    const parts = data?.parts ?? (data?.message as any)?.parts;
+    const handoff =
+      extractHandoffFromParts(parts) ??
+      (typeof data?.content === 'string'
+        ? parseOpenCodeHandoff(data.content, { requireRemediationMarker: true })
+        : null);
+    if (handoff && typeof handoff === 'object' && 'version' in handoff) {
+      setActiveHandoff(sessionID, handoff);
+    } else {
+      const role = data?.role ?? (data?.message as any)?.role;
+      if (role === 'user') {
+        clearActiveHandoff(sessionID);
+      }
+    }
+  };
+
+  const onSessionDeleted = (event: Record<string, unknown>) => {
+    const data = (event?.properties ?? event?.data ?? event) as
+      | Record<string, unknown>
+      | undefined;
+    const sessionID = String(data?.id ?? data?.sessionID ?? event?.sessionID ?? '');
+    if (sessionID) {
+      clearActiveHandoff(sessionID);
+    }
+  };
+
   const stopAsked = api.event?.on?.('question.asked', onAsked);
   const stopReplied = api.event?.on?.('question.replied', onEnd);
   const stopRejected = api.event?.on?.('question.rejected', onEnd);
+  const stopMsgUpdated = api.event?.on?.('message.updated', onMessageCreated);
+  const stopMsgCreated = (api.event as any)?.on?.('message.created', onMessageCreated);
+  const stopSessionDel = api.event?.on?.('session.deleted', onSessionDeleted);
 
   api.slots?.register?.({
     slots: {
@@ -445,6 +521,9 @@ export const tui: TuiPlugin = async (api, options) => {
     stopAsked?.();
     stopReplied?.();
     stopRejected?.();
+    stopMsgUpdated?.();
+    stopMsgCreated?.();
+    stopSessionDel?.();
     if (keypressRegistered) {
       api.renderer?.keyInput?.off?.('keypress', onKey);
       keypressRegistered = false;
@@ -611,7 +690,9 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
             const m = msgs[i];
             const extracted =
               extractHandoffFromParts(m?.parts) ??
-              (typeof m?.content === 'string' ? parseOpenCodeHandoff(m.content) : null);
+              (typeof m?.content === 'string'
+                ? parseOpenCodeHandoff(m.content, { requireRemediationMarker: true })
+                : null);
             if (extracted) {
               setActiveHandoff(form.sessionID, extracted);
               handoff = extracted;
@@ -801,12 +882,27 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         const parts = event?.data?.parts ?? event?.data?.message?.parts;
         const handoff =
           extractHandoffFromParts(parts) ??
-          (typeof event?.data?.content === 'string' ? parseOpenCodeHandoff(event.data.content) : null);
-        if (handoff) {
+          (typeof event?.data?.content === 'string'
+            ? parseOpenCodeHandoff(event.data.content, { requireRemediationMarker: true })
+            : null);
+        if (handoff && typeof handoff === 'object' && 'version' in handoff) {
           setActiveHandoff(sessionID, handoff);
+        } else {
+          const role = event?.data?.role ?? event?.data?.info?.role ?? event?.data?.message?.role;
+          if (role === 'user') {
+            clearActiveHandoff(sessionID);
+          }
         }
       });
       if (typeof msgDisposer === 'function') cleanups.push(msgDisposer);
+
+      const sessionDelDisposer = (context.data as any)?.on?.('session.deleted', (event: any) => {
+        const sessionID = String(event?.data?.id ?? event?.data?.sessionID ?? event?.sessionID ?? '');
+        if (sessionID && sessionID !== 'global') {
+          clearActiveHandoff(sessionID);
+        }
+      });
+      if (typeof sessionDelDisposer === 'function') cleanups.push(sessionDelDisposer);
     } catch {
       // Best effort
     }

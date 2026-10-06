@@ -10,6 +10,7 @@ import {
   getActiveHandoff,
   setActiveHandoff,
   consumeActiveHandoff,
+  clearActiveHandoff,
   extractHandoffFromParts,
   parseOpenCodeHandoff,
 } from './handoff.js';
@@ -98,12 +99,28 @@ export async function createSmartQuestionHooks(
         const parts = payload?.parts ?? payload?.message?.parts;
         const handoff =
           extractHandoffFromParts(parts) ??
-          (typeof payload?.content === 'string' ? parseOpenCodeHandoff(payload.content) : null) ??
-          (typeof payload?.text === 'string' ? parseOpenCodeHandoff(payload.text) : null);
-        if (handoff) {
+          (typeof payload?.content === 'string' ? parseOpenCodeHandoff(payload.content, { requireRemediationMarker: true }) : null) ??
+          (typeof payload?.text === 'string' ? parseOpenCodeHandoff(payload.text, { requireRemediationMarker: true }) : null);
+        if (handoff && typeof handoff === 'object' && 'version' in handoff) {
           setActiveHandoff(sessionID, handoff);
           dbg(`handoff received via event session=${sessionID} handoffId=${handoff.handoffId} kind=${handoff.kind} autoSelect=${handoff.autoSelect}`);
+        } else {
+          const role = payload?.role ?? payload?.info?.role ?? payload?.message?.role ?? payload?.message?.info?.role;
+          if (event.type === 'message.created' && role === 'user') {
+            clearActiveHandoff(sessionID);
+            dbg(`cleared stale handoff on new user turn session=${sessionID}`);
+          }
         }
+      }
+      return;
+    }
+
+    if (event.type === 'session.deleted') {
+      const sessionID = String(payload?.id ?? payload?.sessionID ?? event?.sessionID ?? '');
+      if (sessionID) {
+        clearActiveHandoff(sessionID);
+        sessionScope.delete(sessionID);
+        dbg(`session deleted, cleared handoff and scope session=${sessionID}`);
       }
       return;
     }
@@ -131,10 +148,10 @@ export async function createSmartQuestionHooks(
               const m = msgs[i];
               const extracted =
                 extractHandoffFromParts(m?.parts) ??
-                (typeof m?.content === 'string' ? parseOpenCodeHandoff(m.content) : null);
-              if (extracted) {
+                (typeof m?.content === 'string' ? parseOpenCodeHandoff(m.content, { requireRemediationMarker: true }) : null);
+              if (extracted && typeof extracted === 'object' && 'version' in extracted) {
                 setActiveHandoff(sessionID, extracted);
-                handoff = extracted;
+                handoff = extracted as any;
                 break;
               }
             }
@@ -345,10 +362,18 @@ export async function createSmartQuestionHooks(
     if (!sessionID || !(await isRootSession(sessionID))) return;
     const handoff =
       extractHandoffFromParts(output?.parts) ??
-      (typeof output?.message?.content === 'string' ? parseOpenCodeHandoff(output.message.content) : null);
-    if (handoff) {
+      (typeof output?.message?.content === 'string'
+        ? parseOpenCodeHandoff(output.message.content, { requireRemediationMarker: true })
+        : null);
+    if (handoff && typeof handoff === 'object' && 'version' in handoff) {
       setActiveHandoff(sessionID, handoff);
       dbg(`handoff received via chat.message session=${sessionID} handoffId=${handoff.handoffId} kind=${handoff.kind} autoSelect=${handoff.autoSelect}`);
+    } else {
+      const role = output?.message?.role ?? output?.message?.info?.role;
+      if (role === 'user') {
+        clearActiveHandoff(sessionID);
+        dbg(`cleared stale handoff on new user turn in chat.message session=${sessionID}`);
+      }
     }
   };
 

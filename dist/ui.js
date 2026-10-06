@@ -467,15 +467,21 @@ function isRootSessionInfo(value) {
 
 // src/handoff.ts
 var OPENCODE_HANDOFF_HEADER = "[OPENCODE_HANDOFF:v1]";
+var GUARDIAN_REMEDIATION_MARKER = "[opencode-guardian remediation]";
+var DEFAULT_HANDOFF_TTL_MS = 12e4;
 var COORDINATION_SYMBOL = Symbol.for("opencode.coordination.v1");
 function isPluginInput(arg) {
   return Boolean(
     arg && typeof arg === "object" && ("client" in arg || "directory" in arg || "project" in arg)
   );
 }
-function parseOpenCodeHandoff(text) {
+function parseOpenCodeHandoff(text, options) {
   if (isPluginInput(text)) return {};
   if (typeof text !== "string" || !text.includes(OPENCODE_HANDOFF_HEADER)) return null;
+  const requireMarker = typeof options === "boolean" ? options : Boolean(options?.requireRemediationMarker);
+  if (requireMarker && !text.includes(GUARDIAN_REMEDIATION_MARKER)) {
+    return null;
+  }
   const match = /\[OPENCODE_HANDOFF:v1\]\s*([\s\S]*?)(?:\n\n|\r\n\r\n|$)/.exec(text);
   if (!match || !match[1]) return null;
   const lines = match[1].split(/\r?\n/);
@@ -509,14 +515,23 @@ function parseOpenCodeHandoff(text) {
     handoffId
   };
 }
-function extractHandoffFromParts(parts) {
+function extractHandoffFromParts(parts, options) {
   if (isPluginInput(parts)) return {};
   if (!Array.isArray(parts)) return null;
+  const requireMarker = typeof options === "boolean" ? options : options?.requireRemediationMarker ?? true;
+  if (requireMarker) {
+    const hasRemediationMarker = parts.some(
+      (part) => Boolean(
+        part && typeof part === "object" && typeof part.text === "string" && part.text.includes(GUARDIAN_REMEDIATION_MARKER)
+      )
+    );
+    if (!hasRemediationMarker) return null;
+  }
   for (const part of parts) {
     if (part && typeof part === "object") {
       const text = part.text;
       if (typeof text === "string") {
-        const parsed = parseOpenCodeHandoff(text);
+        const parsed = parseOpenCodeHandoff(text, false);
         if (parsed && typeof parsed === "object" && "version" in parsed) {
           return parsed;
         }
@@ -525,35 +540,61 @@ function extractHandoffFromParts(parts) {
   }
   return null;
 }
-var activeHandoffsBySession = /* @__PURE__ */ new Map();
-var consumedHandoffIds = /* @__PURE__ */ new Set();
-function setActiveHandoff(sessionID, handoff) {
+var HANDOFF_STATE_SYMBOL = Symbol.for("opencode.handoff.state.v1");
+function getHandoffState() {
+  const g = globalThis;
+  return g[HANDOFF_STATE_SYMBOL] ??= {
+    activeHandoffsBySession: /* @__PURE__ */ new Map(),
+    consumedHandoffIds: /* @__PURE__ */ new Set()
+  };
+}
+function setActiveHandoff(sessionID, handoff, timestamp) {
   if (isPluginInput(sessionID)) return {};
   const sID = String(sessionID ?? "");
   const h = handoff;
   if (!sID || !h?.handoffId) return false;
-  if (consumedHandoffIds.has(h.handoffId)) {
+  const state = getHandoffState();
+  if (state.consumedHandoffIds.has(h.handoffId)) {
     return false;
   }
-  activeHandoffsBySession.set(sID, h);
+  state.activeHandoffsBySession.set(sID, {
+    handoff: h,
+    createdAt: typeof timestamp === "number" ? timestamp : Date.now()
+  });
   return true;
 }
-function getActiveHandoff(sessionID) {
+function getActiveHandoff(sessionID, maxAgeMs = DEFAULT_HANDOFF_TTL_MS) {
   if (isPluginInput(sessionID)) return {};
   const sID = String(sessionID ?? "");
   if (!sID) return void 0;
-  return activeHandoffsBySession.get(sID);
+  const state = getHandoffState();
+  const entry = state.activeHandoffsBySession.get(sID);
+  if (!entry) return void 0;
+  const age = Date.now() - entry.createdAt;
+  if (age > maxAgeMs) {
+    state.activeHandoffsBySession.delete(sID);
+    return void 0;
+  }
+  return entry.handoff;
 }
 function consumeActiveHandoff(sessionID) {
   if (isPluginInput(sessionID)) return {};
   const sID = String(sessionID ?? "");
   if (!sID) return void 0;
-  const current = activeHandoffsBySession.get(sID);
-  if (current) {
-    consumedHandoffIds.add(current.handoffId);
-    activeHandoffsBySession.delete(sID);
+  const state = getHandoffState();
+  const entry = state.activeHandoffsBySession.get(sID);
+  if (entry) {
+    state.consumedHandoffIds.add(entry.handoff.handoffId);
+    state.activeHandoffsBySession.delete(sID);
+    return entry.handoff;
   }
-  return current;
+  return void 0;
+}
+function clearActiveHandoff(sessionID) {
+  if (isPluginInput(sessionID)) return {};
+  const sID = String(sessionID ?? "");
+  if (!sID) return;
+  getHandoffState().activeHandoffsBySession.delete(sID);
 }
 
 // src/ui.js
@@ -793,6 +834,30 @@ var tui = async (api, options) => {
       requireExactlyOneRecommendation: config.requireExactlyOneRecommendation
     });
     if (!decision.ok) return;
+    let handoff = getActiveHandoff(sessionID);
+    if (!handoff) {
+      try {
+        const msgs = api?.state?.session?.messages?.(sessionID);
+        if (Array.isArray(msgs)) {
+          for (let i = msgs.length - 1; i >= 0 && i >= msgs.length - 5; i--) {
+            const m = msgs[i];
+            const extracted = extractHandoffFromParts(m?.parts) ?? (typeof m?.content === "string" ? parseOpenCodeHandoff(m.content, {
+              requireRemediationMarker: true
+            }) : null);
+            if (extracted && typeof extracted === "object" && "version" in extracted) {
+              setActiveHandoff(sessionID, extracted);
+              handoff = extracted;
+              break;
+            }
+          }
+        }
+      } catch {
+      }
+    }
+    if (handoff && typeof handoff === "object" && "autoSelect" in handoff && handoff.autoSelect === "forbidden") {
+      log(`skip request=${requestID} reason=guardian-handoff-auto-select-forbidden handoffId=${handoff.handoffId}`);
+      return;
+    }
     clearActive(!activeQuestion()?.focusDisabled);
     const agent = resolveAgentName(api, sessionID, data);
     const lockPath = resolveLockPath(config.configDir, requestID);
@@ -843,14 +908,45 @@ var tui = async (api, options) => {
   const onEnd = (event) => {
     const data = event?.properties ?? event?.data ?? event;
     const requestID = data?.requestID ?? data?.id ?? event?.id;
+    const sessionID = String(data?.sessionID ?? event?.sessionID ?? "");
+    if (sessionID) {
+      consumeActiveHandoff(sessionID);
+    }
     const current = activeQuestion();
     if (current && typeof requestID === "string" && requestID === current.requestID) {
       clearActive();
     }
   };
+  const onMessageCreated = (event) => {
+    const data = event?.properties ?? event?.data ?? event;
+    const sessionID = String(data?.sessionID ?? event?.sessionID ?? "");
+    if (!sessionID) return;
+    const parts = data?.parts ?? data?.message?.parts;
+    const handoff = extractHandoffFromParts(parts) ?? (typeof data?.content === "string" ? parseOpenCodeHandoff(data.content, {
+      requireRemediationMarker: true
+    }) : null);
+    if (handoff && typeof handoff === "object" && "version" in handoff) {
+      setActiveHandoff(sessionID, handoff);
+    } else {
+      const role = data?.role ?? data?.message?.role;
+      if (role === "user") {
+        clearActiveHandoff(sessionID);
+      }
+    }
+  };
+  const onSessionDeleted = (event) => {
+    const data = event?.properties ?? event?.data ?? event;
+    const sessionID = String(data?.id ?? data?.sessionID ?? event?.sessionID ?? "");
+    if (sessionID) {
+      clearActiveHandoff(sessionID);
+    }
+  };
   const stopAsked = api.event?.on?.("question.asked", onAsked);
   const stopReplied = api.event?.on?.("question.replied", onEnd);
   const stopRejected = api.event?.on?.("question.rejected", onEnd);
+  const stopMsgUpdated = api.event?.on?.("message.updated", onMessageCreated);
+  const stopMsgCreated = api.event?.on?.("message.created", onMessageCreated);
+  const stopSessionDel = api.event?.on?.("session.deleted", onSessionDeleted);
   api.slots?.register?.({
     slots: {
       app_bottom() {
@@ -888,6 +984,9 @@ var tui = async (api, options) => {
     stopAsked?.();
     stopReplied?.();
     stopRejected?.();
+    stopMsgUpdated?.();
+    stopMsgCreated?.();
+    stopSessionDel?.();
     if (keypressRegistered) {
       api.renderer?.keyInput?.off?.("keypress", onKey);
       keypressRegistered = false;
@@ -1005,7 +1104,9 @@ var setup = async (context) => {
         if (Array.isArray(msgs)) {
           for (let i = msgs.length - 1; i >= 0 && i >= msgs.length - 5; i--) {
             const m = msgs[i];
-            const extracted = extractHandoffFromParts(m?.parts) ?? (typeof m?.content === "string" ? parseOpenCodeHandoff(m.content) : null);
+            const extracted = extractHandoffFromParts(m?.parts) ?? (typeof m?.content === "string" ? parseOpenCodeHandoff(m.content, {
+              requireRemediationMarker: true
+            }) : null);
             if (extracted) {
               setActiveHandoff(form.sessionID, extracted);
               handoff = extracted;
@@ -1154,12 +1255,26 @@ var setup = async (context) => {
         const sessionID = String(event?.data?.sessionID ?? event?.sessionID ?? "");
         if (!sessionID || sessionID === "global") return;
         const parts = event?.data?.parts ?? event?.data?.message?.parts;
-        const handoff = extractHandoffFromParts(parts) ?? (typeof event?.data?.content === "string" ? parseOpenCodeHandoff(event.data.content) : null);
-        if (handoff) {
+        const handoff = extractHandoffFromParts(parts) ?? (typeof event?.data?.content === "string" ? parseOpenCodeHandoff(event.data.content, {
+          requireRemediationMarker: true
+        }) : null);
+        if (handoff && typeof handoff === "object" && "version" in handoff) {
           setActiveHandoff(sessionID, handoff);
+        } else {
+          const role = event?.data?.role ?? event?.data?.info?.role ?? event?.data?.message?.role;
+          if (role === "user") {
+            clearActiveHandoff(sessionID);
+          }
         }
       });
       if (typeof msgDisposer === "function") cleanups.push(msgDisposer);
+      const sessionDelDisposer = context.data?.on?.("session.deleted", (event) => {
+        const sessionID = String(event?.data?.id ?? event?.data?.sessionID ?? event?.sessionID ?? "");
+        if (sessionID && sessionID !== "global") {
+          clearActiveHandoff(sessionID);
+        }
+      });
+      if (typeof sessionDelDisposer === "function") cleanups.push(sessionDelDisposer);
     } catch {
     }
     context.renderer.keyInput.on("keypress", onKey);

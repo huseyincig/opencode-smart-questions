@@ -82,7 +82,9 @@ const setupV2 = async (context) => {
                     const text = msg?.content ??
                         msg?.text;
                     const handoff = extractHandoffFromParts(parts) ??
-                        (typeof text === 'string' ? parseOpenCodeHandoff(text) : null);
+                        (typeof text === 'string'
+                            ? parseOpenCodeHandoff(text, { requireRemediationMarker: true })
+                            : null);
                     if (handoff) {
                         setActiveHandoff(String(event.sessionID ?? ''), handoff);
                         break;
