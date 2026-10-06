@@ -754,7 +754,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     }));
   } catch (error) {
     disposeCleanups();
-    for (const formID of [...pending.keys()]) {
+    for (const formID of pending.keys()) {
       clearPending(formID);
     }
     throw error;
@@ -762,7 +762,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
   return () => {
     disposeCleanups();
-    for (const formID of [...pending.keys()]) {
+    for (const formID of pending.keys()) {
       clearPending(formID);
     }
   };

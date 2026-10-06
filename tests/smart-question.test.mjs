@@ -13,7 +13,6 @@ import {
   detectRecommendations,
   loadConfig,
   resolveLockPath,
-  deleteLockfile,
   cleanupStaleDrafts,
   OpencodeSmartQuestions,
 } from '../dist/index.js';

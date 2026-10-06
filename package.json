@@ -36,8 +36,10 @@
     "build": "tsc",
     "postbuild": "node scripts/emit-tui.mjs",
     "typecheck": "tsc --noEmit",
+    "typecheck:strict": "tsc --noEmit --noUnusedLocals --noUnusedParameters --noUncheckedIndexedAccess --exactOptionalPropertyTypes",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "lint": "oxlint src tests --deny-warnings"
   },
   "keywords": [
     "opencode",
@@ -85,13 +87,19 @@
     "@types/node": "^22.0.0",
     "babel-preset-solid": "1.9.12",
     "esbuild": "^0.25.0",
+    "oxlint": "1.87.0",
     "solid-js": "1.9.12",
     "typescript": "^5.8.0"
   },
   "overrides": {
+    "@babel/core": "^7.29.7",
+    "seroval": "1.6.8",
     "@opentui/solid": {
       "@babel/core": "^7.29.7",
       "@babel/preset-typescript": "^7.29.7"
     }
+  },
+  "engines": {
+    "node": ">=22.0.0"
   }
 }

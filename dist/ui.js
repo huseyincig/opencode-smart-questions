@@ -1011,14 +1011,14 @@ var setup = async (context) => {
     }));
   } catch (error) {
     disposeCleanups();
-    for (const formID of [...pending.keys()]) {
+    for (const formID of pending.keys()) {
       clearPending(formID);
     }
     throw error;
   }
   return () => {
     disposeCleanups();
-    for (const formID of [...pending.keys()]) {
+    for (const formID of pending.keys()) {
       clearPending(formID);
     }
   };
