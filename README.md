@@ -21,9 +21,9 @@ A high-performance, deterministic OpenCode plugin that automatically answers age
 
 ![Automated and host acceptance results](docs/assets/verification-overview.svg)
 
-> The graphic displays the current **v0.4.6 automated verification** along with real host acceptance on **OpenCode V1 (`1.18.34`)** and **OpenCode V2 (`2.0.24`)** executed with the mandatory test model `opencode-go/mimo-v2.6-flash`.
+> The graphic displays the current **v0.4.7 automated verification** along with real host acceptance on **OpenCode V1 (`1.18.34`)** and **OpenCode V2 (`2.0.24`)** executed with the mandatory test model `opencode-go/mimo-v2.6-flash`.
 
-Smart Questions **v0.4.6** is validated as follows:
+Smart Questions **v0.4.7** is validated as follows:
 
 - **Current Automated Verification:** **113 / 113** unit and regression tests passing.
 - **Sandbox Scenarios:** **8 / 8** isolated smoke and comprehensive test suites passing.
@@ -50,7 +50,7 @@ Read the detailed [V1 Acceptance Report](docs/acceptance-v1.md), [V2 Acceptance 
 
 ## 📦 Installation
 
-The current version is **0.4.6**.
+The current version is **0.4.7**.
 
 ### 🟢 OpenCode V1 (1.x)
 

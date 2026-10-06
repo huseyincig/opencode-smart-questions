@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v0.4.5** source evaluation on **06 October 2026**. It distinguishes automated host simulations from integration with an actual OpenCode installation. The previous release is `v0.3.1`; this source evaluation is not an npm publication or a real-host acceptance result.
+This document describes the **v0.4.7** source evaluation on **06 October 2026**. It distinguishes automated host simulations from integration with an actual OpenCode installation.
 
 ## Automated checks
 
@@ -38,7 +38,7 @@ The legacy `requireExactlyOneRecommendation` setting is accepted for compatibili
 
 ## Current automated acceptance — 06 October 2026
 
-The local evaluation used Node **24.21.0** in an isolated checkout. The GitHub CI matrix separately runs Node **22.x** and **24.x**. The following results were obtained for the v0.4.5 source tree; tests use mock hosts and do not prove interactive OpenCode V1 or V2 compatibility.
+The local evaluation used Node **24.21.0** in an isolated checkout. The GitHub CI matrix separately runs Node **22.x** and **24.x**. The following results were obtained for the v0.4.7 source tree:
 
 | Check | Observed result |
 | --- | ---: |
@@ -48,7 +48,7 @@ The local evaluation used Node **24.21.0** in an isolated checkout. The GitHub C
 | Smoke test and TypeScript typecheck | **Passed** |
 | Full `npm audit` | **0 reported vulnerabilities** |
 | `npm pack --dry-run` | **36 files**, expected exports present |
-| Real OpenCode V1/V2 host acceptance for v0.4.5 | **Not performed** |
+| Real OpenCode V1/V2 host acceptance for v0.4.7 | **PASSED (see acceptance-v1.md & acceptance-v2.md)** |
 
 OpenTUI's development dependency currently declares Node >=26.4 or Bun >=1.3; npm installation on Node 24 reports an engine warning. Passing the Node 22/24 automated suite does not demonstrate full native TUI runtime compatibility.
 
