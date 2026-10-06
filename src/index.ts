@@ -19,11 +19,19 @@ export {
   cleanupStaleDrafts,
 } from './draft-guard.js';
 export * from './backend.js';
+export * from './handoff.js';
+import {
+  registerSmartQuestionsCapability,
+  setActiveHandoff,
+  parseOpenCodeHandoff,
+  extractHandoffFromParts,
+} from './handoff.js';
 
 /**
  * OpenCode v1 plugin factory.
  */
 export const SmartQuestion: OpenCodeV1Plugin = async (input, options) => {
+  registerSmartQuestionsCapability();
   return createSmartQuestionHooks(
     input as unknown as PluginInput,
     options as Record<string, unknown> | undefined
@@ -48,6 +56,8 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
     context.options as Record<string, unknown> | undefined
   );
   if (!config?.enabled) return;
+
+  registerSmartQuestionsCapability();
 
   const guidance = buildRecommendationGuidance(config);
   const sessionScope = new Map<string, boolean>();
@@ -95,6 +105,22 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
           type: 'text',
           text: guidance.system,
         });
+      }
+      if (Array.isArray(event.messages)) {
+        for (let i = event.messages.length - 1; i >= 0 && i >= event.messages.length - 5; i--) {
+          const msg = event.messages[i];
+          const parts = (msg as { parts?: unknown })?.parts;
+          const text =
+            (msg as { content?: unknown })?.content ??
+            (msg as { text?: unknown })?.text;
+          const handoff =
+            extractHandoffFromParts(parts) ??
+            (typeof text === 'string' ? parseOpenCodeHandoff(text) : null);
+          if (handoff) {
+            setActiveHandoff(String(event.sessionID ?? ''), handoff);
+            break;
+          }
+        }
       }
     });
     if (!contextRegistration || typeof contextRegistration.dispose !== 'function') {

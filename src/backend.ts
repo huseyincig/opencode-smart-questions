@@ -6,6 +6,13 @@ import { canUseDraftCoordination, cleanupStaleDrafts, deleteLockfile, resolveLoc
 import { buildRecommendationGuidance, SQ_GUIDANCE_SENTINEL } from './guidance.js';
 import { createDiagnosticError, diagnosticErrorCode } from './diagnostics.js';
 import { resolveV1SessionScope } from './session-scope.js';
+import {
+  getActiveHandoff,
+  setActiveHandoff,
+  consumeActiveHandoff,
+  extractHandoffFromParts,
+  parseOpenCodeHandoff,
+} from './handoff.js';
 import type {
   Hooks,
   PendingQuestionState,
@@ -85,6 +92,22 @@ export async function createSmartQuestionHooks(
 
     const payload = event.data ?? event.properties?.data ?? event.properties ?? null;
 
+    if (event.type === 'message.created' || event.type === 'message.updated') {
+      const sessionID = String(payload?.sessionID ?? event?.sessionID ?? '');
+      if (sessionID && (await isRootSession(sessionID))) {
+        const parts = payload?.parts ?? payload?.message?.parts;
+        const handoff =
+          extractHandoffFromParts(parts) ??
+          (typeof payload?.content === 'string' ? parseOpenCodeHandoff(payload.content) : null) ??
+          (typeof payload?.text === 'string' ? parseOpenCodeHandoff(payload.text) : null);
+        if (handoff) {
+          setActiveHandoff(sessionID, handoff);
+          dbg(`handoff received via event session=${sessionID} handoffId=${handoff.handoffId} kind=${handoff.kind} autoSelect=${handoff.autoSelect}`);
+        }
+      }
+      return;
+    }
+
     if (event.type === 'question.asked') {
       const data = payload;
       const requestID = data?.id ?? data?.requestID;
@@ -95,6 +118,34 @@ export async function createSmartQuestionHooks(
       }
       if (!(await isRootSession(sessionID))) {
         dbg(`skip request=${requestID} reason=non-root-session`);
+        return;
+      }
+
+      let handoff = getActiveHandoff(sessionID);
+      if (!handoff && client?.session && typeof client.session.messages === 'function') {
+        try {
+          const res = await client.session.messages({ path: { id: sessionID } });
+          const msgs = (res as any)?.data ?? res;
+          if (Array.isArray(msgs)) {
+            for (let i = msgs.length - 1; i >= 0 && i >= msgs.length - 5; i--) {
+              const m = msgs[i];
+              const extracted =
+                extractHandoffFromParts(m?.parts) ??
+                (typeof m?.content === 'string' ? parseOpenCodeHandoff(m.content) : null);
+              if (extracted) {
+                setActiveHandoff(sessionID, extracted);
+                handoff = extracted;
+                break;
+              }
+            }
+          }
+        } catch {
+          // Best effort message lookup
+        }
+      }
+
+      if (handoff && handoff.autoSelect === 'forbidden') {
+        dbg(`skip request=${requestID} reason=guardian-handoff-auto-select-forbidden handoffId=${handoff.handoffId}`);
         return;
       }
 
@@ -224,6 +275,7 @@ export async function createSmartQuestionHooks(
           }
 
           pending.status = 'replied';
+          consumeActiveHandoff(sessionID);
           dbg(`reply OK request=${requestID}`);
           deleteLockfile(lockPath, dbg);
         } catch (err) {
@@ -244,6 +296,10 @@ export async function createSmartQuestionHooks(
     if (event.type === 'question.replied' || event.type === 'question.rejected') {
       const data = payload;
       const requestID = data?.requestID ?? data?.id;
+      const sessionID = String(data?.sessionID ?? event?.sessionID ?? '');
+      if (sessionID) {
+        consumeActiveHandoff(sessionID);
+      }
       if (!requestID || typeof requestID !== 'string') {
         dbg(`${event.type}: no request id`);
         return;
@@ -281,9 +337,25 @@ export async function createSmartQuestionHooks(
     }
   };
 
+  const chatMessageHook = async (
+    input: { sessionID?: string; [key: string]: any },
+    output: { message?: any; parts?: any[]; [key: string]: any }
+  ): Promise<void> => {
+    const sessionID = typeof input?.sessionID === 'string' ? input.sessionID : '';
+    if (!sessionID || !(await isRootSession(sessionID))) return;
+    const handoff =
+      extractHandoffFromParts(output?.parts) ??
+      (typeof output?.message?.content === 'string' ? parseOpenCodeHandoff(output.message.content) : null);
+    if (handoff) {
+      setActiveHandoff(sessionID, handoff);
+      dbg(`handoff received via chat.message session=${sessionID} handoffId=${handoff.handoffId} kind=${handoff.kind} autoSelect=${handoff.autoSelect}`);
+    }
+  };
+
   return {
     event: eventHook,
     dispose: disposeHook,
     'experimental.chat.system.transform': systemTransformHook,
+    'chat.message': chatMessageHook,
   };
 }

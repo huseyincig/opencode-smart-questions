@@ -465,6 +465,97 @@ function isRootSessionInfo(value) {
   return classifySessionScope(value) === "root";
 }
 
+// src/handoff.ts
+var OPENCODE_HANDOFF_HEADER = "[OPENCODE_HANDOFF:v1]";
+var COORDINATION_SYMBOL = Symbol.for("opencode.coordination.v1");
+function isPluginInput(arg) {
+  return Boolean(
+    arg && typeof arg === "object" && ("client" in arg || "directory" in arg || "project" in arg)
+  );
+}
+function parseOpenCodeHandoff(text) {
+  if (isPluginInput(text)) return {};
+  if (typeof text !== "string" || !text.includes(OPENCODE_HANDOFF_HEADER)) return null;
+  const match = /\[OPENCODE_HANDOFF:v1\]\s*([\s\S]*?)(?:\n\n|\r\n\r\n|$)/.exec(text);
+  if (!match || !match[1]) return null;
+  const lines = match[1].split(/\r?\n/);
+  const map = /* @__PURE__ */ new Map();
+  for (const line of lines) {
+    const eq = line.indexOf("=");
+    if (eq > 0) {
+      map.set(line.slice(0, eq).trim().toLowerCase(), line.slice(eq + 1).trim());
+    }
+  }
+  const source = map.get("source");
+  const action = map.get("action");
+  const kind = map.get("kind");
+  const autoSelect = map.get("auto_select");
+  const handoffId = map.get("handoff_id");
+  if (source !== "guardian" || action !== "question_required" || !handoffId) {
+    return null;
+  }
+  if (kind !== "clarification" && kind !== "choice" && kind !== "approval") {
+    return null;
+  }
+  if (autoSelect !== "allowed" && autoSelect !== "forbidden") {
+    return null;
+  }
+  return {
+    version: "v1",
+    source: "guardian",
+    action: "question_required",
+    kind,
+    autoSelect,
+    handoffId
+  };
+}
+function extractHandoffFromParts(parts) {
+  if (isPluginInput(parts)) return {};
+  if (!Array.isArray(parts)) return null;
+  for (const part of parts) {
+    if (part && typeof part === "object") {
+      const text = part.text;
+      if (typeof text === "string") {
+        const parsed = parseOpenCodeHandoff(text);
+        if (parsed && typeof parsed === "object" && "version" in parsed) {
+          return parsed;
+        }
+      }
+    }
+  }
+  return null;
+}
+var activeHandoffsBySession = /* @__PURE__ */ new Map();
+var consumedHandoffIds = /* @__PURE__ */ new Set();
+function setActiveHandoff(sessionID, handoff) {
+  if (isPluginInput(sessionID)) return {};
+  const sID = String(sessionID ?? "");
+  const h = handoff;
+  if (!sID || !h?.handoffId) return false;
+  if (consumedHandoffIds.has(h.handoffId)) {
+    return false;
+  }
+  activeHandoffsBySession.set(sID, h);
+  return true;
+}
+function getActiveHandoff(sessionID) {
+  if (isPluginInput(sessionID)) return {};
+  const sID = String(sessionID ?? "");
+  if (!sID) return void 0;
+  return activeHandoffsBySession.get(sID);
+}
+function consumeActiveHandoff(sessionID) {
+  if (isPluginInput(sessionID)) return {};
+  const sID = String(sessionID ?? "");
+  if (!sID) return void 0;
+  const current = activeHandoffsBySession.get(sID);
+  if (current) {
+    consumedHandoffIds.add(current.handoffId);
+    activeHandoffsBySession.delete(sID);
+  }
+  return current;
+}
+
 // src/ui.js
 function loadConfig2(...args) {
   return loadConfig(...args);
@@ -907,6 +998,28 @@ var setup = async (context) => {
       log(`skip form=${form.id} reason=${decision.reason}`);
       return;
     }
+    let handoff = getActiveHandoff(form.sessionID);
+    if (!handoff) {
+      try {
+        const msgs = context.data?.session?.messages?.(form.sessionID);
+        if (Array.isArray(msgs)) {
+          for (let i = msgs.length - 1; i >= 0 && i >= msgs.length - 5; i--) {
+            const m = msgs[i];
+            const extracted = extractHandoffFromParts(m?.parts) ?? (typeof m?.content === "string" ? parseOpenCodeHandoff(m.content) : null);
+            if (extracted) {
+              setActiveHandoff(form.sessionID, extracted);
+              handoff = extracted;
+              break;
+            }
+          }
+        }
+      } catch {
+      }
+    }
+    if (handoff && handoff.autoSelect === "forbidden") {
+      log(`skip form=${form.id} reason=guardian-handoff-auto-select-forbidden handoffId=${handoff.handoffId}`);
+      return;
+    }
     const detection = decision.detection;
     const lockPath = resolveLockPath(config.configDir, form.id);
     const expiresAt = Date.now() + config.timeoutMs;
@@ -963,6 +1076,7 @@ var setup = async (context) => {
           answer: decision.answer
         }, item.location);
         item.status = "replied";
+        consumeActiveHandoff(form.sessionID);
         try {
           context.data.session.form.invalidate(form.sessionID, item.location);
         } catch (error) {
@@ -1006,6 +1120,8 @@ var setup = async (context) => {
   };
   const onFormSettled = (event) => {
     const formID = event?.data?.id ?? event?.data?.form?.id ?? event?.properties?.id;
+    const sessionID = event?.data?.sessionID ?? event?.data?.form?.sessionID ?? event?.properties?.sessionID;
+    if (typeof sessionID === "string") consumeActiveHandoff(sessionID);
     if (typeof formID === "string") clearPending(formID);
   };
   const cleanups = [];
@@ -1033,6 +1149,19 @@ var setup = async (context) => {
     cleanups.push(context.data.on("form.created", onFormCreated));
     cleanups.push(context.data.on("form.replied", onFormSettled));
     cleanups.push(context.data.on("form.cancelled", onFormSettled));
+    try {
+      const msgDisposer = context.data?.on?.("message.created", (event) => {
+        const sessionID = String(event?.data?.sessionID ?? event?.sessionID ?? "");
+        if (!sessionID || sessionID === "global") return;
+        const parts = event?.data?.parts ?? event?.data?.message?.parts;
+        const handoff = extractHandoffFromParts(parts) ?? (typeof event?.data?.content === "string" ? parseOpenCodeHandoff(event.data.content) : null);
+        if (handoff) {
+          setActiveHandoff(sessionID, handoff);
+        }
+      });
+      if (typeof msgDisposer === "function") cleanups.push(msgDisposer);
+    } catch {
+    }
     context.renderer.keyInput.on("keypress", onKey);
     cleanups.push(() => context.renderer.keyInput.off("keypress", onKey));
     context.renderer.keyInput.on("paste", onPaste);

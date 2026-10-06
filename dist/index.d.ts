@@ -5,6 +5,7 @@ export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_CONFIG, } from './conf
 export * from './detector.js';
 export { resolveLockPath, deleteLockfile, cleanupStaleDrafts, } from './draft-guard.js';
 export * from './backend.js';
+export * from './handoff.js';
 /**
  * OpenCode v1 plugin factory.
  */

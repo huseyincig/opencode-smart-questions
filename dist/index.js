@@ -7,10 +7,13 @@ export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_CONFIG, } from './conf
 export * from './detector.js';
 export { resolveLockPath, deleteLockfile, cleanupStaleDrafts, } from './draft-guard.js';
 export * from './backend.js';
+export * from './handoff.js';
+import { registerSmartQuestionsCapability, setActiveHandoff, parseOpenCodeHandoff, extractHandoffFromParts, } from './handoff.js';
 /**
  * OpenCode v1 plugin factory.
  */
 export const SmartQuestion = async (input, options) => {
+    registerSmartQuestionsCapability();
     return createSmartQuestionHooks(input, options);
 };
 const setupV2 = async (context) => {
@@ -26,6 +29,7 @@ const setupV2 = async (context) => {
     const config = resolveSmartQuestionConfig(context.location?.directory, context.options);
     if (!config?.enabled)
         return;
+    registerSmartQuestionsCapability();
     const guidance = buildRecommendationGuidance(config);
     const sessionScope = new Map();
     const registrations = [];
@@ -70,6 +74,20 @@ const setupV2 = async (context) => {
                     type: 'text',
                     text: guidance.system,
                 });
+            }
+            if (Array.isArray(event.messages)) {
+                for (let i = event.messages.length - 1; i >= 0 && i >= event.messages.length - 5; i--) {
+                    const msg = event.messages[i];
+                    const parts = msg?.parts;
+                    const text = msg?.content ??
+                        msg?.text;
+                    const handoff = extractHandoffFromParts(parts) ??
+                        (typeof text === 'string' ? parseOpenCodeHandoff(text) : null);
+                    if (handoff) {
+                        setActiveHandoff(String(event.sessionID ?? ''), handoff);
+                        break;
+                    }
+                }
             }
         });
         if (!contextRegistration || typeof contextRegistration.dispose !== 'function') {

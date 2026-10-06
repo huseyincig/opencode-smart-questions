@@ -23,7 +23,11 @@ export function buildRecommendationGuidance(config: SmartQuestionConfig): {
     `Accepted markers: ${markerList}. ` +
     `For multi-select questions, one or more options may be marked. ` +
     `A marked option may be auto-selected after the user's configured countdown. ` +
-    `Do not add a marker to choices requiring explicit human approval (such as destructive or irreversible actions) or when you need an unaided manual choice.`;
+    `Do not add a marker to choices requiring explicit human approval (such as destructive or irreversible actions) or when you need an unaided manual choice. ` +
+    `When responding to a Guardian remediation with [OPENCODE_HANDOFF:v1] (action=question_required): ` +
+    `you MUST call this native question tool rather than replying in plain prose. ` +
+    `If auto_select=allowed, append "${primaryMarker}" to the safest and most reasonable option. ` +
+    `If auto_select=forbidden, do not append recommendation markers to any option so the user must manually approve.`;
 
   const system =
     `\n${SQ_GUIDANCE_SENTINEL}\n## Smart Question Auto-Selection Guidance\n` +
@@ -35,7 +39,12 @@ export function buildRecommendationGuidance(config: SmartQuestionConfig): {
     `- Multi-select prompts may mark one or more recommended options.\n` +
     `- Marked choices can be auto-selected after the user's configured countdown.\n` +
     `- Never mark choices that require explicit human approval (including destructive or irreversible actions); leave those for manual selection.\n` +
-    `- Do not mark an option when you need a completely manual choice.\n`;
+    `- Do not mark an option when you need a completely manual choice.\n\n` +
+    `### Guardian Remediation Handoff Protocol\n` +
+    `When a message or remediation prompt includes [OPENCODE_HANDOFF:v1] with action=question_required:\n` +
+    `- You MUST use the host's native question/form mechanism for the pending choice rather than replying in plain prose.\n` +
+    `- If auto_select=allowed (choice or clarification): append "${primaryMarker}" to the recommended option for automatic progression.\n` +
+    `- If auto_select=forbidden (approval, e.g. destructive operations): do NOT add recommendation markers to any option; require manual user selection.\n`;
 
   return { primaryMarker, markerList, tool, system };
 }

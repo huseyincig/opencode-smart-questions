@@ -28,6 +28,13 @@ import {
 } from './form-adapter.js';
 import { diagnosticErrorCode } from './diagnostics.js';
 import { isRootSessionInfo } from './session-scope.js';
+import {
+  getActiveHandoff,
+  setActiveHandoff,
+  consumeActiveHandoff,
+  extractHandoffFromParts,
+  parseOpenCodeHandoff,
+} from './handoff.js';
 import type {
   ActiveQuestionState,
   DetectionResult,
@@ -595,6 +602,33 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       return;
     }
 
+    let handoff = getActiveHandoff(form.sessionID);
+    if (!handoff) {
+      try {
+        const msgs = (context.data?.session as any)?.messages?.(form.sessionID);
+        if (Array.isArray(msgs)) {
+          for (let i = msgs.length - 1; i >= 0 && i >= msgs.length - 5; i--) {
+            const m = msgs[i];
+            const extracted =
+              extractHandoffFromParts(m?.parts) ??
+              (typeof m?.content === 'string' ? parseOpenCodeHandoff(m.content) : null);
+            if (extracted) {
+              setActiveHandoff(form.sessionID, extracted);
+              handoff = extracted;
+              break;
+            }
+          }
+        }
+      } catch {
+        // Best effort
+      }
+    }
+
+    if (handoff && handoff.autoSelect === 'forbidden') {
+      log(`skip form=${form.id} reason=guardian-handoff-auto-select-forbidden handoffId=${handoff.handoffId}`);
+      return;
+    }
+
     const detection: DetectionResult = decision.detection;
     const lockPath = resolveLockPath(config.configDir, form.id);
     const expiresAt = Date.now() + config.timeoutMs;
@@ -668,6 +702,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
           item.location
         );
         item.status = 'replied';
+        consumeActiveHandoff(form.sessionID);
         try {
           context.data.session.form.invalidate(form.sessionID, item.location);
         } catch (error) {
@@ -722,6 +757,11 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
   const onFormSettled = (event: any) => {
     const formID = event?.data?.id ?? event?.data?.form?.id ?? event?.properties?.id;
+    const sessionID =
+      event?.data?.sessionID ??
+      event?.data?.form?.sessionID ??
+      event?.properties?.sessionID;
+    if (typeof sessionID === 'string') consumeActiveHandoff(sessionID);
     if (typeof formID === 'string') clearPending(formID);
   };
 
@@ -753,6 +793,23 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     cleanups.push(context.data.on('form.created', onFormCreated));
     cleanups.push(context.data.on('form.replied', onFormSettled));
     cleanups.push(context.data.on('form.cancelled', onFormSettled));
+
+    try {
+      const msgDisposer = (context.data as any)?.on?.('message.created', (event: any) => {
+        const sessionID = String(event?.data?.sessionID ?? event?.sessionID ?? '');
+        if (!sessionID || sessionID === 'global') return;
+        const parts = event?.data?.parts ?? event?.data?.message?.parts;
+        const handoff =
+          extractHandoffFromParts(parts) ??
+          (typeof event?.data?.content === 'string' ? parseOpenCodeHandoff(event.data.content) : null);
+        if (handoff) {
+          setActiveHandoff(sessionID, handoff);
+        }
+      });
+      if (typeof msgDisposer === 'function') cleanups.push(msgDisposer);
+    } catch {
+      // Best effort
+    }
 
     context.renderer.keyInput.on('keypress', onKey);
     cleanups.push(() => context.renderer.keyInput.off('keypress', onKey));
