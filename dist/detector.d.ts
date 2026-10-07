@@ -21,12 +21,14 @@ export declare function isQuestionExplicitlyManual(q: QuestionInfo, manualMarker
 };
 /**
  * Language-agnostic classification of selectable root questions into:
- * - AUTO: all questions carry valid recommendation markers
+ * - AUTO: all questions carry valid recommendation markers (or resolved via fallback)
  * - MANUAL: explicitly classified via [SQ:manual], or Guardian handoff auto_select=forbidden
  * - UNCLASSIFIED: selectable options exist, but neither recommendation nor manual classification is present
  */
 export declare function classifyQuestions(questions: QuestionInfo[] | Record<string, unknown>, recommendedMarker?: string | string[], manualMarker?: string | string[], handoff?: OpenCodeHandoff | Record<string, unknown> | null, options?: {
     requireExactlyOneRecommendation?: boolean;
+    allowFallback?: boolean;
+    allowFallbackOnManual?: boolean;
 }): QuestionClassification;
 /**
  * Computes a deterministic normalized fingerprint for a set of questions.

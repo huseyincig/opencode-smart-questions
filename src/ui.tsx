@@ -18,6 +18,7 @@ import {
 } from './config.js';
 import {
   detectRecommendations as detectSharedRecommendations,
+  classifyQuestions,
   computeQuestionFingerprint,
 } from './detector.js';
 import {
@@ -46,6 +47,7 @@ import type {
   ActiveQuestionState,
   DetectionResult,
   QuestionInfo,
+  QuestionOverlayStatus,
   SmartQuestionConfig,
   SmartQuestionUIText,
 } from './types.js';
@@ -58,11 +60,14 @@ export function detectRecommendations(...args: any[]) {
   return detectSharedRecommendations(args[0], args[1], args[2]);
 }
 
-interface OverlayState extends ActiveQuestionState {
-  countdown?: number;
-  formID?: string;
-  markers?: string[];
-  uiText?: SmartQuestionUIText;
+export interface OverlayState extends ActiveQuestionState {
+  status?: QuestionOverlayStatus | undefined;
+  statusMessage?: string | undefined;
+  countdown?: number | undefined;
+  formID?: string | undefined;
+  lockPath?: string | undefined;
+  markers?: string[] | undefined;
+  uiText?: SmartQuestionUIText | undefined;
 }
 
 interface V2Pending {
@@ -159,23 +164,36 @@ export function resolveAgentName(
 }
 
 export function stripMarker(label: unknown, marker: unknown): string {
-  const strLabel = (typeof label === 'string' ? label : String(label ?? '')).trimEnd().normalize('NFC');
+  let strLabel = (typeof label === 'string' ? label : String(label ?? '')).trim().normalize('NFC');
   const markers = Array.isArray(marker)
     ? marker.filter((item): item is string => typeof item === 'string' && item.length > 0)
     : typeof marker === 'string' && marker.length > 0
       ? [marker]
       : [];
 
-  let longestMatch = '';
+  let longestSuffix = '';
   for (const candidate of markers) {
     const normalized = candidate.normalize('NFC');
-    if (strLabel.endsWith(normalized) && normalized.length > longestMatch.length) {
-      longestMatch = normalized;
+    if (strLabel.endsWith(normalized) && normalized.length > longestSuffix.length) {
+      longestSuffix = normalized;
     }
   }
-  return longestMatch
-    ? strLabel.slice(0, -longestMatch.length).trim()
-    : strLabel;
+  if (longestSuffix) {
+    strLabel = strLabel.slice(0, -longestSuffix.length).trim();
+  }
+
+  let longestPrefix = '';
+  for (const candidate of markers) {
+    const normalized = candidate.normalize('NFC');
+    if (strLabel.startsWith(normalized) && normalized.length > longestPrefix.length) {
+      longestPrefix = normalized;
+    }
+  }
+  if (longestPrefix) {
+    strLabel = strLabel.slice(longestPrefix.length).trim();
+  }
+
+  return strLabel;
 }
 
 export function formatCountdown(totalSeconds: unknown): string {
@@ -189,6 +207,7 @@ export function formatCountdown(totalSeconds: unknown): string {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
+
 export function SmartQuestionOverlay(props: {
   state: () => OverlayState | null;
   countdown?: () => number;
@@ -200,6 +219,36 @@ export function SmartQuestionOverlay(props: {
   const markers = () =>
     props.markers ?? props.marker ?? DEFAULT_CONFIG.recommendedMarkers ?? [];
   const labels = () => props.uiText ?? DEFAULT_CONFIG.uiText;
+
+  const status = createMemo(() => active()?.status ?? 'auto');
+
+  const title = createMemo(() => {
+    switch (status()) {
+      case 'manual':
+        return ' Smart Question — Manual Decision ';
+      case 'unclassified':
+        return ' Smart Question — Intercepted ';
+      case 'error':
+        return ' Smart Question — Warning ';
+      case 'auto':
+      default:
+        return ' Smart Question ';
+    }
+  });
+
+  const borderColor = createMemo(() => {
+    switch (status()) {
+      case 'manual':
+        return 'yellow';
+      case 'unclassified':
+        return 'cyan';
+      case 'error':
+        return 'red';
+      case 'auto':
+      default:
+        return 'cyan';
+    }
+  });
 
   const recommendedChecklist = createMemo(() => {
     const state = active();
@@ -242,8 +291,8 @@ export function SmartQuestionOverlay(props: {
         width="100%"
         border={true}
         borderStyle="rounded"
-        borderColor="cyan"
-        title=" Smart Question "
+        borderColor={borderColor()}
+        title={title()}
         paddingLeft={1}
         paddingRight={1}
         flexDirection="column"
@@ -251,31 +300,85 @@ export function SmartQuestionOverlay(props: {
         <box width="100%" flexDirection="row" justifyContent="flex-end">
           <text fg="gray">{badge()}</text>
         </box>
-        <box width="100%" flexDirection="row" justifyContent="space-between">
-          <text fg="green">
-            <b>{recommendedChecklist()}</b>
-          </text>
-          <Show
-            when={!active()?.focusDisabled}
-            fallback={
-              <text fg="red">
-                <b>{labels().disabled}</b>
-              </text>
-            }
-          >
-            <text fg="yellow">
-              <b>{countdownText()}</b>
+        <Show
+          when={status() === 'auto'}
+          fallback={
+            <Show
+              when={status() === 'manual'}
+              fallback={
+                <Show
+                  when={status() === 'unclassified'}
+                  fallback={
+                    <box width="100%" flexDirection="column">
+                      <box width="100%" flexDirection="row" justifyContent="space-between">
+                        <text fg="red">
+                          <b>{active()?.errorMessage ?? labels().remediationFailed ?? 'Remediation stopped. Please answer manually.'}</b>
+                        </text>
+                        <text fg="red">
+                          <b>{labels().disabled}</b>
+                        </text>
+                      </box>
+                    </box>
+                  }
+                >
+                  <box width="100%" flexDirection="column">
+                    <box width="100%" flexDirection="row" justifyContent="space-between">
+                      <text fg="cyan">
+                        <b>{labels().unclassifiedTitle ?? 'Unclassified Question Intercepted'}</b>
+                      </text>
+                      <text fg="magenta">
+                        <b>WAITING FOR AGENT</b>
+                      </text>
+                    </box>
+                    <box width="100%" flexDirection="row">
+                      <text fg="gray">{active()?.statusMessage ?? labels().unclassifiedSubtitle ?? 'Agent was asked to classify the question.'}</text>
+                    </box>
+                  </box>
+                </Show>
+              }
+            >
+              <box width="100%" flexDirection="column">
+                <box width="100%" flexDirection="row" justifyContent="space-between">
+                  <text fg="yellow">
+                    <b>{labels().manualTitle ?? 'Manual Decision Required'}</b>
+                  </text>
+                  <text fg="red">
+                    <b>{labels().disabled}</b>
+                  </text>
+                </box>
+                <box width="100%" flexDirection="row">
+                  <text fg="gray">{active()?.statusMessage ?? labels().manualSubtitle ?? 'Auto-selection disabled — human approval required.'}</text>
+                </box>
+              </box>
+            </Show>
+          }
+        >
+          <box width="100%" flexDirection="row" justifyContent="space-between">
+            <text fg="green">
+              <b>{recommendedChecklist()}</b>
             </text>
-          </Show>
-        </box>
-        <Show when={active()?.errorMessage}>
-          <text fg="red">{active()?.errorMessage}</text>
-        </Show>
-        <Show when={rationale()}>
-          <box flexDirection="row">
-            <text fg="gray">{labels().recommendation} </text>
-            <text>{rationale()}</text>
+            <Show
+              when={!active()?.focusDisabled}
+              fallback={
+                <text fg="red">
+                  <b>{labels().disabled}</b>
+                </text>
+              }
+            >
+              <text fg="yellow">
+                <b>{countdownText()}</b>
+              </text>
+            </Show>
           </box>
+          <Show when={active()?.errorMessage}>
+            <text fg="red">{active()?.errorMessage}</text>
+          </Show>
+          <Show when={rationale()}>
+            <box flexDirection="row">
+              <text fg="gray">{labels().recommendation} </text>
+              <text>{rationale()}</text>
+            </box>
+          </Show>
         </Show>
       </box>
     </Show>
@@ -295,6 +398,7 @@ export const tui: TuiPlugin = async (api, options) => {
   const [activeQuestion, setActiveQuestion] =
     createSignal<OverlayState | null>(null);
   const [countdownSec, setCountdownSec] = createSignal(0);
+  const sessionChains = new Map<string, { fingerprint: string; consecutiveFailures: number }>();
 
   let countdownTimer: NodeJS.Timeout | null = null;
   let currentLockPath: string | null = null;
@@ -342,13 +446,6 @@ export const tui: TuiPlugin = async (api, options) => {
     }
     if (!isRootSessionInfo(sessionInfo)) return;
 
-    const decision = detectRecommendations(
-      questions,
-      config.recommendedMarkers,
-      { requireExactlyOneRecommendation: config.requireExactlyOneRecommendation }
-    );
-    if (!decision.ok) return;
-
     let handoff = getActiveHandoff(sessionID);
     if (!handoff) {
       try {
@@ -366,24 +463,121 @@ export const tui: TuiPlugin = async (api, options) => {
       }
     }
 
-    if (
-      handoff &&
-      typeof handoff === 'object' &&
-      'autoSelect' in handoff &&
-      handoff.autoSelect === 'forbidden'
-    ) {
-      log(
-        `skip request=${requestID} reason=guardian-handoff-auto-select-forbidden handoffId=${handoff.handoffId}`
-      );
+    const fallbackActive =
+      config.unclassifiedQuestionPolicy === 'fallback-first' ||
+      config.fallbackToFirstOption === true;
+
+    const classification = classifyQuestions(
+      questions,
+      config.recommendedMarkers,
+      config.manualMarkers,
+      handoff,
+      {
+        requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
+        allowFallback: fallbackActive,
+        allowFallbackOnManual: config.fallbackOnManual === true,
+      }
+    );
+
+    const agent = resolveAgentName(api, sessionID, data);
+    const lockPath = resolveLockPath(config.configDir, requestID);
+
+    if (classification.status === 'manual') {
+      sessionChains.delete(sessionID);
+      clearActive(!activeQuestion()?.focusDisabled);
+      currentLockPath = lockPath;
+      ensureDraftLock(lockPath, { requestID, sessionID, ts: Date.now(), reason: 'manual-classification' });
+      setActiveQuestion({
+        requestID,
+        sessionID,
+        questions,
+        detection: { ok: false, reason: classification.reason },
+        agentName: agent.name,
+        agentFound: agent.found,
+        focusDisabled: true,
+        status: 'manual',
+        statusMessage: config.uiText.manualSubtitle,
+        markers: config.recommendedMarkers,
+        uiText: config.uiText,
+      });
+      log(`manual request=${requestID} reason=${classification.reason}`);
+      api.renderer?.requestRender?.();
       return;
     }
 
-    // Preserve a lock for a prior question if the user already took control;
-    // its backend timer must still observe the lock and refrain from replying.
+    if (classification.status === 'unclassified') {
+      if (config.unclassifiedQuestionPolicy === 'ignore') {
+        log(`unclassified request=${requestID} ignored per unclassifiedQuestionPolicy`);
+        return;
+      }
+
+      clearActive(!activeQuestion()?.focusDisabled);
+      currentLockPath = lockPath;
+      ensureDraftLock(lockPath, { requestID, sessionID, ts: Date.now(), reason: 'unclassified' });
+
+      const fingerprint = computeQuestionFingerprint(questions);
+      const maxRemediations =
+        typeof config.maxUnclassifiedRemediations === 'number'
+          ? config.maxUnclassifiedRemediations
+          : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
+
+      const existingChain = sessionChains.get(sessionID);
+      const isSameChain = existingChain !== undefined && existingChain.fingerprint === fingerprint;
+      const currentCount = isSameChain ? existingChain.consecutiveFailures : 0;
+
+      if (currentCount >= maxRemediations) {
+        setActiveQuestion({
+          requestID,
+          sessionID,
+          questions,
+          detection: { ok: false, reason: 'Remediation budget exhausted' },
+          agentName: agent.name,
+          agentFound: agent.found,
+          focusDisabled: true,
+          status: 'error',
+          errorMessage: config.uiText.budgetExhausted,
+          markers: config.recommendedMarkers,
+          uiText: config.uiText,
+        });
+        log(`unclassified budget exhausted request=${requestID} count=${currentCount}/${maxRemediations}`);
+        api.renderer?.requestRender?.();
+        return;
+      }
+
+      sessionChains.set(sessionID, {
+        fingerprint,
+        consecutiveFailures: currentCount + 1,
+      });
+
+      setActiveQuestion({
+        requestID,
+        sessionID,
+        questions,
+        detection: { ok: false, reason: classification.reason },
+        agentName: agent.name,
+        agentFound: agent.found,
+        focusDisabled: true,
+        status: 'unclassified',
+        statusMessage: config.uiText.unclassifiedSubtitle,
+        markers: config.recommendedMarkers,
+        uiText: config.uiText,
+      });
+      log(`unclassified request=${requestID} reason=${classification.reason}`);
+      api.renderer?.requestRender?.();
+      return;
+    }
+
+    // Here classification.status === 'auto'
+    sessionChains.delete(sessionID);
     clearActive(!activeQuestion()?.focusDisabled);
-    const agent = resolveAgentName(api, sessionID, data);
-    const lockPath = resolveLockPath(config.configDir, requestID);
     currentLockPath = lockPath;
+
+    const decision: DetectionResult = {
+      ok: true,
+      answers: classification.answers,
+      recommendedOptions: classification.recommendedOptions,
+      matchedMarker: classification.matchedMarker,
+    };
 
     setActiveQuestion({
       requestID,
@@ -393,6 +587,9 @@ export const tui: TuiPlugin = async (api, options) => {
       agentName: agent.name,
       agentFound: agent.found,
       focusDisabled: false,
+      status: 'auto',
+      markers: config.recommendedMarkers,
+      uiText: config.uiText,
     });
 
     let focusGuardTriggered = false;
@@ -436,6 +633,7 @@ export const tui: TuiPlugin = async (api, options) => {
     const sessionID = String(data?.sessionID ?? event?.sessionID ?? '');
     if (sessionID) {
       consumeActiveHandoff(sessionID);
+      sessionChains.delete(sessionID);
     }
     const current = activeQuestion();
     if (current && typeof requestID === 'string' && requestID === current.requestID) {
@@ -456,6 +654,7 @@ export const tui: TuiPlugin = async (api, options) => {
       const role = data?.role ?? (data?.message as any)?.role;
       if (role === 'user') {
         invalidateActiveHandoff(sessionID);
+        sessionChains.delete(sessionID);
       }
     }
   };
@@ -684,18 +883,44 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       }
     }
 
+    const fallbackActive =
+      config.unclassifiedQuestionPolicy === 'fallback-first' ||
+      config.fallbackToFirstOption === true;
+
     const classification = classifyV2Form(
       form,
       config.recommendedMarkers,
       config.manualMarkers,
       handoff,
-      { requireExactlyOneRecommendation: config.requireExactlyOneRecommendation }
+      {
+        requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
+        allowFallback: fallbackActive,
+        allowFallbackOnManual: config.fallbackOnManual === true,
+      }
     );
 
     if (classification.status === 'manual') {
       sessionChains.delete(form.sessionID);
+      const lockPath = resolveLockPath(config.configDir, form.id);
+      ensureDraftLock(lockPath, { formID: form.id, sessionID: form.sessionID, ts: Date.now(), reason: 'manual' });
+      const state: OverlayState = {
+        requestID: form.id,
+        formID: form.id,
+        sessionID: form.sessionID,
+        questions: classification.questions,
+        detection: { ok: false, reason: classification.reason },
+        agentName: form.sessionID.slice(0, 8),
+        agentFound: false,
+        focusDisabled: true,
+        status: 'manual',
+        statusMessage: config.uiText.manualSubtitle,
+        lockPath,
+        markers: config.recommendedMarkers,
+        uiText: config.uiText,
+      };
+      updateSessionState(form.sessionID, () => state);
       log(
-        `skip form=${form.id} reason=manual-classification matched=${classification.matchedMarker ?? 'none'}`
+        `manual form=${form.id} reason=manual-classification matched=${classification.matchedMarker ?? 'none'}`
       );
       return;
     }
@@ -721,10 +946,29 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       const isSameChain = existingChain !== undefined && existingChain.fingerprint === fingerprint;
       const currentCount = isSameChain ? existingChain.consecutiveFailures : 0;
 
+      const lockPath = resolveLockPath(config.configDir, form.id);
+
       if (currentCount >= maxRemediations) {
         log(
           `unclassified remediation budget exhausted session=${form.sessionID} fingerprint=${fingerprint} count=${currentCount}/${maxRemediations}`
         );
+        ensureDraftLock(lockPath, { formID: form.id, sessionID: form.sessionID, ts: Date.now(), reason: 'budget-exhausted' });
+        const state: OverlayState = {
+          requestID: form.id,
+          formID: form.id,
+          sessionID: form.sessionID,
+          questions: classification.questions,
+          detection: { ok: false, reason: 'Remediation budget exhausted' },
+          agentName: form.sessionID.slice(0, 8),
+          agentFound: false,
+          focusDisabled: true,
+          status: 'error',
+          errorMessage: config.uiText.budgetExhausted,
+          lockPath,
+          markers: config.recommendedMarkers,
+          uiText: config.uiText,
+        };
+        updateSessionState(form.sessionID, () => state);
         return;
       }
 
@@ -733,6 +977,24 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         fingerprint,
         consecutiveFailures: currentCount + 1,
       });
+
+      ensureDraftLock(lockPath, { formID: form.id, sessionID: form.sessionID, ts: Date.now(), reason: 'unclassified' });
+      const state: OverlayState = {
+        requestID: form.id,
+        formID: form.id,
+        sessionID: form.sessionID,
+        questions: classification.questions,
+        detection: { ok: false, reason: classification.reason },
+        agentName: form.sessionID.slice(0, 8),
+        agentFound: false,
+        focusDisabled: true,
+        status: 'unclassified',
+        statusMessage: config.uiText.unclassifiedSubtitle,
+        lockPath,
+        markers: config.recommendedMarkers,
+        uiText: config.uiText,
+      };
+      updateSessionState(form.sessionID, () => state);
 
       const promptText = buildUnclassifiedRemediationPrompt(
         config.recommendedMarker,
@@ -792,6 +1054,11 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
             consecutiveFailures: currentCount,
           });
         }
+        updateSessionState(form.sessionID, (current) =>
+          current?.formID === form.id
+            ? { ...current, status: 'error', errorMessage: config.uiText.remediationFailed }
+            : current
+        );
         log(`remediation not sent form=${form.id}; retry remains allowed`);
       }
       return;
@@ -813,6 +1080,8 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       agentName: form.sessionID.slice(0, 8),
       agentFound: false,
       focusDisabled: false,
+      status: 'auto',
+      lockPath,
       countdown: initialCountdown,
       markers: config.recommendedMarkers,
       uiText: config.uiText,
@@ -938,6 +1207,18 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     if (typeof formID === 'string') {
       remediatedForms.delete(formID);
       clearPending(formID);
+      const targetSession = typeof sessionID === 'string' && sessionID !== 'global'
+        ? sessionID
+        : Object.keys(activeBySession()).find((sId) => activeBySession()[sId]?.formID === formID);
+      if (targetSession) {
+        const existingState = activeBySession()[targetSession];
+        if (existingState?.lockPath) {
+          try { deleteLockfile(existingState.lockPath); } catch {}
+        }
+        updateSessionState(targetSession, (current) =>
+          current?.formID === formID ? undefined : current
+        );
+      }
     }
   };
 
@@ -1006,14 +1287,18 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
     cleanups.push(context.ui.slot({
       append: 'session.composer.top',
-      render: ({ sessionID }) => (
-        <SmartQuestionOverlay
-          state={() => activeBySession()[sessionID] ?? null}
-          countdown={() => activeBySession()[sessionID]?.countdown ?? 0}
-          markers={activeBySession()[sessionID]?.markers ?? DEFAULT_CONFIG.recommendedMarkers}
-          uiText={activeBySession()[sessionID]?.uiText ?? DEFAULT_CONFIG.uiText}
-        />
-      ),
+      render: (slotProps?: { sessionID?: string }) => {
+        const sessionID =
+          slotProps?.sessionID ?? (context.ui.router.current() as any)?.sessionID;
+        return (
+          <SmartQuestionOverlay
+            state={() => (sessionID ? activeBySession()[sessionID] ?? null : null)}
+            countdown={() => (sessionID ? activeBySession()[sessionID]?.countdown ?? 0 : 0)}
+            markers={sessionID ? activeBySession()[sessionID]?.markers ?? DEFAULT_CONFIG.recommendedMarkers : DEFAULT_CONFIG.recommendedMarkers}
+            uiText={sessionID ? activeBySession()[sessionID]?.uiText ?? DEFAULT_CONFIG.uiText : DEFAULT_CONFIG.uiText}
+          />
+        );
+      },
     }));
   } catch (error) {
     disposeCleanups();

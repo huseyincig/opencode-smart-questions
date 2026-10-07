@@ -248,7 +248,7 @@ export function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers
             ...(isMultiChoice && field.maxItems !== undefined ? { maxItems: field.maxItems } : {}),
         });
     }
-    if (formExplicitlyManual) {
+    if (formExplicitlyManual && !options?.allowFallbackOnManual) {
         return {
             status: 'manual',
             reason: 'Form title or description is explicitly classified as manual',
@@ -282,7 +282,9 @@ export function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers
         const selectedLabels = classification.answers[i] ?? [];
         const selectedValues = selectedLabels.map((label) => {
             const matchingOptions = field.options.filter((candidate) => candidate.label === label);
-            return matchingOptions.length === 1 ? matchingOptions[0]?.value : undefined;
+            return matchingOptions.length === 1 || (options?.allowFallback && matchingOptions.length > 1)
+                ? matchingOptions[0]?.value
+                : undefined;
         });
         if (selectedValues.length !== selectedLabels.length ||
             selectedValues.some((value) => typeof value !== 'string')) {

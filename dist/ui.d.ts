@@ -1,14 +1,17 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui';
 import type { Plugin as OpenCodeV2Tui } from '@opencode/plugin/tui';
-import type { ActiveQuestionState, DetectionResult, SmartQuestionConfig, SmartQuestionUIText } from './types.js';
+import type { ActiveQuestionState, DetectionResult, QuestionOverlayStatus, SmartQuestionConfig, SmartQuestionUIText } from './types.js';
 export declare function loadConfig(...args: any[]): SmartQuestionConfig | null;
 export declare function detectRecommendations(...args: any[]): DetectionResult;
-interface OverlayState extends ActiveQuestionState {
-    countdown?: number;
-    formID?: string;
-    markers?: string[];
-    uiText?: SmartQuestionUIText;
+export interface OverlayState extends ActiveQuestionState {
+    status?: QuestionOverlayStatus | undefined;
+    statusMessage?: string | undefined;
+    countdown?: number | undefined;
+    formID?: string | undefined;
+    lockPath?: string | undefined;
+    markers?: string[] | undefined;
+    uiText?: SmartQuestionUIText | undefined;
 }
 /**
  * Resolve a best-effort agent/session label for the v1 TUI.

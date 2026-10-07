@@ -157,8 +157,70 @@ export function isQuestionExplicitlyManual(
 }
 
 /**
+ * Resiliently detects whether an option represents a recommendation.
+ * Matches:
+ * 1. Exact suffix (standard contract): e.g. "Option [SQ:recommended]"
+ * 2. Prefix: e.g. "[SQ:recommended] Option", "(Recommended) Option"
+ * 3. Case-insensitive suffix or prefix: e.g. "(recommended)"
+ * 4. In description: e.g. description: "(Recommended)"
+ * 5. Standard markers anywhere in label
+ */
+function matchOptionRecommendation(
+  opt: QuestionOption,
+  recMarkers: string[]
+): { opt: QuestionOption; marker: string } | undefined {
+  if (!opt || typeof opt.label !== 'string') return undefined;
+  const label = opt.label.trim();
+  const normalizedLabel = label.normalize('NFC');
+  const desc = typeof opt.description === 'string' ? opt.description.trim().normalize('NFC') : '';
+
+  // 1. Exact suffix matching on label (highest priority)
+  for (const marker of recMarkers) {
+    const normM = marker.normalize('NFC');
+    if (normalizedLabel.endsWith(normM)) {
+      return { opt, marker };
+    }
+  }
+
+  // 2. Exact prefix matching on label
+  for (const marker of recMarkers) {
+    const normM = marker.normalize('NFC');
+    if (normalizedLabel.startsWith(normM)) {
+      return { opt, marker };
+    }
+  }
+
+  // 3. Case-insensitive suffix or prefix on label
+  const lowerLabel = normalizedLabel.toLowerCase();
+  for (const marker of recMarkers) {
+    const lowerM = marker.normalize('NFC').toLowerCase();
+    if (lowerLabel.endsWith(lowerM) || lowerLabel.startsWith(lowerM)) {
+      return { opt, marker };
+    }
+  }
+
+  // 4. In description
+  for (const marker of recMarkers) {
+    const normM = marker.normalize('NFC');
+    if (desc.startsWith(normM) || desc.toLowerCase().includes(marker.toLowerCase())) {
+      return { opt, marker };
+    }
+  }
+
+  // 5. Common standard markers anywhere in label
+  const commonMarkers = ['(recommended)', '[recommended]', '(önerilen)', '[önerilen]', '[sq:recommended]'];
+  for (const cm of commonMarkers) {
+    if (lowerLabel.includes(cm) || desc.toLowerCase().includes(cm)) {
+      return { opt, marker: recMarkers[0] ?? '[SQ:recommended]' };
+    }
+  }
+
+  return undefined;
+}
+
+/**
  * Language-agnostic classification of selectable root questions into:
- * - AUTO: all questions carry valid recommendation markers
+ * - AUTO: all questions carry valid recommendation markers (or resolved via fallback)
  * - MANUAL: explicitly classified via [SQ:manual], or Guardian handoff auto_select=forbidden
  * - UNCLASSIFIED: selectable options exist, but neither recommendation nor manual classification is present
  */
@@ -167,7 +229,11 @@ export function classifyQuestions(
   recommendedMarker: string | string[] = DEFAULT_CONFIG.recommendedMarkers,
   manualMarker: string | string[] = DEFAULT_MANUAL_MARKERS,
   handoff?: OpenCodeHandoff | Record<string, unknown> | null,
-  options: { requireExactlyOneRecommendation?: boolean } = {}
+  options: {
+    requireExactlyOneRecommendation?: boolean;
+    allowFallback?: boolean;
+    allowFallbackOnManual?: boolean;
+  } = {}
 ): QuestionClassification {
   void options;
   if (!Array.isArray(questions) || questions.length === 0) {
@@ -178,7 +244,8 @@ export function classifyQuestions(
     handoff &&
     typeof handoff === 'object' &&
     'autoSelect' in handoff &&
-    handoff.autoSelect === 'forbidden'
+    handoff.autoSelect === 'forbidden' &&
+    !options.allowFallbackOnManual
   ) {
     return {
       status: 'manual',
@@ -217,7 +284,7 @@ export function classifyQuestions(
 
     // Check if explicitly manual
     const manualCheck = isQuestionExplicitlyManual(q, manMarkers);
-    if (manualCheck.isManual) {
+    if (manualCheck.isManual && !options.allowFallbackOnManual) {
       if (!firstManual) {
         firstManual = { index: qIndex, marker: manualCheck.matchedMarker };
       }
@@ -225,14 +292,17 @@ export function classifyQuestions(
     }
 
     // Check recommendation
-    const matched = q.options
-      .map((opt) => {
-        if (!opt || typeof opt.label !== 'string') return null;
-        const normalizedLabel = opt.label.trimEnd().normalize('NFC');
-        const m = recMarkers.find((marker) => normalizedLabel.endsWith(marker.normalize('NFC')));
-        return m ? { opt, marker: m } : null;
-      })
-      .filter((x): x is { opt: QuestionOption; marker: string } => x !== null);
+    let matched = q.options
+      .map((opt) => matchOptionRecommendation(opt, recMarkers))
+      .filter((x): x is { opt: QuestionOption; marker: string } => Boolean(x));
+
+    // Fallback: if no recommendation marker was found, but fallback is enabled, pick the logical first option
+    if (matched.length === 0 && options.allowFallback && Array.isArray(q.options) && q.options.length > 0) {
+      const defaultOpt = q.options[0];
+      if (defaultOpt && typeof defaultOpt.label === 'string') {
+        matched = [{ opt: defaultOpt, marker: recMarkers[0] ?? '[SQ:recommended]' }];
+      }
+    }
 
     if (matched.length === 0) {
       if (!firstUnclassified) {
@@ -245,13 +315,17 @@ export function classifyQuestions(
     }
 
     if (!q.multiple && matched.length > 1) {
-      if (!firstUnclassified) {
-        firstUnclassified = {
-          index: qIndex,
-          reason: `Question ${qIndex} has ambiguous recommendation markers (${matched.length})`,
-        };
+      if (options.allowFallback) {
+        matched = [matched[0]!];
+      } else {
+        if (!firstUnclassified) {
+          firstUnclassified = {
+            index: qIndex,
+            reason: `Question ${qIndex} has ambiguous recommendation markers (${matched.length})`,
+          };
+        }
+        continue;
       }
-      continue;
     }
 
     const firstMatch = matched[0];

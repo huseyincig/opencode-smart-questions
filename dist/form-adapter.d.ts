@@ -76,4 +76,6 @@ export declare function detectV2FormRecommendations(form: V2FormInfo, markers?: 
  */
 export declare function classifyV2Form(form: V2FormInfo, markers?: string | string[], manualMarkers?: string | string[], handoff?: OpenCodeHandoff | Record<string, unknown> | null, options?: {
     requireExactlyOneRecommendation?: boolean;
+    allowFallback?: boolean;
+    allowFallbackOnManual?: boolean;
 }): V2FormClassification;

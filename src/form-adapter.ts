@@ -246,7 +246,11 @@ export function classifyV2Form(
   markers: string | string[] = DEFAULT_CONFIG.recommendedMarkers,
   manualMarkers: string | string[] = DEFAULT_MANUAL_MARKERS,
   handoff?: OpenCodeHandoff | Record<string, unknown> | null,
-  options?: { requireExactlyOneRecommendation?: boolean }
+  options?: {
+    requireExactlyOneRecommendation?: boolean;
+    allowFallback?: boolean;
+    allowFallbackOnManual?: boolean;
+  }
 ): V2FormClassification {
   if (!form || !Array.isArray(form.fields) || form.fields.length === 0) {
     return { status: 'unclassified', reason: 'Form has no fields', questions: [] };
@@ -387,7 +391,7 @@ export function classifyV2Form(
     });
   }
 
-  if (formExplicitlyManual) {
+  if (formExplicitlyManual && !options?.allowFallbackOnManual) {
     return {
       status: 'manual',
       reason: 'Form title or description is explicitly classified as manual',
@@ -423,7 +427,9 @@ export function classifyV2Form(
     const selectedLabels = classification.answers[i] ?? [];
     const selectedValues = selectedLabels.map((label) => {
       const matchingOptions = field.options.filter((candidate) => candidate.label === label);
-      return matchingOptions.length === 1 ? matchingOptions[0]?.value : undefined;
+      return matchingOptions.length === 1 || (options?.allowFallback && matchingOptions.length > 1)
+        ? matchingOptions[0]?.value
+        : undefined;
     });
 
     if (

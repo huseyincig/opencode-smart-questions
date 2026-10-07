@@ -21,11 +21,11 @@ A high-performance, deterministic OpenCode plugin that automatically answers age
 
 ![Automated and host acceptance results](docs/assets/verification-overview.svg)
 
-> The graphic displays the current **v0.5.0 automated verification** along with real host acceptance on **OpenCode V1 (`1.18.34`)** and **OpenCode V2 (`2.0.24`)** executed with the mandatory test model `opencode-go/mimo-v2.6-flash`.
+> The graphic displays the current **v0.6.0 automated verification** along with real host acceptance on **OpenCode V1 (`1.18.34`)** and **OpenCode V2 (`2.0.24`)** executed with the mandatory test model `opencode-go/mimo-v2.6-flash`.
 
-Smart Questions **v0.5.0** is validated as follows:
+Smart Questions **v0.6.0** is validated as follows:
 
-- **Current Automated Verification:** **136 / 136** unit and regression tests passing.
+- **Current Automated Verification:** **148 / 148** unit, fallback, visibility, and regression tests passing.
 - **Sandbox Scenarios:** **8 / 8** isolated smoke and comprehensive test suites passing.
 - **Static Analysis:** Standard and strict TypeScript gates pass; Oxlint reports **0 warnings / 0 errors**.
 - **Dependency Security:** **0 vulnerabilities** across production and development dependency audits.
@@ -39,12 +39,12 @@ Read the detailed [V1 Acceptance Report](docs/acceptance-v1.md), [V2 Acceptance 
 
 - **100% Standalone Operation:** Operates independently without requiring any other plugins, external services, or background daemons.
 - **Dual-Mode Host Support:** Seamlessly supports both **OpenCode v1** (`@opencode-ai/plugin`) and **OpenCode v2** (`@opencode/plugin`) with decoupled runtime adapters.
-- **Language-Independent Matching:** Suffix matching works identically across all natural languages (`Kaydet [SQ:recommended]`, `Save [SQ:recommended]`, `保存 [SQ:recommended]`) with Unicode NFC normalization.
-- **Eliminates Silent Unclassified Hangs:** When root questions lack recommendations, Smart Questions injects structured protocol remediation (`[Smart Questions protocol remediation]`) instructing the model to provide canonical recommendations (`[SQ:recommended]`) or declare explicit manual intervention (`[SQ:manual]`), preventing unattended sessions from hanging indefinitely.
-- **Configurable Unclassified Policy:** Supports `unclassifiedQuestionPolicy: 'remediate' | 'ignore'` to flexibly choose between auto-remediation prompts or standard passive waiting.
-- **Fingerprint-Scoped Loop Protection:** Unclassified question loop budgets are strictly scoped to identical failure chains and question fingerprints, rather than permanently disabling Smart Questions for the remainder of a healthy session. Chains cleanly reset upon successful AUTO selection, explicit MANUAL classification, question reply/settlement, or new user messages.
+- **Flexible Recommendation Matching:** Recognizes prefix (`(Recommended)`, `(Önerilen)`), suffix (`[SQ:recommended]`), description text, case-insensitive variations, and Turkish tokens across single-choice and multi-select prompts.
+- **Multi-Step & Multi-Field Fallback (Unattended Safety):** In multi-step questions (Step 1, Step 2, Step 3) or multi-field forms, steps with explicit recommendations are honored, and steps without markers fall back to the logical first option. Ensures sessions never stall or deadlock when unattended for hours.
+- **Configurable Fallback & Policies:** Supports `unclassifiedQuestionPolicy: 'fallback-first' | 'remediate-then-fallback' | 'remediate' | 'ignore'`, `fallbackToFirstOption: true`, and `fallbackOnManual: true` to provide complete autonomy without human intervention when needed.
+- **Comprehensive Overlay State Visibility:** Renders dedicated visual states across all handled selectable questions: **AUTO** (cyan border, green checklist, countdown timer), **MANUAL** (yellow border, manual decision required), **UNCLASSIFIED** (cyan border, agent remediation in progress), and **ERROR** (red border).
+- **Fingerprint-Scoped Loop Protection:** Unclassified question loop budgets are strictly scoped to identical failure chains and question fingerprints. Chains cleanly reset upon successful AUTO selection, explicit MANUAL classification, question reply/settlement, or new user messages.
 - **Transport Failure Resilience:** Failed synthetic prompt remediation preserves retry capability without exhausting duplicate or budget state.
-- **Fail-Safe Ambiguity Gates:** Automatically aborts auto-selection when a single-select question contains multiple recommendations. Zero silent fallback to first option or default choice.
 - **Instant User Intervention:** Cancels countdown immediately upon user typing, keyboard entry, draft file locking, or manual form selection.
 - **Subagent & Child Scope Isolation:** Operates strictly in the interactive root session; background child sessions and subagents are ignored without interference.
 - **Zero Runtime Dependencies:** Pure TypeScript compiled to `dist/` with no heavy third-party runtime dependencies.
@@ -54,7 +54,7 @@ Read the detailed [V1 Acceptance Report](docs/acceptance-v1.md), [V2 Acceptance 
 
 ## 📦 Installation
 
-The current version is **0.5.0**.
+The current version is **0.6.0**.
 
 ### 🟢 OpenCode V1 (1.x)
 

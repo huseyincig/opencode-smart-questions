@@ -16,6 +16,7 @@ export interface QuestionInfo {
     custom?: boolean;
     [key: string]: unknown;
 }
+export type QuestionOverlayStatus = 'auto' | 'manual' | 'unclassified' | 'error';
 export interface ActiveQuestionState {
     requestID: string;
     sessionID: string;
@@ -24,7 +25,9 @@ export interface ActiveQuestionState {
     agentName: string;
     agentFound: boolean;
     focusDisabled: boolean;
-    errorMessage?: string;
+    errorMessage?: string | undefined;
+    status?: QuestionOverlayStatus | undefined;
+    statusMessage?: string | undefined;
 }
 export interface SmartQuestionUIText {
     recommendation: string;
@@ -32,6 +35,12 @@ export interface SmartQuestionUIText {
     autoReplyFailed: string;
     agent: string;
     session: string;
+    manualTitle?: string | undefined;
+    manualSubtitle?: string | undefined;
+    unclassifiedTitle?: string | undefined;
+    unclassifiedSubtitle?: string | undefined;
+    remediationFailed?: string | undefined;
+    budgetExhausted?: string | undefined;
 }
 export interface SmartQuestionConfig {
     enabled: boolean;
@@ -40,12 +49,14 @@ export interface SmartQuestionConfig {
     recommendedMarker?: string;
     manualMarkers?: string[];
     manualMarker?: string;
-    maxUnclassifiedRemediations?: number;
-    unclassifiedQuestionPolicy?: 'remediate' | 'ignore';
+    maxUnclassifiedRemediations?: number | undefined;
+    unclassifiedQuestionPolicy?: 'remediate' | 'ignore' | 'fallback-first' | 'remediate-then-fallback' | undefined;
+    fallbackToFirstOption?: boolean | undefined;
+    fallbackOnManual?: boolean | undefined;
     requireExactlyOneRecommendation: boolean;
     uiText: SmartQuestionUIText;
-    debugLog?: string;
-    configDir?: string;
+    debugLog?: string | undefined;
+    configDir?: string | undefined;
 }
 export interface DetectionSuccess {
     ok: true;

@@ -23,6 +23,7 @@ import type {
   OpencodeClientLike,
   PendingQuestionState,
   PluginInput,
+  QuestionInfo,
 } from './types.js';
 
 export const SQ_REMEDIATION_HEADER = '[Smart Questions protocol remediation]';
@@ -284,20 +285,32 @@ export async function createSmartQuestionHooks(
         pendingRequests.delete(requestID);
       }
 
+      const fallbackActive =
+        config.unclassifiedQuestionPolicy === 'fallback-first' ||
+        config.fallbackToFirstOption === true;
+
       const classification = classifyQuestions(
         data.questions,
         config.recommendedMarkers,
         config.manualMarkers,
         handoff,
-        { requireExactlyOneRecommendation: config.requireExactlyOneRecommendation }
+        {
+          requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
+          allowFallback: fallbackActive,
+          allowFallbackOnManual: config.fallbackOnManual === true,
+        }
       );
 
       if (classification.status === 'manual') {
         sessionChains.delete(sessionID);
-        dbg(
-          `skip request=${requestID} reason=manual-classification matched=${classification.matchedMarker ?? 'none'}`
-        );
-        return;
+        if (config.fallbackOnManual === true) {
+          dbg(`fallback on manual request=${requestID}`);
+        } else {
+          dbg(
+            `skip request=${requestID} reason=manual-classification matched=${classification.matchedMarker ?? 'none'}`
+          );
+          return;
+        }
       }
 
       if (classification.status === 'unclassified') {
@@ -325,68 +338,76 @@ export async function createSmartQuestionHooks(
           dbg(
             `unclassified remediation budget exhausted session=${sessionID} fingerprint=${fingerprint} count=${currentCount}/${maxRemediations}`
           );
-          return;
-        }
-
-        remediatedRequests.add(requestID);
-        sessionChains.set(sessionID, {
-          fingerprint,
-          consecutiveFailures: currentCount + 1,
-        });
-
-        const promptText = buildUnclassifiedRemediationPrompt(
-          config.recommendedMarker,
-          config.manualMarker
-        );
-        const sent = await sendSyntheticRemediation(
-          client,
-          sessionID,
-          directory,
-          promptText,
-          dbg
-        );
-        if (!sent) {
-          // The request was marked before awaiting transport so concurrent
-          // duplicate events remain suppressed. Roll that state back when
-          // nothing was actually delivered, otherwise the root question can
-          // become permanently unclassified with no retry path.
-          remediatedRequests.delete(requestID);
-          if (currentCount === 0) {
-            sessionChains.delete(sessionID);
+          if (config.unclassifiedQuestionPolicy === 'remediate-then-fallback') {
+            dbg(`remediation budget exhausted, activating fallback request=${requestID}`);
+            // Fall through to auto-reply with first options
           } else {
-            sessionChains.set(sessionID, {
-              fingerprint,
-              consecutiveFailures: currentCount,
-            });
+            return;
           }
-          dbg(`remediation not sent request=${requestID} session=${sessionID}; retry remains allowed`);
+        } else {
+          remediatedRequests.add(requestID);
+          sessionChains.set(sessionID, {
+            fingerprint,
+            consecutiveFailures: currentCount + 1,
+          });
+
+          const promptText = buildUnclassifiedRemediationPrompt(
+            config.recommendedMarker,
+            config.manualMarker
+          );
+          const sent = await sendSyntheticRemediation(
+            client,
+            sessionID,
+            directory,
+            promptText,
+            dbg
+          );
+          if (!sent) {
+            remediatedRequests.delete(requestID);
+            if (currentCount === 0) {
+              sessionChains.delete(sessionID);
+            } else {
+              sessionChains.set(sessionID, {
+                fingerprint,
+                consecutiveFailures: currentCount,
+              });
+            }
+            dbg(`remediation not sent request=${requestID} session=${sessionID}; retry remains allowed`);
+            return;
+          }
+          dbg(
+            `remediation sent request=${requestID} session=${sessionID} fingerprint=${fingerprint} count=${currentCount + 1}/${maxRemediations}`
+          );
           return;
         }
-        dbg(
-          `remediation sent request=${requestID} session=${sessionID} fingerprint=${fingerprint} count=${currentCount + 1}/${maxRemediations}`
-        );
-        return;
       }
 
-      // Here classification.status === 'auto'
+      // Build answers if unclassified or manual fell through via fallback
+      const effectiveAnswers: string[][] =
+        classification.status === 'auto'
+          ? classification.answers
+          : (data.questions as QuestionInfo[]).map((q) =>
+              q.options?.[0]?.label ? [q.options[0].label] : []
+            );
+
       sessionChains.delete(sessionID);
       if (!canUseDraftCoordination(effectiveConfigDir, dbg)) {
         dbg(`skip request=${requestID} reason=draft-coordination-unavailable`);
         return;
       }
 
-      const selectionCount = classification.answers.reduce(
+      const selectionCount = effectiveAnswers.reduce(
         (sum, answer) => sum + answer.length,
         0
       );
       dbg(
-        `schedule request=${requestID} in ${config.timeoutMs}ms questions=${classification.answers.length} selections=${selectionCount}`
+        `schedule request=${requestID} in ${config.timeoutMs}ms questions=${effectiveAnswers.length} selections=${selectionCount}`
       );
 
       const pending: PendingQuestionState = {
         requestID,
         timer: undefined as unknown as NodeJS.Timeout,
-        answers: classification.answers,
+        answers: effectiveAnswers,
         status: 'pending',
       };
 
@@ -436,7 +457,7 @@ export async function createSmartQuestionHooks(
           const internalClient = client?._client;
 
           if (client?.question && typeof client.question.reply === 'function') {
-            const res = await client.question.reply({ requestID, answers: classification.answers });
+            const res = await client.question.reply({ requestID, answers: pending.answers });
             if (res && typeof res === 'object') {
               const outcome = res as { error?: unknown; ok?: boolean };
               if (outcome.error) {

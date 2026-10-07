@@ -28,6 +28,8 @@ const SMART_QUESTION_CONFIG_KEYS = new Set([
   'manualMarker',
   'maxUnclassifiedRemediations',
   'unclassifiedQuestionPolicy',
+  'fallbackToFirstOption',
+  'fallbackOnManual',
   'requireExactlyOneRecommendation',
   'uiText',
   'debugLog',
@@ -48,6 +50,12 @@ export const DEFAULT_UI_TEXT: SmartQuestionUIText = {
   autoReplyFailed: 'Auto-selection failed. Please answer manually.',
   agent: 'Agent:',
   session: 'Session:',
+  manualTitle: 'Manual Decision Required',
+  manualSubtitle: 'Auto-selection disabled — human approval required.',
+  unclassifiedTitle: 'Unclassified Question Intercepted',
+  unclassifiedSubtitle: 'Agent was asked to classify the question.',
+  remediationFailed: 'SQ could not remediate this question. Please answer manually.',
+  budgetExhausted: 'Automatic remediation stopped for this repeated question. Please answer manually.',
 };
 
 export const DEFAULT_CONFIG: SmartQuestionConfig = {
@@ -74,6 +82,12 @@ function normalizeUIText(value: unknown): SmartQuestionUIText {
     autoReplyFailed: typeof overrides.autoReplyFailed === 'string' && overrides.autoReplyFailed.trim() ? overrides.autoReplyFailed : DEFAULT_UI_TEXT.autoReplyFailed,
     agent: typeof overrides.agent === 'string' && overrides.agent.trim() ? overrides.agent : DEFAULT_UI_TEXT.agent,
     session: typeof overrides.session === 'string' && overrides.session.trim() ? overrides.session : DEFAULT_UI_TEXT.session,
+    manualTitle: typeof overrides.manualTitle === 'string' && overrides.manualTitle.trim() ? overrides.manualTitle : DEFAULT_UI_TEXT.manualTitle,
+    manualSubtitle: typeof overrides.manualSubtitle === 'string' && overrides.manualSubtitle.trim() ? overrides.manualSubtitle : DEFAULT_UI_TEXT.manualSubtitle,
+    unclassifiedTitle: typeof overrides.unclassifiedTitle === 'string' && overrides.unclassifiedTitle.trim() ? overrides.unclassifiedTitle : DEFAULT_UI_TEXT.unclassifiedTitle,
+    unclassifiedSubtitle: typeof overrides.unclassifiedSubtitle === 'string' && overrides.unclassifiedSubtitle.trim() ? overrides.unclassifiedSubtitle : DEFAULT_UI_TEXT.unclassifiedSubtitle,
+    remediationFailed: typeof overrides.remediationFailed === 'string' && overrides.remediationFailed.trim() ? overrides.remediationFailed : DEFAULT_UI_TEXT.remediationFailed,
+    budgetExhausted: typeof overrides.budgetExhausted === 'string' && overrides.budgetExhausted.trim() ? overrides.budgetExhausted : DEFAULT_UI_TEXT.budgetExhausted,
   };
 }
 
@@ -158,7 +172,13 @@ export function normalizeSmartQuestionConfig(
         parsed.maxUnclassifiedRemediations < 0)) ||
     (parsed.unclassifiedQuestionPolicy !== undefined &&
       parsed.unclassifiedQuestionPolicy !== 'remediate' &&
-      parsed.unclassifiedQuestionPolicy !== 'ignore') ||
+      parsed.unclassifiedQuestionPolicy !== 'ignore' &&
+      parsed.unclassifiedQuestionPolicy !== 'fallback-first' &&
+      parsed.unclassifiedQuestionPolicy !== 'remediate-then-fallback') ||
+    (parsed.fallbackToFirstOption !== undefined &&
+      typeof parsed.fallbackToFirstOption !== 'boolean') ||
+    (parsed.fallbackOnManual !== undefined &&
+      typeof parsed.fallbackOnManual !== 'boolean') ||
     (parsed.uiText !== undefined &&
       (parsed.uiText === null || typeof parsed.uiText !== 'object' ||
         Array.isArray(parsed.uiText) ||
@@ -191,8 +211,14 @@ export function normalizeSmartQuestionConfig(
       ? Math.floor(parsed.maxUnclassifiedRemediations)
       : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
 
-  const unclassifiedQuestionPolicy: 'remediate' | 'ignore' =
-    parsed.unclassifiedQuestionPolicy === 'ignore' ? 'ignore' : 'remediate';
+  const unclassifiedQuestionPolicy: 'remediate' | 'ignore' | 'fallback-first' | 'remediate-then-fallback' =
+    parsed.unclassifiedQuestionPolicy === 'ignore'
+      ? 'ignore'
+      : parsed.unclassifiedQuestionPolicy === 'fallback-first'
+        ? 'fallback-first'
+        : parsed.unclassifiedQuestionPolicy === 'remediate-then-fallback'
+          ? 'remediate-then-fallback'
+          : 'remediate';
 
   const timeoutMs =
     typeof parsed.timeoutMs === 'number' &&
@@ -218,6 +244,12 @@ export function normalizeSmartQuestionConfig(
     uiText: normalizeUIText(parsed.uiText),
     debugLog: typeof parsed.debugLog === 'string' ? parsed.debugLog : DEFAULT_CONFIG.debugLog ?? '',
   };
+  if (typeof parsed.fallbackToFirstOption === 'boolean') {
+    normalized.fallbackToFirstOption = parsed.fallbackToFirstOption;
+  }
+  if (typeof parsed.fallbackOnManual === 'boolean') {
+    normalized.fallbackOnManual = parsed.fallbackOnManual;
+  }
   const resolvedConfigDir =
     typeof parsed.configDir === 'string' && parsed.configDir ? parsed.configDir : configDir;
   if (resolvedConfigDir) normalized.configDir = resolvedConfigDir;
