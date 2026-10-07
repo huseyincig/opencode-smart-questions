@@ -701,6 +701,10 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     }
 
     if (classification.status === 'unclassified') {
+      if (config.unclassifiedQuestionPolicy === 'ignore') {
+        log(`unclassified form=${form.id} ignored per unclassifiedQuestionPolicy`);
+        return;
+      }
       log(`unclassified form=${form.id} reason=${classification.reason}`);
       if (remediatedForms.has(form.id)) {
         log(`suppress duplicate remediation form=${form.id}`);

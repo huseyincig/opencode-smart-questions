@@ -966,3 +966,33 @@ test('TEST 14 - V1 and V2 parity: form classifier produces identical states as q
   const v2Unclass = classifyV2Form(unclassifiedForm);
   assert.equal(v2Unclass.status, 'unclassified');
 });
+
+// ---------------------------------------------------------------------------
+// TEST 15 — unclassifiedQuestionPolicy: 'ignore' suppresses remediation
+// ---------------------------------------------------------------------------
+test('TEST 15 - unclassifiedQuestionPolicy ignore suppresses remediation', async () => {
+  const { hooks, promptCalls } = await createPluginHarness({
+    timeoutMs: 30,
+    unclassifiedQuestionPolicy: 'ignore',
+  });
+
+  await hooks.event({
+    event: {
+      type: 'question.asked',
+      sessionID: TEST_ROOT_SESSION_ID,
+      data: {
+        id: 'req-ignore-unclass',
+        sessionID: TEST_ROOT_SESSION_ID,
+        questions: [
+          {
+            question: 'Pick database',
+            options: [{ label: 'PostgreSQL' }, { label: 'MySQL' }],
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(promptCalls.length, 0, 'No remediation prompt should be sent when policy is ignore');
+});
+

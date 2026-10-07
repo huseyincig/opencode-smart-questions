@@ -21,11 +21,11 @@ A high-performance, deterministic OpenCode plugin that automatically answers age
 
 ![Automated and host acceptance results](docs/assets/verification-overview.svg)
 
-> The graphic displays the current **v0.4.9 automated verification** along with real host acceptance on **OpenCode V1 (`1.18.34`)** and **OpenCode V2 (`2.0.24`)** executed with the mandatory test model `opencode-go/mimo-v2.6-flash`.
+> The graphic displays the current **v0.5.0 automated verification** along with real host acceptance on **OpenCode V1 (`1.18.34`)** and **OpenCode V2 (`2.0.24`)** executed with the mandatory test model `opencode-go/mimo-v2.6-flash`.
 
-Smart Questions **v0.4.9** is validated as follows:
+Smart Questions **v0.5.0** is validated as follows:
 
-- **Current Automated Verification:** **135 / 135** unit and regression tests passing.
+- **Current Automated Verification:** **136 / 136** unit and regression tests passing.
 - **Sandbox Scenarios:** **8 / 8** isolated smoke and comprehensive test suites passing.
 - **Static Analysis:** Standard and strict TypeScript gates pass; Oxlint reports **0 warnings / 0 errors**.
 - **Dependency Security:** **0 vulnerabilities** across production and development dependency audits.
@@ -41,6 +41,7 @@ Read the detailed [V1 Acceptance Report](docs/acceptance-v1.md), [V2 Acceptance 
 - **Dual-Mode Host Support:** Seamlessly supports both **OpenCode v1** (`@opencode-ai/plugin`) and **OpenCode v2** (`@opencode/plugin`) with decoupled runtime adapters.
 - **Language-Independent Matching:** Suffix matching works identically across all natural languages (`Kaydet [SQ:recommended]`, `Save [SQ:recommended]`, `保存 [SQ:recommended]`) with Unicode NFC normalization.
 - **Eliminates Silent Unclassified Hangs:** When root questions lack recommendations, Smart Questions injects structured protocol remediation (`[Smart Questions protocol remediation]`) instructing the model to provide canonical recommendations (`[SQ:recommended]`) or declare explicit manual intervention (`[SQ:manual]`), preventing unattended sessions from hanging indefinitely.
+- **Configurable Unclassified Policy:** Supports `unclassifiedQuestionPolicy: 'remediate' | 'ignore'` to flexibly choose between auto-remediation prompts or standard passive waiting.
 - **Fingerprint-Scoped Loop Protection:** Unclassified question loop budgets are strictly scoped to identical failure chains and question fingerprints, rather than permanently disabling Smart Questions for the remainder of a healthy session. Chains cleanly reset upon successful AUTO selection, explicit MANUAL classification, question reply/settlement, or new user messages.
 - **Transport Failure Resilience:** Failed synthetic prompt remediation preserves retry capability without exhausting duplicate or budget state.
 - **Fail-Safe Ambiguity Gates:** Automatically aborts auto-selection when a single-select question contains multiple recommendations. Zero silent fallback to first option or default choice.
@@ -53,7 +54,7 @@ Read the detailed [V1 Acceptance Report](docs/acceptance-v1.md), [V2 Acceptance 
 
 ## 📦 Installation
 
-The current version is **0.4.9**.
+The current version is **0.5.0**.
 
 ### 🟢 OpenCode V1 (1.x)
 

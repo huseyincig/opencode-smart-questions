@@ -301,6 +301,10 @@ export async function createSmartQuestionHooks(
       }
 
       if (classification.status === 'unclassified') {
+        if (config.unclassifiedQuestionPolicy === 'ignore') {
+          dbg(`unclassified request=${requestID} ignored per unclassifiedQuestionPolicy`);
+          return;
+        }
         dbg(`unclassified request=${requestID} reason=${classification.reason}`);
         if (remediatedRequests.has(requestID)) {
           dbg(`suppress duplicate remediation request=${requestID}`);
@@ -554,10 +558,11 @@ export async function createSmartQuestionHooks(
       setActiveHandoff(sessionID, handoff);
       dbg(`handoff received via chat.message session=${sessionID} handoffId=${handoff.handoffId} kind=${handoff.kind} autoSelect=${handoff.autoSelect}`);
     } else {
-      const role = output?.message?.role ?? output?.message?.info?.role;
+      const role = output?.message?.role ?? output?.message?.info?.role ?? output?.role;
       if (role === 'user') {
         invalidateActiveHandoff(sessionID);
-        dbg(`invalidated stale handoff on new user turn in chat.message session=${sessionID}`);
+        sessionChains.delete(sessionID);
+        dbg(`invalidated stale handoff and reset unclassified chain on new user turn in chat.message session=${sessionID}`);
       }
     }
   };

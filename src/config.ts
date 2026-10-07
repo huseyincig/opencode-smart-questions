@@ -58,6 +58,7 @@ export const DEFAULT_CONFIG: SmartQuestionConfig = {
   manualMarkers: DEFAULT_MANUAL_MARKERS,
   manualMarker: '[SQ:manual]',
   maxUnclassifiedRemediations: DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS,
+  unclassifiedQuestionPolicy: 'remediate',
   requireExactlyOneRecommendation: true,
   uiText: DEFAULT_UI_TEXT,
   debugLog: '',
@@ -155,6 +156,9 @@ export function normalizeSmartQuestionConfig(
       (typeof parsed.maxUnclassifiedRemediations !== 'number' ||
         !Number.isFinite(parsed.maxUnclassifiedRemediations) ||
         parsed.maxUnclassifiedRemediations < 0)) ||
+    (parsed.unclassifiedQuestionPolicy !== undefined &&
+      parsed.unclassifiedQuestionPolicy !== 'remediate' &&
+      parsed.unclassifiedQuestionPolicy !== 'ignore') ||
     (parsed.uiText !== undefined &&
       (parsed.uiText === null || typeof parsed.uiText !== 'object' ||
         Array.isArray(parsed.uiText) ||
@@ -187,6 +191,9 @@ export function normalizeSmartQuestionConfig(
       ? Math.floor(parsed.maxUnclassifiedRemediations)
       : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
 
+  const unclassifiedQuestionPolicy: 'remediate' | 'ignore' =
+    parsed.unclassifiedQuestionPolicy === 'ignore' ? 'ignore' : 'remediate';
+
   const timeoutMs =
     typeof parsed.timeoutMs === 'number' &&
     Number.isFinite(parsed.timeoutMs) &&
@@ -203,6 +210,7 @@ export function normalizeSmartQuestionConfig(
     manualMarkers,
     manualMarker,
     maxUnclassifiedRemediations,
+    unclassifiedQuestionPolicy,
     requireExactlyOneRecommendation:
       typeof parsed.requireExactlyOneRecommendation === 'boolean'
         ? parsed.requireExactlyOneRecommendation
