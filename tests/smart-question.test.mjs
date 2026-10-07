@@ -2013,6 +2013,52 @@ function createV2TuiMock(tempDir, timeoutMs = 25) {
   };
 }
 
+test('V2 TUI unclassified remediation send failure remains retryable', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-v2-remediation-retry-'));
+  try {
+    const ui = await import('../dist/ui.js');
+    const mock = createV2TuiMock(tempDir, 20);
+    let attempts = 0;
+    mock.context.client = {
+      session: {
+        async synthetic() {
+          attempts++;
+          if (attempts === 1) throw new Error('synthetic transport failure');
+          return {};
+        },
+      },
+    };
+
+    const cleanup = await ui.setup(mock.context);
+    const form = {
+      id: 'form-v2-unclassified-retry',
+      sessionID: 'ses-v2-ui',
+      fields: [{
+        key: 'choice',
+        type: 'string',
+        options: [
+          { value: 'a', label: 'Option A' },
+          { value: 'b', label: 'Option B' },
+        ],
+      }],
+    };
+
+    mock.emitCreated(form);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    mock.emitCreated(form);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    assert.equal(
+      attempts,
+      2,
+      'A failed V2 remediation send must remain retryable instead of being suppressed as already remediated'
+    );
+    await cleanup?.();
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('OpenCode v2 TUI setup auto-replies through session.form using option values', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-v2-ui-reply-'));
   try {
@@ -3146,5 +3192,30 @@ test('V2 dedup ignores generic headings and keys only on the SQ sentinel', async
     );
   } finally {
     await cleanup?.();
+  }
+});
+
+test('Section 12.F: canonical marker [SQ:recommended] works identically across multi-language option labels', () => {
+  const labels = [
+    'Use PostgreSQL [SQ:recommended]',
+    'PostgreSQL kullan [SQ:recommended]',
+    'PostgreSQL verwenden [SQ:recommended]',
+    '使用 PostgreSQL [SQ:recommended]',
+    'Использовать PostgreSQL [SQ:recommended]',
+  ];
+  for (const label of labels) {
+    const questions = [
+      {
+        question: 'Which database should we use?',
+        options: [
+          { label },
+          { label: 'Alternative database option' },
+        ],
+      },
+    ];
+    const result = detectRecommendations(questions);
+    assert.equal(result.ok, true, `Must detect recommendation for label: ${label}`);
+    assert.equal(result.matchedMarker, '[SQ:recommended]');
+    assert.deepEqual(result.answers, [[label]]);
   }
 });

@@ -1,12 +1,106 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveSmartQuestionConfig } from './config.js';
-import { detectRecommendations } from './detector.js';
+import { DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS, resolveSmartQuestionConfig, } from './config.js';
+import { classifyQuestions } from './detector.js';
 import { canUseDraftCoordination, cleanupStaleDrafts, deleteLockfile, resolveLockPath } from './draft-guard.js';
 import { buildRecommendationGuidance, SQ_GUIDANCE_SENTINEL } from './guidance.js';
 import { createDiagnosticError, diagnosticErrorCode } from './diagnostics.js';
 import { resolveV1SessionScope } from './session-scope.js';
 import { getActiveHandoff, setActiveHandoff, consumeActiveHandoff, clearActiveHandoff, invalidateActiveHandoff, extractTrustedGuardianHandoff, extractCurrentTurnGuardianHandoff, } from './handoff.js';
+export const SQ_REMEDIATION_HEADER = '[Smart Questions protocol remediation]';
+export function buildUnclassifiedRemediationPrompt(primaryMarker, manualMarker = '[SQ:manual]') {
+    // If invoked directly by OpenCode's plugin engine as a plugin factory, return an empty hooks object
+    if (primaryMarker &&
+        typeof primaryMarker === 'object' &&
+        ('client' in primaryMarker || 'directory' in primaryMarker)) {
+        return {};
+    }
+    const recMarker = typeof primaryMarker === 'string' ? primaryMarker : '[SQ:recommended]';
+    return [
+        SQ_REMEDIATION_HEADER,
+        '',
+        'This selectable question is unclassified.',
+        '',
+        'Do not leave a root-agent selectable question waiting indefinitely.',
+        '',
+        'Either:',
+        '',
+        '1. mark the safest/recommended option with the canonical',
+        `   ${recMarker}`,
+        '   token so Smart Questions can continue automatically,',
+        '',
+        'or',
+        '',
+        '2. explicitly classify the question as manual approval using',
+        `   the Smart Questions manual-decision protocol (${manualMarker}) when human`,
+        '   approval is genuinely required.',
+        '',
+        'Do not ask the same unclassified question again.',
+    ].join('\n');
+}
+async function sendSyntheticRemediation(client, sessionID, directory, promptText, dbg) {
+    try {
+        if (client?.session && typeof client.session.synthetic === 'function') {
+            await client.session.synthetic({
+                sessionID,
+                text: promptText,
+                description: 'Smart Questions protocol remediation',
+                metadata: { 'opencode-smart-questions': true },
+                delivery: 'queue',
+                resume: true,
+            });
+            return true;
+        }
+        if (client?.session && typeof client.session.promptAsync === 'function') {
+            await client.session.promptAsync({
+                path: { id: sessionID },
+                ...(directory ? { query: { directory } } : {}),
+                body: {
+                    parts: [{
+                            type: 'text',
+                            text: promptText,
+                            synthetic: true,
+                            metadata: { 'opencode-smart-questions': true },
+                        }],
+                },
+            });
+            return true;
+        }
+        if (client?.session && typeof client.session.prompt === 'function') {
+            await client.session.prompt({
+                path: { id: sessionID },
+                ...(directory ? { query: { directory } } : {}),
+                body: {
+                    parts: [{
+                            type: 'text',
+                            text: promptText,
+                            synthetic: true,
+                            metadata: { 'opencode-smart-questions': true },
+                        }],
+                },
+            });
+            return true;
+        }
+        if (client?._client && typeof client._client.post === 'function') {
+            await client._client.post({
+                url: `/session/${encodeURIComponent(sessionID)}/prompt_async`,
+                body: {
+                    parts: [{
+                            type: 'text',
+                            text: promptText,
+                            synthetic: true,
+                            metadata: { 'opencode-smart-questions': true },
+                        }],
+                },
+            });
+            return true;
+        }
+    }
+    catch (err) {
+        dbg(`remediation prompt failed session=${sessionID} code=${diagnosticErrorCode(err)}`);
+    }
+    return false;
+}
 function describeServer(serverUrl) {
     if (!serverUrl)
         return { origin: 'none', protocol: 'none' };
@@ -26,6 +120,8 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
         return {};
     const effectiveConfigDir = config.configDir || path.resolve(directory || process.cwd(), '.opencode');
     const pendingRequests = new Map();
+    const remediatedRequests = new Set();
+    const sessionRemediations = new Map();
     const sessionScope = new Map();
     const debugLogPath = typeof config.debugLog === 'string' && config.debugLog ? config.debugLog : null;
     const dbg = (msg) => {
@@ -87,6 +183,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
             if (sessionID) {
                 clearActiveHandoff(sessionID);
                 sessionScope.delete(sessionID);
+                sessionRemediations.delete(sessionID);
                 dbg(`session deleted, cleared handoff and scope session=${sessionID}`);
             }
             return;
@@ -121,31 +218,62 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                     // Best effort message lookup
                 }
             }
-            if (handoff && handoff.autoSelect === 'forbidden') {
-                dbg(`skip request=${requestID} reason=guardian-handoff-auto-select-forbidden handoffId=${handoff.handoffId}`);
-                return;
-            }
             const existing = pendingRequests.get(requestID);
             if (existing) {
                 clearTimeout(existing.timer);
                 existing.status = 'cancelled';
                 pendingRequests.delete(requestID);
             }
-            const decision = detectRecommendations(data.questions, config.recommendedMarkers, { requireExactlyOneRecommendation: config.requireExactlyOneRecommendation });
-            if (!decision.ok) {
-                dbg(`skip request=${requestID} reason=${decision.reason}`);
+            const classification = classifyQuestions(data.questions, config.recommendedMarkers, config.manualMarkers, handoff, { requireExactlyOneRecommendation: config.requireExactlyOneRecommendation });
+            if (classification.status === 'manual') {
+                dbg(`skip request=${requestID} reason=manual-classification matched=${classification.matchedMarker ?? 'none'}`);
                 return;
             }
+            if (classification.status === 'unclassified') {
+                dbg(`unclassified request=${requestID} reason=${classification.reason}`);
+                if (remediatedRequests.has(requestID)) {
+                    dbg(`suppress duplicate remediation request=${requestID}`);
+                    return;
+                }
+                const maxRemediations = typeof config.maxUnclassifiedRemediations === 'number'
+                    ? config.maxUnclassifiedRemediations
+                    : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
+                const currentCount = sessionRemediations.get(sessionID) ?? 0;
+                if (currentCount >= maxRemediations) {
+                    dbg(`unclassified remediation budget exhausted session=${sessionID} count=${currentCount}/${maxRemediations}`);
+                    return;
+                }
+                remediatedRequests.add(requestID);
+                sessionRemediations.set(sessionID, currentCount + 1);
+                const promptText = buildUnclassifiedRemediationPrompt(config.recommendedMarker, config.manualMarker);
+                const sent = await sendSyntheticRemediation(client, sessionID, directory, promptText, dbg);
+                if (!sent) {
+                    // The request was marked before awaiting transport so concurrent
+                    // duplicate events remain suppressed. Roll that state back when
+                    // nothing was actually delivered, otherwise the root question can
+                    // become permanently unclassified with no retry path.
+                    remediatedRequests.delete(requestID);
+                    if (currentCount === 0)
+                        sessionRemediations.delete(sessionID);
+                    else
+                        sessionRemediations.set(sessionID, currentCount);
+                    dbg(`remediation not sent request=${requestID} session=${sessionID}; retry remains allowed`);
+                    return;
+                }
+                dbg(`remediation sent request=${requestID} session=${sessionID} count=${currentCount + 1}/${maxRemediations}`);
+                return;
+            }
+            // Here classification.status === 'auto'
             if (!canUseDraftCoordination(effectiveConfigDir, dbg)) {
                 dbg(`skip request=${requestID} reason=draft-coordination-unavailable`);
                 return;
             }
-            const selectionCount = decision.answers.reduce((sum, answer) => sum + answer.length, 0);
-            dbg(`schedule request=${requestID} in ${config.timeoutMs}ms questions=${decision.answers.length} selections=${selectionCount}`);
+            const selectionCount = classification.answers.reduce((sum, answer) => sum + answer.length, 0);
+            dbg(`schedule request=${requestID} in ${config.timeoutMs}ms questions=${classification.answers.length} selections=${selectionCount}`);
             const pending = {
                 requestID,
                 timer: undefined,
-                answers: decision.answers,
+                answers: classification.answers,
                 status: 'pending',
             };
             pending.timer = setTimeout(async () => {
@@ -192,7 +320,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                     dbg(`reply attempt request=${requestID}`);
                     const internalClient = client?._client;
                     if (client?.question && typeof client.question.reply === 'function') {
-                        const res = await client.question.reply({ requestID, answers: decision.answers });
+                        const res = await client.question.reply({ requestID, answers: classification.answers });
                         if (res && typeof res === 'object') {
                             const outcome = res;
                             if (outcome.error) {
@@ -206,7 +334,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                     else if (internalClient && typeof internalClient.post === 'function') {
                         const res = await internalClient.post({
                             url: `/question/${encodeURIComponent(requestID)}/reply`,
-                            body: { answers: decision.answers },
+                            body: { answers: pending.answers },
                         });
                         if (res && typeof res === 'object') {
                             if (res.error) {
@@ -230,7 +358,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                         const res = await fetch(endpoint, {
                             method: 'POST',
                             headers: { 'content-type': 'application/json' },
-                            body: JSON.stringify({ answers: decision.answers }),
+                            body: JSON.stringify({ answers: pending.answers }),
                         });
                         if (!res.ok) {
                             throw createDiagnosticError(`HTTP_${res.status}`);
@@ -275,6 +403,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                 pending.status = 'cancelled';
                 pendingRequests.delete(requestID);
             }
+            remediatedRequests.delete(requestID);
             deleteLockfile(resolveLockPath(effectiveConfigDir, requestID), dbg);
         }
     };

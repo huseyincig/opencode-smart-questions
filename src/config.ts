@@ -10,6 +10,13 @@ export const DEFAULT_RECOMMENDED_MARKERS: string[] = [
   '(Önerilen)',
 ];
 
+export const DEFAULT_MANUAL_MARKERS: string[] = [
+  '[SQ:manual]',
+  '[SQ_DECISION:manual]',
+];
+
+export const DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS = 3;
+
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
 const SMART_QUESTION_CONFIG_KEYS = new Set([
@@ -17,6 +24,10 @@ const SMART_QUESTION_CONFIG_KEYS = new Set([
   'timeoutMs',
   'recommendedMarkers',
   'recommendedMarker',
+  'manualMarkers',
+  'manualMarker',
+  'maxUnclassifiedRemediations',
+  'unclassifiedQuestionPolicy',
   'requireExactlyOneRecommendation',
   'uiText',
   'debugLog',
@@ -44,6 +55,9 @@ export const DEFAULT_CONFIG: SmartQuestionConfig = {
   timeoutMs: 30000,
   recommendedMarkers: DEFAULT_RECOMMENDED_MARKERS,
   recommendedMarker: '[SQ:recommended]',
+  manualMarkers: DEFAULT_MANUAL_MARKERS,
+  manualMarker: '[SQ:manual]',
+  maxUnclassifiedRemediations: DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS,
   requireExactlyOneRecommendation: true,
   uiText: DEFAULT_UI_TEXT,
   debugLog: '',
@@ -130,6 +144,17 @@ export function normalizeSmartQuestionConfig(
     (parsed.debugLog !== undefined && typeof parsed.debugLog !== 'string') ||
     (parsed.configDir !== undefined &&
       (typeof parsed.configDir !== 'string' || parsed.configDir.trim().length === 0)) ||
+    (parsed.manualMarkers !== undefined &&
+      (!Array.isArray(parsed.manualMarkers) ||
+        parsed.manualMarkers.length === 0 ||
+        parsed.manualMarkers.some((marker: unknown) =>
+          typeof marker !== 'string' || marker.trim().length === 0))) ||
+    (parsed.manualMarker !== undefined &&
+      (typeof parsed.manualMarker !== 'string' || parsed.manualMarker.trim().length === 0)) ||
+    (parsed.maxUnclassifiedRemediations !== undefined &&
+      (typeof parsed.maxUnclassifiedRemediations !== 'number' ||
+        !Number.isFinite(parsed.maxUnclassifiedRemediations) ||
+        parsed.maxUnclassifiedRemediations < 0)) ||
     (parsed.uiText !== undefined &&
       (parsed.uiText === null || typeof parsed.uiText !== 'object' ||
         Array.isArray(parsed.uiText) ||
@@ -146,6 +171,22 @@ export function normalizeSmartQuestionConfig(
   const recommendedMarker =
     recommendedMarkers[0] ?? DEFAULT_CONFIG.recommendedMarker ?? '[SQ:recommended]';
 
+  const rawManualMarkers = cleanMarkers(parsed.manualMarkers);
+  const manualMarkers =
+    rawManualMarkers.length > 0
+      ? rawManualMarkers
+      : typeof parsed.manualMarker === 'string' && parsed.manualMarker.trim().length > 0
+        ? [parsed.manualMarker.trim()]
+        : [...DEFAULT_MANUAL_MARKERS];
+  const manualMarker = manualMarkers[0] ?? DEFAULT_CONFIG.manualMarker ?? '[SQ:manual]';
+
+  const maxUnclassifiedRemediations =
+    typeof parsed.maxUnclassifiedRemediations === 'number' &&
+    Number.isFinite(parsed.maxUnclassifiedRemediations) &&
+    parsed.maxUnclassifiedRemediations >= 0
+      ? Math.floor(parsed.maxUnclassifiedRemediations)
+      : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
+
   const timeoutMs =
     typeof parsed.timeoutMs === 'number' &&
     Number.isFinite(parsed.timeoutMs) &&
@@ -159,6 +200,9 @@ export function normalizeSmartQuestionConfig(
     timeoutMs,
     recommendedMarkers,
     recommendedMarker,
+    manualMarkers,
+    manualMarker,
+    maxUnclassifiedRemediations,
     requireExactlyOneRecommendation:
       typeof parsed.requireExactlyOneRecommendation === 'boolean'
         ? parsed.requireExactlyOneRecommendation

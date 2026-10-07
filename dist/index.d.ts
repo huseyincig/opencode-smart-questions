@@ -1,8 +1,9 @@
 import type { Plugin as OpenCodeV1Plugin } from '@opencode-ai/plugin';
 import type { Plugin as OpenCodeV2 } from '@opencode/plugin';
 export * from './types.js';
-export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_CONFIG, } from './config.js';
+export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_MANUAL_MARKERS, DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS, DEFAULT_CONFIG, } from './config.js';
 export * from './detector.js';
+export { classifyV2Form, detectV2FormRecommendations, type V2FormClassification, type V2FormDetectionResult, } from './form-adapter.js';
 export { resolveLockPath, deleteLockfile, cleanupStaleDrafts, } from './draft-guard.js';
 export * from './backend.js';
 export * from './handoff.js';

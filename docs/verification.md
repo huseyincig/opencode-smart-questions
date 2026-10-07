@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v0.4.7** source evaluation on **06 October 2026**. It distinguishes automated host simulations from integration with an actual OpenCode installation.
+This document describes the **v0.4.8** source evaluation on **07 October 2026**. It distinguishes automated host simulations from integration with an actual OpenCode installation.
 
 ## Automated checks
 
@@ -25,7 +25,7 @@ Automated tests validate the tested inputs and mock-host behavior. They do not m
 | Area | Current behavior | Boundary |
 | --- | --- | --- |
 | Language handling | Exact recommendation suffixes (default `[SQ:recommended]` plus legacy English/Turkish markers), Unicode NFC normalization and configurable UI text | No translation, semantic understanding, automatic locale inference or verification of an agent's recommendation |
-| Single/multiple choice | Exactly one marked option is required for a single-choice question; multi-select supports several | Unmarked, ambiguous and unsupported questions are left to the user |
+| Single/multiple choice | Exactly one marked option is required for a single-choice question; multi-select supports several | Unmarked root-session questions trigger protocol remediation (`[Smart Questions protocol remediation]`); child sessions remain isolated |
 | V1 events | A per-request timer handles `question.asked/replied/rejected`; the TUI creates a draft lock on user input | The countdown panel and keyboard cancellation require the V1 TUI adapter to be loaded; a reply already sent cannot be withdrawn |
 | V1 transport | Native question client, internal client or a supported REST fallback | Host routing and authentication must be verified on the actual V1 build |
 | V2 forms | Supported selectable form fields map exact labels to stable values; synchronization and pending state are checked before reply | An already-issued reply cannot be recalled; custom tools, global forms and unsupported fields are outside automatic selection |
@@ -36,19 +36,19 @@ Automated tests validate the tested inputs and mock-host behavior. They do not m
 
 The legacy `requireExactlyOneRecommendation` setting is accepted for compatibility but does not relax single-choice ambiguity checks. `timeoutMs: 0` provides no practical opportunity to cancel an automatic reply.
 
-## Current automated acceptance — 06 October 2026
+## Current automated acceptance — 07 October 2026
 
-The local evaluation used Node **24.21.0** in an isolated checkout. The GitHub CI matrix separately runs Node **22.x** and **24.x**. The following results were obtained for the v0.4.7 source tree:
+The local evaluation used Node **24.21.0** in an isolated checkout. The GitHub CI matrix separately runs Node **22.x** and **24.x**. The following results were obtained for the v0.4.8 source tree:
 
 | Check | Observed result |
 | --- | ---: |
-| Unit and regression tests | **113/113 passed** |
+| Unit and regression tests | **130/130 passed** |
 | Strict TypeScript checks (`noUnused*`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) | **Passed** |
 | V1 simulated sandbox scenarios | **10/10 passed** |
 | Smoke test and TypeScript typecheck | **Passed** |
 | Full `npm audit` | **0 reported vulnerabilities** |
 | `npm pack --dry-run` | **36 files**, expected exports present |
-| Real OpenCode V1/V2 host acceptance for v0.4.7 | **PASSED (see acceptance-v1.md & acceptance-v2.md)** |
+| Real OpenCode V1/V2 host acceptance for v0.4.8 | **PASSED (see acceptance-v1.md & acceptance-v2.md)** |
 
 OpenTUI's development dependency currently declares Node >=26.4 or Bun >=1.3; npm installation on Node 24 reports an engine warning. Passing the Node 22/24 automated suite does not demonstrate full native TUI runtime compatibility.
 

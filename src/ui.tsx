@@ -23,9 +23,11 @@ import {
   resolveLockPath,
 } from './draft-guard.js';
 import {
-  detectV2FormRecommendations,
+  classifyV2Form,
   type V2FormInfo,
 } from './form-adapter.js';
+import { buildUnclassifiedRemediationPrompt } from './backend.js';
+import { DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS } from './config.js';
 import { diagnosticErrorCode } from './diagnostics.js';
 import { isRootSessionInfo } from './session-scope.js';
 import {
@@ -574,6 +576,8 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     Record<string, OverlayState>
   >({});
   const pending = new Map<string, V2Pending>();
+  const remediatedForms = new Set<string>();
+  const sessionRemediations = new Map<string, number>();
 
   const updateSessionState = (
     sessionID: string,
@@ -634,7 +638,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     item.log(`manual interaction form=${item.formID} session=${sessionID} reason=${reason}`);
   };
 
-  const onFormCreated = (event: any) => {
+  const onFormCreated = async (event: any) => {
     const form = event?.data?.form as V2FormInfo | undefined;
     if (!form?.id || !form.sessionID || form.sessionID === 'global') return;
 
@@ -660,16 +664,6 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     if (!config?.enabled) return;
     const log = createDiagnosticLogger(config, 'smart-question-v2-ui');
 
-    const decision = detectV2FormRecommendations(
-      form,
-      config.recommendedMarkers,
-      { requireExactlyOneRecommendation: config.requireExactlyOneRecommendation }
-    );
-    if (!decision.ok) {
-      log(`skip form=${form.id} reason=${decision.reason}`);
-      return;
-    }
-
     let handoff = getActiveHandoff(form.sessionID);
     if (!handoff) {
       try {
@@ -687,12 +681,102 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       }
     }
 
-    if (handoff && handoff.autoSelect === 'forbidden') {
-      log(`skip form=${form.id} reason=guardian-handoff-auto-select-forbidden handoffId=${handoff.handoffId}`);
+    const classification = classifyV2Form(
+      form,
+      config.recommendedMarkers,
+      config.manualMarkers,
+      handoff,
+      { requireExactlyOneRecommendation: config.requireExactlyOneRecommendation }
+    );
+
+    if (classification.status === 'manual') {
+      log(
+        `skip form=${form.id} reason=manual-classification matched=${classification.matchedMarker ?? 'none'}`
+      );
       return;
     }
 
-    const detection: DetectionResult = decision.detection;
+    if (classification.status === 'unclassified') {
+      log(`unclassified form=${form.id} reason=${classification.reason}`);
+      if (remediatedForms.has(form.id)) {
+        log(`suppress duplicate remediation form=${form.id}`);
+        return;
+      }
+
+      const maxRemediations =
+        typeof config.maxUnclassifiedRemediations === 'number'
+          ? config.maxUnclassifiedRemediations
+          : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
+      const currentCount = sessionRemediations.get(form.sessionID) ?? 0;
+      if (currentCount >= maxRemediations) {
+        log(
+          `unclassified remediation budget exhausted session=${form.sessionID} count=${currentCount}/${maxRemediations}`
+        );
+        return;
+      }
+
+      remediatedForms.add(form.id);
+      sessionRemediations.set(form.sessionID, currentCount + 1);
+
+      const promptText = buildUnclassifiedRemediationPrompt(
+        config.recommendedMarker,
+        config.manualMarker
+      );
+      let remediationSent = false;
+      try {
+        if (context.client?.session && typeof (context.client.session as any).synthetic === 'function') {
+          await (context.client.session as any).synthetic({
+            sessionID: form.sessionID,
+            text: promptText,
+            description: 'Smart Questions protocol remediation',
+            metadata: { 'opencode-smart-questions': true },
+            delivery: 'queue',
+            resume: true,
+          });
+          remediationSent = true;
+        } else if (context.client?.session && typeof (context.client.session as any).prompt === 'function') {
+          await (context.client.session as any).prompt({
+            sessionID: form.sessionID,
+            prompt: promptText,
+          });
+          remediationSent = true;
+        } else if (context.data?.session && typeof (context.data.session as any).synthetic === 'function') {
+          await (context.data.session as any).synthetic({
+            sessionID: form.sessionID,
+            text: promptText,
+            description: 'Smart Questions protocol remediation',
+            metadata: { 'opencode-smart-questions': true },
+            delivery: 'queue',
+            resume: true,
+          });
+          remediationSent = true;
+        } else if ((context as any).session && typeof (context as any).session?.synthetic === 'function') {
+          await (context as any).session.synthetic({
+            sessionID: form.sessionID,
+            text: promptText,
+            description: 'Smart Questions protocol remediation',
+            metadata: { 'opencode-smart-questions': true },
+            delivery: 'queue',
+            resume: true,
+          });
+          remediationSent = true;
+        }
+      } catch (err) {
+        log(`remediation send failed form=${form.id} code=${diagnosticErrorCode(err)}`);
+      }
+      if (!remediationSent) {
+        // Preserve in-flight duplicate suppression, but only consume the
+        // per-session remediation budget after an actual transport succeeds.
+        remediatedForms.delete(form.id);
+        if (currentCount === 0) sessionRemediations.delete(form.sessionID);
+        else sessionRemediations.set(form.sessionID, currentCount);
+        log(`remediation not sent form=${form.id}; retry remains allowed`);
+      }
+      return;
+    }
+
+    // Here classification.status === 'auto'
+    const detection: DetectionResult = classification.detection;
     const lockPath = resolveLockPath(config.configDir, form.id);
     const expiresAt = Date.now() + config.timeoutMs;
     const initialCountdown = Math.ceil(config.timeoutMs / 1000);
@@ -701,7 +785,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       requestID: form.id,
       formID: form.id,
       sessionID: form.sessionID,
-      questions: decision.questions,
+      questions: classification.questions,
       detection,
       agentName: form.sessionID.slice(0, 8),
       agentFound: false,
@@ -714,7 +798,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     const item: V2Pending = {
       formID: form.id,
       sessionID: form.sessionID,
-      answer: decision.answer,
+      answer: classification.answer,
       state,
       expiresAt,
       status: 'pending',
@@ -760,7 +844,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
           {
             sessionID: form.sessionID,
             formID: form.id,
-            answer: decision.answer,
+            answer: item.answer,
           },
           item.location
         );
@@ -825,7 +909,10 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       event?.data?.form?.sessionID ??
       event?.properties?.sessionID;
     if (typeof sessionID === 'string') consumeActiveHandoff(sessionID);
-    if (typeof formID === 'string') clearPending(formID);
+    if (typeof formID === 'string') {
+      remediatedForms.delete(formID);
+      clearPending(formID);
+    }
   };
 
   const cleanups: Array<() => unknown> = [];
@@ -877,6 +964,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         const sessionID = String(event?.data?.id ?? event?.data?.sessionID ?? event?.sessionID ?? '');
         if (sessionID && sessionID !== 'global') {
           clearActiveHandoff(sessionID);
+          sessionRemediations.delete(sessionID);
         }
       });
       if (typeof sessionDelDisposer === 'function') cleanups.push(sessionDelDisposer);

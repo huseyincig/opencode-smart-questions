@@ -68,12 +68,21 @@ var DEFAULT_RECOMMENDED_MARKERS = [
   "(Recommended)",
   "(\xD6nerilen)"
 ];
+var DEFAULT_MANUAL_MARKERS = [
+  "[SQ:manual]",
+  "[SQ_DECISION:manual]"
+];
+var DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS = 3;
 var MAX_TIMEOUT_MS = 2147483647;
 var SMART_QUESTION_CONFIG_KEYS = /* @__PURE__ */ new Set([
   "enabled",
   "timeoutMs",
   "recommendedMarkers",
   "recommendedMarker",
+  "manualMarkers",
+  "manualMarker",
+  "maxUnclassifiedRemediations",
+  "unclassifiedQuestionPolicy",
   "requireExactlyOneRecommendation",
   "uiText",
   "debugLog",
@@ -96,6 +105,9 @@ var DEFAULT_CONFIG = {
   timeoutMs: 3e4,
   recommendedMarkers: DEFAULT_RECOMMENDED_MARKERS,
   recommendedMarker: "[SQ:recommended]",
+  manualMarkers: DEFAULT_MANUAL_MARKERS,
+  manualMarker: "[SQ:manual]",
+  maxUnclassifiedRemediations: DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS,
   requireExactlyOneRecommendation: true,
   uiText: DEFAULT_UI_TEXT,
   debugLog: ""
@@ -142,7 +154,7 @@ function normalizeSmartQuestionConfig(raw, configDir) {
   }
   const parsed = raw ?? {};
   if (parsed.enabled === false) return null;
-  if (parsed.enabled !== void 0 && parsed.enabled !== true || parsed.timeoutMs !== void 0 && (typeof parsed.timeoutMs !== "number" || !Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs < 0 || parsed.timeoutMs > MAX_TIMEOUT_MS) || parsed.requireExactlyOneRecommendation !== void 0 && typeof parsed.requireExactlyOneRecommendation !== "boolean" || parsed.recommendedMarkers !== void 0 && (!Array.isArray(parsed.recommendedMarkers) || parsed.recommendedMarkers.length === 0 || parsed.recommendedMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.recommendedMarker !== void 0 && (typeof parsed.recommendedMarker !== "string" || parsed.recommendedMarker.trim().length === 0) || parsed.debugLog !== void 0 && typeof parsed.debugLog !== "string" || parsed.configDir !== void 0 && (typeof parsed.configDir !== "string" || parsed.configDir.trim().length === 0) || parsed.uiText !== void 0 && (parsed.uiText === null || typeof parsed.uiText !== "object" || Array.isArray(parsed.uiText) || Object.values(parsed.uiText).some((value) => typeof value !== "string" || value.trim().length === 0))) {
+  if (parsed.enabled !== void 0 && parsed.enabled !== true || parsed.timeoutMs !== void 0 && (typeof parsed.timeoutMs !== "number" || !Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs < 0 || parsed.timeoutMs > MAX_TIMEOUT_MS) || parsed.requireExactlyOneRecommendation !== void 0 && typeof parsed.requireExactlyOneRecommendation !== "boolean" || parsed.recommendedMarkers !== void 0 && (!Array.isArray(parsed.recommendedMarkers) || parsed.recommendedMarkers.length === 0 || parsed.recommendedMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.recommendedMarker !== void 0 && (typeof parsed.recommendedMarker !== "string" || parsed.recommendedMarker.trim().length === 0) || parsed.debugLog !== void 0 && typeof parsed.debugLog !== "string" || parsed.configDir !== void 0 && (typeof parsed.configDir !== "string" || parsed.configDir.trim().length === 0) || parsed.manualMarkers !== void 0 && (!Array.isArray(parsed.manualMarkers) || parsed.manualMarkers.length === 0 || parsed.manualMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.manualMarker !== void 0 && (typeof parsed.manualMarker !== "string" || parsed.manualMarker.trim().length === 0) || parsed.maxUnclassifiedRemediations !== void 0 && (typeof parsed.maxUnclassifiedRemediations !== "number" || !Number.isFinite(parsed.maxUnclassifiedRemediations) || parsed.maxUnclassifiedRemediations < 0) || parsed.uiText !== void 0 && (parsed.uiText === null || typeof parsed.uiText !== "object" || Array.isArray(parsed.uiText) || Object.values(parsed.uiText).some((value) => typeof value !== "string" || value.trim().length === 0))) {
     return null;
   }
   const recommendedMarkers = normalizeConfigMarkers(
@@ -150,12 +162,19 @@ function normalizeSmartQuestionConfig(raw, configDir) {
     parsed.recommendedMarker
   );
   const recommendedMarker = recommendedMarkers[0] ?? DEFAULT_CONFIG.recommendedMarker ?? "[SQ:recommended]";
+  const rawManualMarkers = cleanMarkers(parsed.manualMarkers);
+  const manualMarkers = rawManualMarkers.length > 0 ? rawManualMarkers : typeof parsed.manualMarker === "string" && parsed.manualMarker.trim().length > 0 ? [parsed.manualMarker.trim()] : [...DEFAULT_MANUAL_MARKERS];
+  const manualMarker = manualMarkers[0] ?? DEFAULT_CONFIG.manualMarker ?? "[SQ:manual]";
+  const maxUnclassifiedRemediations = typeof parsed.maxUnclassifiedRemediations === "number" && Number.isFinite(parsed.maxUnclassifiedRemediations) && parsed.maxUnclassifiedRemediations >= 0 ? Math.floor(parsed.maxUnclassifiedRemediations) : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
   const timeoutMs = typeof parsed.timeoutMs === "number" && Number.isFinite(parsed.timeoutMs) && parsed.timeoutMs >= 0 && parsed.timeoutMs <= MAX_TIMEOUT_MS ? parsed.timeoutMs : DEFAULT_CONFIG.timeoutMs;
   const normalized = {
     enabled: true,
     timeoutMs,
     recommendedMarkers,
     recommendedMarker,
+    manualMarkers,
+    manualMarker,
+    maxUnclassifiedRemediations,
     requireExactlyOneRecommendation: typeof parsed.requireExactlyOneRecommendation === "boolean" ? parsed.requireExactlyOneRecommendation : DEFAULT_CONFIG.requireExactlyOneRecommendation,
     uiText: normalizeUIText(parsed.uiText),
     debugLog: typeof parsed.debugLog === "string" ? parsed.debugLog : DEFAULT_CONFIG.debugLog ?? ""
@@ -271,6 +290,145 @@ function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMar
   }
   return { ok: true, answers, recommendedOptions, matchedMarker };
 }
+function isQuestionExplicitlyManual(q, manualMarkers = DEFAULT_MANUAL_MARKERS) {
+  if (!q) return { isManual: false };
+  const textsToCheck = [];
+  if (typeof q.question === "string") textsToCheck.push(q.question);
+  if (typeof q.header === "string") textsToCheck.push(q.header);
+  if (typeof q.title === "string") {
+    textsToCheck.push(q.title);
+  }
+  if (typeof q.description === "string") {
+    textsToCheck.push(q.description);
+  }
+  if (Array.isArray(q.options)) {
+    for (const opt of q.options) {
+      if (!opt) continue;
+      if (typeof opt.label === "string") textsToCheck.push(opt.label);
+      if (typeof opt.description === "string") textsToCheck.push(opt.description);
+      if (typeof opt.value === "string") textsToCheck.push(opt.value);
+    }
+  }
+  for (const text of textsToCheck) {
+    const normalized = text.normalize("NFC");
+    for (const marker of manualMarkers) {
+      const normMarker = marker.normalize("NFC");
+      if (normalized.includes(normMarker)) {
+        return { isManual: true, matchedMarker: marker };
+      }
+    }
+    if (/\[SQ_DECISION:(?:v1\][\s\S]*?mode=)?manual/iu.test(normalized)) {
+      return { isManual: true, matchedMarker: "[SQ:manual]" };
+    }
+  }
+  return { isManual: false };
+}
+function classifyQuestions(questions, recommendedMarker = DEFAULT_CONFIG.recommendedMarkers, manualMarker = DEFAULT_MANUAL_MARKERS, handoff, options = {}) {
+  void options;
+  if (!Array.isArray(questions) || questions.length === 0) {
+    return { status: "unclassified", reason: "No questions provided in request" };
+  }
+  if (handoff && typeof handoff === "object" && "autoSelect" in handoff && handoff.autoSelect === "forbidden") {
+    return {
+      status: "manual",
+      reason: "Guardian handoff explicitly forbids auto-selection (auto_select=forbidden)",
+      matchedMarker: "[OPENCODE_HANDOFF:auto_select=forbidden]"
+    };
+  }
+  const recMarkers = normalizeParamMarkers(recommendedMarker);
+  const manMarkers = normalizeParamMarkers(manualMarker);
+  const answers = [];
+  const recommendedOptions = [];
+  let matchedMarker;
+  let firstManual = null;
+  let firstUnclassified = null;
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    const qIndex = i + 1;
+    if (!q) {
+      if (!firstUnclassified) {
+        firstUnclassified = { index: qIndex, reason: `Question ${qIndex} is null or undefined` };
+      }
+      continue;
+    }
+    if (!Array.isArray(q.options) || q.options.length === 0) {
+      if (!firstUnclassified) {
+        firstUnclassified = { index: qIndex, reason: `Question ${qIndex} has no options` };
+      }
+      continue;
+    }
+    const manualCheck = isQuestionExplicitlyManual(q, manMarkers);
+    if (manualCheck.isManual) {
+      if (!firstManual) {
+        firstManual = { index: qIndex, marker: manualCheck.matchedMarker };
+      }
+      continue;
+    }
+    const matched = q.options.map((opt) => {
+      if (!opt || typeof opt.label !== "string") return null;
+      const normalizedLabel = opt.label.trimEnd().normalize("NFC");
+      const m = recMarkers.find((marker) => normalizedLabel.endsWith(marker.normalize("NFC")));
+      return m ? { opt, marker: m } : null;
+    }).filter((x) => x !== null);
+    if (matched.length === 0) {
+      if (!firstUnclassified) {
+        firstUnclassified = {
+          index: qIndex,
+          reason: `Question ${qIndex} has no recommendation marker`
+        };
+      }
+      continue;
+    }
+    if (!q.multiple && matched.length > 1) {
+      if (!firstUnclassified) {
+        firstUnclassified = {
+          index: qIndex,
+          reason: `Question ${qIndex} has ambiguous recommendation markers (${matched.length})`
+        };
+      }
+      continue;
+    }
+    const firstMatch = matched[0];
+    if (!firstMatch) {
+      if (!firstUnclassified) {
+        firstUnclassified = {
+          index: qIndex,
+          reason: `Question ${qIndex} has no usable recommendation option`
+        };
+      }
+      continue;
+    }
+    if (!matchedMarker) {
+      matchedMarker = firstMatch.marker;
+    }
+    if (q.multiple) {
+      answers.push(matched.map((m) => m.opt.label));
+      recommendedOptions.push(...matched.map((m) => m.opt));
+    } else {
+      answers.push([firstMatch.opt.label]);
+      recommendedOptions.push(firstMatch.opt);
+    }
+  }
+  if (firstManual) {
+    return {
+      status: "manual",
+      reason: `Question ${firstManual.index} is explicitly classified as requiring manual human decision`,
+      matchedMarker: firstManual.marker
+    };
+  }
+  if (firstUnclassified) {
+    return {
+      status: "unclassified",
+      reason: firstUnclassified.reason
+    };
+  }
+  return {
+    status: "auto",
+    answers,
+    recommendedOptions,
+    matchedMarker
+  };
+}
 
 // src/draft-guard.ts
 import fs2 from "node:fs";
@@ -319,9 +477,30 @@ function deleteLockfile(lockPath, dbg) {
 }
 
 // src/form-adapter.ts
-function detectV2FormRecommendations(form, markers, options) {
+function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers, manualMarkers = DEFAULT_MANUAL_MARKERS, handoff, options) {
   if (!form || !Array.isArray(form.fields) || form.fields.length === 0) {
-    return { ok: false, reason: "Form has no fields" };
+    return { status: "unclassified", reason: "Form has no fields", questions: [] };
+  }
+  const manMarkers = normalizeParamMarkers(manualMarkers);
+  const formTexts = [];
+  if (typeof form.title === "string") formTexts.push(form.title);
+  if (typeof form.description === "string") formTexts.push(form.description);
+  let formExplicitlyManual = false;
+  let matchedManualMarker;
+  for (const text of formTexts) {
+    const normalized = text.normalize("NFC");
+    for (const marker of manMarkers) {
+      if (normalized.includes(marker.normalize("NFC"))) {
+        formExplicitlyManual = true;
+        matchedManualMarker = marker;
+        break;
+      }
+    }
+    if (/\[SQ_DECISION:(?:v1\][\s\S]*?mode=)?manual/iu.test(normalized)) {
+      formExplicitlyManual = true;
+      matchedManualMarker = "[SQ:manual]";
+      break;
+    }
   }
   const questions = [];
   const selectableFields = [];
@@ -329,24 +508,30 @@ function detectV2FormRecommendations(form, markers, options) {
   for (let i = 0; i < form.fields.length; i++) {
     const field = form.fields[i];
     if (!field) {
-      return { ok: false, reason: `Form field ${i + 1} is missing` };
+      return { status: "unclassified", reason: `Form field ${i + 1} is missing`, questions };
     }
     if (field.hidden === true || field.when !== void 0 && (!Array.isArray(field.when) || field.when.length > 0)) {
       return {
-        ok: false,
-        reason: `Form field ${i + 1} (${field.key ?? "unknown"}) is hidden or conditional`
+        status: "unclassified",
+        reason: `Form field ${i + 1} (${field.key ?? "unknown"}) is hidden or conditional`,
+        questions
       };
     }
     const isStringChoice = field.type === "string" && Array.isArray(field.options) && field.options.length > 0;
     const isMultiChoice = field.type === "multiselect" && Array.isArray(field.options) && field.options.length > 0;
     if (!isStringChoice && !isMultiChoice) {
       return {
-        ok: false,
-        reason: `Form field ${i + 1} (${field.key ?? "unknown"}) is not a supported selectable field`
+        status: "unclassified",
+        reason: `Form field ${i + 1} (${field.key ?? "unknown"}) is not a supported selectable field`,
+        questions
       };
     }
     if (typeof field.key !== "string" || !field.key || seenKeys.has(field.key)) {
-      return { ok: false, reason: `Form field ${i + 1} has a missing or duplicate key` };
+      return {
+        status: "unclassified",
+        reason: `Form field ${i + 1} has a missing or duplicate key`,
+        questions
+      };
     }
     seenKeys.add(field.key);
     if (isMultiChoice) {
@@ -355,8 +540,9 @@ function detectV2FormRecommendations(form, markers, options) {
       );
       if (constraints.some((value) => !Number.isInteger(value) || value < 0) || field.minItems !== void 0 && field.maxItems !== void 0 && field.minItems > field.maxItems) {
         return {
-          ok: false,
-          reason: `Form field ${i + 1} has invalid multiselect item constraints`
+          status: "unclassified",
+          reason: `Form field ${i + 1} has invalid multiselect item constraints`,
+          questions
         };
       }
     }
@@ -365,8 +551,9 @@ function detectV2FormRecommendations(form, markers, options) {
       (option) => !option || typeof option.value !== "string" || typeof option.label !== "string"
     )) {
       return {
-        ok: false,
-        reason: `Form field ${i + 1} contains an invalid option`
+        status: "unclassified",
+        reason: `Form field ${i + 1} contains an invalid option`,
+        questions
       };
     }
     const mappedOptions = fieldOptions.map((option) => ({
@@ -389,36 +576,61 @@ function detectV2FormRecommendations(form, markers, options) {
       ...isMultiChoice && field.maxItems !== void 0 ? { maxItems: field.maxItems } : {}
     });
   }
-  const detection = detectRecommendations(questions, markers, options);
-  if (!detection.ok) return detection;
+  if (formExplicitlyManual) {
+    return {
+      status: "manual",
+      reason: "Form title or description is explicitly classified as manual",
+      questions,
+      matchedMarker: matchedManualMarker
+    };
+  }
+  const classification = classifyQuestions(questions, markers, manualMarkers, handoff, options);
+  if (classification.status === "manual") {
+    return {
+      status: "manual",
+      reason: classification.reason,
+      questions,
+      matchedMarker: classification.matchedMarker
+    };
+  }
+  if (classification.status === "unclassified") {
+    return {
+      status: "unclassified",
+      reason: classification.reason,
+      questions
+    };
+  }
   const answer = {};
   for (let i = 0; i < selectableFields.length; i++) {
     const field = selectableFields[i];
     if (!field) {
-      return { ok: false, reason: `Missing normalized field ${i + 1}` };
+      return { status: "unclassified", reason: `Missing normalized field ${i + 1}`, questions };
     }
-    const selectedLabels = detection.answers[i] ?? [];
+    const selectedLabels = classification.answers[i] ?? [];
     const selectedValues = selectedLabels.map((label) => {
       const matchingOptions = field.options.filter((candidate) => candidate.label === label);
       return matchingOptions.length === 1 ? matchingOptions[0]?.value : void 0;
     });
     if (selectedValues.length !== selectedLabels.length || selectedValues.some((value) => typeof value !== "string")) {
       return {
-        ok: false,
-        reason: `Could not map recommended labels to values for field ${field.key}`
+        status: "unclassified",
+        reason: `Could not map recommended labels to values for field ${field.key}`,
+        questions
       };
     }
     if (field.multiple) {
       if (field.minItems !== void 0 && selectedValues.length < field.minItems) {
         return {
-          ok: false,
-          reason: `Recommended selections for field ${field.key} do not satisfy minItems`
+          status: "unclassified",
+          reason: `Recommended selections for field ${field.key} do not satisfy minItems`,
+          questions
         };
       }
       if (field.maxItems !== void 0 && selectedValues.length > field.maxItems) {
         return {
-          ok: false,
-          reason: `Recommended selections for field ${field.key} exceed maxItems`
+          status: "unclassified",
+          reason: `Recommended selections for field ${field.key} exceed maxItems`,
+          questions
         };
       }
       answer[field.key] = selectedValues;
@@ -426,14 +638,25 @@ function detectV2FormRecommendations(form, markers, options) {
       const value = selectedValues[0];
       if (typeof value !== "string") {
         return {
-          ok: false,
-          reason: `Missing recommendation value for field ${field.key}`
+          status: "unclassified",
+          reason: `Missing recommendation value for field ${field.key}`,
+          questions
         };
       }
       answer[field.key] = value;
     }
   }
-  return { ok: true, answer, detection, questions };
+  return {
+    status: "auto",
+    answer,
+    detection: {
+      ok: true,
+      answers: classification.answers,
+      recommendedOptions: classification.recommendedOptions,
+      matchedMarker: classification.matchedMarker
+    },
+    questions
+  };
 }
 
 // src/session-scope.ts
@@ -722,6 +945,36 @@ function clearActiveHandoff(sessionID) {
   const sID = String(sessionID ?? "");
   if (!sID) return;
   getHandoffState().activeHandoffsBySession.delete(sID);
+}
+
+// src/backend.ts
+var SQ_REMEDIATION_HEADER = "[Smart Questions protocol remediation]";
+function buildUnclassifiedRemediationPrompt(primaryMarker, manualMarker = "[SQ:manual]") {
+  if (primaryMarker && typeof primaryMarker === "object" && ("client" in primaryMarker || "directory" in primaryMarker)) {
+    return {};
+  }
+  const recMarker = typeof primaryMarker === "string" ? primaryMarker : "[SQ:recommended]";
+  return [
+    SQ_REMEDIATION_HEADER,
+    "",
+    "This selectable question is unclassified.",
+    "",
+    "Do not leave a root-agent selectable question waiting indefinitely.",
+    "",
+    "Either:",
+    "",
+    "1. mark the safest/recommended option with the canonical",
+    `   ${recMarker}`,
+    "   token so Smart Questions can continue automatically,",
+    "",
+    "or",
+    "",
+    "2. explicitly classify the question as manual approval using",
+    `   the Smart Questions manual-decision protocol (${manualMarker}) when human`,
+    "   approval is genuinely required.",
+    "",
+    "Do not ask the same unclassified question again."
+  ].join("\n");
 }
 
 // src/ui.js
@@ -1141,6 +1394,8 @@ var setup = async (context) => {
   }
   const [activeBySession, setActiveBySession] = createSignal({});
   const pending = /* @__PURE__ */ new Map();
+  const remediatedForms = /* @__PURE__ */ new Set();
+  const sessionRemediations = /* @__PURE__ */ new Map();
   const updateSessionState = (sessionID, updater) => {
     setActiveBySession((current) => {
       const next = {
@@ -1189,7 +1444,7 @@ var setup = async (context) => {
     } : current);
     item.log(`manual interaction form=${item.formID} session=${sessionID} reason=${reason}`);
   };
-  const onFormCreated = (event) => {
+  const onFormCreated = async (event) => {
     const form = event?.data?.form;
     if (!form?.id || !form.sessionID || form.sessionID === "global") return;
     let sessionInfo;
@@ -1209,13 +1464,6 @@ var setup = async (context) => {
     const config = resolveV2TuiConfig(context, location?.directory);
     if (!config?.enabled) return;
     const log = createDiagnosticLogger(config, "smart-question-v2-ui");
-    const decision = detectV2FormRecommendations(form, config.recommendedMarkers, {
-      requireExactlyOneRecommendation: config.requireExactlyOneRecommendation
-    });
-    if (!decision.ok) {
-      log(`skip form=${form.id} reason=${decision.reason}`);
-      return;
-    }
     let handoff = getActiveHandoff(form.sessionID);
     if (!handoff) {
       try {
@@ -1231,11 +1479,85 @@ var setup = async (context) => {
       } catch {
       }
     }
-    if (handoff && handoff.autoSelect === "forbidden") {
-      log(`skip form=${form.id} reason=guardian-handoff-auto-select-forbidden handoffId=${handoff.handoffId}`);
+    const classification = classifyV2Form(form, config.recommendedMarkers, config.manualMarkers, handoff, {
+      requireExactlyOneRecommendation: config.requireExactlyOneRecommendation
+    });
+    if (classification.status === "manual") {
+      log(`skip form=${form.id} reason=manual-classification matched=${classification.matchedMarker ?? "none"}`);
       return;
     }
-    const detection = decision.detection;
+    if (classification.status === "unclassified") {
+      log(`unclassified form=${form.id} reason=${classification.reason}`);
+      if (remediatedForms.has(form.id)) {
+        log(`suppress duplicate remediation form=${form.id}`);
+        return;
+      }
+      const maxRemediations = typeof config.maxUnclassifiedRemediations === "number" ? config.maxUnclassifiedRemediations : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
+      const currentCount = sessionRemediations.get(form.sessionID) ?? 0;
+      if (currentCount >= maxRemediations) {
+        log(`unclassified remediation budget exhausted session=${form.sessionID} count=${currentCount}/${maxRemediations}`);
+        return;
+      }
+      remediatedForms.add(form.id);
+      sessionRemediations.set(form.sessionID, currentCount + 1);
+      const promptText = buildUnclassifiedRemediationPrompt(config.recommendedMarker, config.manualMarker);
+      let remediationSent = false;
+      try {
+        if (context.client?.session && typeof context.client.session.synthetic === "function") {
+          await context.client.session.synthetic({
+            sessionID: form.sessionID,
+            text: promptText,
+            description: "Smart Questions protocol remediation",
+            metadata: {
+              "opencode-smart-questions": true
+            },
+            delivery: "queue",
+            resume: true
+          });
+          remediationSent = true;
+        } else if (context.client?.session && typeof context.client.session.prompt === "function") {
+          await context.client.session.prompt({
+            sessionID: form.sessionID,
+            prompt: promptText
+          });
+          remediationSent = true;
+        } else if (context.data?.session && typeof context.data.session.synthetic === "function") {
+          await context.data.session.synthetic({
+            sessionID: form.sessionID,
+            text: promptText,
+            description: "Smart Questions protocol remediation",
+            metadata: {
+              "opencode-smart-questions": true
+            },
+            delivery: "queue",
+            resume: true
+          });
+          remediationSent = true;
+        } else if (context.session && typeof context.session?.synthetic === "function") {
+          await context.session.synthetic({
+            sessionID: form.sessionID,
+            text: promptText,
+            description: "Smart Questions protocol remediation",
+            metadata: {
+              "opencode-smart-questions": true
+            },
+            delivery: "queue",
+            resume: true
+          });
+          remediationSent = true;
+        }
+      } catch (err) {
+        log(`remediation send failed form=${form.id} code=${diagnosticErrorCode(err)}`);
+      }
+      if (!remediationSent) {
+        remediatedForms.delete(form.id);
+        if (currentCount === 0) sessionRemediations.delete(form.sessionID);
+        else sessionRemediations.set(form.sessionID, currentCount);
+        log(`remediation not sent form=${form.id}; retry remains allowed`);
+      }
+      return;
+    }
+    const detection = classification.detection;
     const lockPath = resolveLockPath(config.configDir, form.id);
     const expiresAt = Date.now() + config.timeoutMs;
     const initialCountdown = Math.ceil(config.timeoutMs / 1e3);
@@ -1243,7 +1565,7 @@ var setup = async (context) => {
       requestID: form.id,
       formID: form.id,
       sessionID: form.sessionID,
-      questions: decision.questions,
+      questions: classification.questions,
       detection,
       agentName: form.sessionID.slice(0, 8),
       agentFound: false,
@@ -1255,7 +1577,7 @@ var setup = async (context) => {
     const item = {
       formID: form.id,
       sessionID: form.sessionID,
-      answer: decision.answer,
+      answer: classification.answer,
       state,
       expiresAt,
       status: "pending",
@@ -1288,7 +1610,7 @@ var setup = async (context) => {
         await context.data.session.form.reply({
           sessionID: form.sessionID,
           formID: form.id,
-          answer: decision.answer
+          answer: item.answer
         }, item.location);
         item.status = "replied";
         consumeActiveHandoff(form.sessionID);
@@ -1337,7 +1659,10 @@ var setup = async (context) => {
     const formID = event?.data?.id ?? event?.data?.form?.id ?? event?.properties?.id;
     const sessionID = event?.data?.sessionID ?? event?.data?.form?.sessionID ?? event?.properties?.sessionID;
     if (typeof sessionID === "string") consumeActiveHandoff(sessionID);
-    if (typeof formID === "string") clearPending(formID);
+    if (typeof formID === "string") {
+      remediatedForms.delete(formID);
+      clearPending(formID);
+    }
   };
   const cleanups = [];
   const disposeCleanups = () => {
@@ -1383,6 +1708,7 @@ var setup = async (context) => {
         const sessionID = String(event?.data?.id ?? event?.data?.sessionID ?? event?.sessionID ?? "");
         if (sessionID && sessionID !== "global") {
           clearActiveHandoff(sessionID);
+          sessionRemediations.delete(sessionID);
         }
       });
       if (typeof sessionDelDisposer === "function") cleanups.push(sessionDelDisposer);

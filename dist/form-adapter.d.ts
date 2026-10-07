@@ -1,3 +1,4 @@
+import type { OpenCodeHandoff } from './handoff.js';
 import type { DetectionResult, QuestionInfo } from './types.js';
 export interface V2FormOption {
     value: string;
@@ -25,6 +26,7 @@ export interface V2FormInfo {
     id: string;
     sessionID: string;
     title?: string;
+    description?: string;
     fields: V2FormField[];
 }
 export type V2FormDetectionResult = {
@@ -38,6 +40,23 @@ export type V2FormDetectionResult = {
     ok: false;
     reason: string;
 };
+export type V2FormClassification = {
+    status: 'auto';
+    answer: Record<string, string | string[]>;
+    detection: Extract<DetectionResult, {
+        ok: true;
+    }>;
+    questions: QuestionInfo[];
+} | {
+    status: 'manual';
+    reason: string;
+    questions: QuestionInfo[];
+    matchedMarker?: string | undefined;
+} | {
+    status: 'unclassified';
+    reason: string;
+    questions: QuestionInfo[];
+};
 /**
  * Converts OpenCode v2 selectable form fields into the legacy question shape
  * used by the shared detector, then maps recommended labels back to stable
@@ -49,3 +68,12 @@ export type V2FormDetectionResult = {
 export declare function detectV2FormRecommendations(form: V2FormInfo, markers?: string | string[], options?: {
     requireExactlyOneRecommendation?: boolean;
 }): V2FormDetectionResult;
+/**
+ * Language-agnostic classification of OpenCode v2 selectable forms into:
+ * - AUTO: valid recommendation selections mapped to form values
+ * - MANUAL: explicitly classified via [SQ:manual] or Guardian auto_select=forbidden
+ * - UNCLASSIFIED: selectable fields exist, but neither recommendation nor manual classification
+ */
+export declare function classifyV2Form(form: V2FormInfo, markers?: string | string[], manualMarkers?: string | string[], handoff?: OpenCodeHandoff | Record<string, unknown> | null, options?: {
+    requireExactlyOneRecommendation?: boolean;
+}): V2FormClassification;

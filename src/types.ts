@@ -43,6 +43,10 @@ export interface SmartQuestionConfig {
   timeoutMs: number;
   recommendedMarkers: string[];
   recommendedMarker?: string;
+  manualMarkers?: string[];
+  manualMarker?: string;
+  maxUnclassifiedRemediations?: number;
+  unclassifiedQuestionPolicy?: 'remediate' | 'ignore';
   requireExactlyOneRecommendation: boolean;
   uiText: SmartQuestionUIText;
   debugLog?: string;
@@ -53,7 +57,7 @@ export interface DetectionSuccess {
   ok: true;
   answers: string[][];
   recommendedOptions?: QuestionOption[];
-  matchedMarker?: string;
+  matchedMarker?: string | undefined;
 }
 
 export interface DetectionFailure {
@@ -62,6 +66,31 @@ export interface DetectionFailure {
 }
 
 export type DetectionResult = DetectionSuccess | DetectionFailure;
+
+export type QuestionStatus = 'auto' | 'manual' | 'unclassified';
+
+export interface QuestionClassificationAuto {
+  status: 'auto';
+  answers: string[][];
+  recommendedOptions: QuestionOption[];
+  matchedMarker?: string | undefined;
+}
+
+export interface QuestionClassificationManual {
+  status: 'manual';
+  reason: string;
+  matchedMarker?: string | undefined;
+}
+
+export interface QuestionClassificationUnclassified {
+  status: 'unclassified';
+  reason: string;
+}
+
+export type QuestionClassification =
+  | QuestionClassificationAuto
+  | QuestionClassificationManual
+  | QuestionClassificationUnclassified;
 
 export interface OpencodeClientLike {
   question?: {

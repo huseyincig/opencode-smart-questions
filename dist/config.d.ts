@@ -1,5 +1,7 @@
 import type { SmartQuestionConfig, SmartQuestionUIText } from './types.js';
 export declare const DEFAULT_RECOMMENDED_MARKERS: string[];
+export declare const DEFAULT_MANUAL_MARKERS: string[];
+export declare const DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS = 3;
 export declare function hasSmartQuestionConfigOptions(options?: Record<string, unknown>): boolean;
 export declare const DEFAULT_UI_TEXT: SmartQuestionUIText;
 export declare const DEFAULT_CONFIG: SmartQuestionConfig;

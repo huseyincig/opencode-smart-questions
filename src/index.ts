@@ -10,9 +10,17 @@ export * from './types.js';
 export {
   loadConfig,
   DEFAULT_RECOMMENDED_MARKERS,
+  DEFAULT_MANUAL_MARKERS,
+  DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS,
   DEFAULT_CONFIG,
 } from './config.js';
 export * from './detector.js';
+export {
+  classifyV2Form,
+  detectV2FormRecommendations,
+  type V2FormClassification,
+  type V2FormDetectionResult,
+} from './form-adapter.js';
 export {
   resolveLockPath,
   deleteLockfile,
