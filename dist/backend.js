@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS, resolveSmartQuestionConfig, } from './config.js';
-import { classifyQuestions } from './detector.js';
+import { classifyQuestions, computeQuestionFingerprint } from './detector.js';
 import { canUseDraftCoordination, cleanupStaleDrafts, deleteLockfile, resolveLockPath } from './draft-guard.js';
 import { buildRecommendationGuidance, SQ_GUIDANCE_SENTINEL } from './guidance.js';
 import { createDiagnosticError, diagnosticErrorCode } from './diagnostics.js';
@@ -121,7 +121,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
     const effectiveConfigDir = config.configDir || path.resolve(directory || process.cwd(), '.opencode');
     const pendingRequests = new Map();
     const remediatedRequests = new Set();
-    const sessionRemediations = new Map();
+    const sessionChains = new Map();
     const sessionScope = new Map();
     const debugLogPath = typeof config.debugLog === 'string' && config.debugLog ? config.debugLog : null;
     const dbg = (msg) => {
@@ -172,7 +172,8 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                     const role = payload?.role ?? payload?.info?.role ?? payload?.message?.role ?? payload?.message?.info?.role;
                     if (event.type === 'message.created' && role === 'user') {
                         invalidateActiveHandoff(sessionID);
-                        dbg(`invalidated stale handoff on new user turn session=${sessionID}`);
+                        sessionChains.delete(sessionID);
+                        dbg(`invalidated stale handoff and reset unclassified chain on new user turn session=${sessionID}`);
                     }
                 }
             }
@@ -183,8 +184,8 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
             if (sessionID) {
                 clearActiveHandoff(sessionID);
                 sessionScope.delete(sessionID);
-                sessionRemediations.delete(sessionID);
-                dbg(`session deleted, cleared handoff and scope session=${sessionID}`);
+                sessionChains.delete(sessionID);
+                dbg(`session deleted, cleared handoff, scope and unclassified chain session=${sessionID}`);
             }
             return;
         }
@@ -226,6 +227,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
             }
             const classification = classifyQuestions(data.questions, config.recommendedMarkers, config.manualMarkers, handoff, { requireExactlyOneRecommendation: config.requireExactlyOneRecommendation });
             if (classification.status === 'manual') {
+                sessionChains.delete(sessionID);
                 dbg(`skip request=${requestID} reason=manual-classification matched=${classification.matchedMarker ?? 'none'}`);
                 return;
             }
@@ -235,16 +237,22 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                     dbg(`suppress duplicate remediation request=${requestID}`);
                     return;
                 }
+                const fingerprint = computeQuestionFingerprint(data.questions);
                 const maxRemediations = typeof config.maxUnclassifiedRemediations === 'number'
                     ? config.maxUnclassifiedRemediations
                     : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
-                const currentCount = sessionRemediations.get(sessionID) ?? 0;
+                const existingChain = sessionChains.get(sessionID);
+                const isSameChain = existingChain !== undefined && existingChain.fingerprint === fingerprint;
+                const currentCount = isSameChain ? existingChain.consecutiveFailures : 0;
                 if (currentCount >= maxRemediations) {
-                    dbg(`unclassified remediation budget exhausted session=${sessionID} count=${currentCount}/${maxRemediations}`);
+                    dbg(`unclassified remediation budget exhausted session=${sessionID} fingerprint=${fingerprint} count=${currentCount}/${maxRemediations}`);
                     return;
                 }
                 remediatedRequests.add(requestID);
-                sessionRemediations.set(sessionID, currentCount + 1);
+                sessionChains.set(sessionID, {
+                    fingerprint,
+                    consecutiveFailures: currentCount + 1,
+                });
                 const promptText = buildUnclassifiedRemediationPrompt(config.recommendedMarker, config.manualMarker);
                 const sent = await sendSyntheticRemediation(client, sessionID, directory, promptText, dbg);
                 if (!sent) {
@@ -253,17 +261,23 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                     // nothing was actually delivered, otherwise the root question can
                     // become permanently unclassified with no retry path.
                     remediatedRequests.delete(requestID);
-                    if (currentCount === 0)
-                        sessionRemediations.delete(sessionID);
-                    else
-                        sessionRemediations.set(sessionID, currentCount);
+                    if (currentCount === 0) {
+                        sessionChains.delete(sessionID);
+                    }
+                    else {
+                        sessionChains.set(sessionID, {
+                            fingerprint,
+                            consecutiveFailures: currentCount,
+                        });
+                    }
                     dbg(`remediation not sent request=${requestID} session=${sessionID}; retry remains allowed`);
                     return;
                 }
-                dbg(`remediation sent request=${requestID} session=${sessionID} count=${currentCount + 1}/${maxRemediations}`);
+                dbg(`remediation sent request=${requestID} session=${sessionID} fingerprint=${fingerprint} count=${currentCount + 1}/${maxRemediations}`);
                 return;
             }
             // Here classification.status === 'auto'
+            sessionChains.delete(sessionID);
             if (!canUseDraftCoordination(effectiveConfigDir, dbg)) {
                 dbg(`skip request=${requestID} reason=draft-coordination-unavailable`);
                 return;
@@ -369,6 +383,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                     }
                     pending.status = 'replied';
                     consumeActiveHandoff(sessionID);
+                    sessionChains.delete(sessionID);
                     dbg(`reply OK request=${requestID}`);
                     deleteLockfile(lockPath, dbg);
                 }
@@ -392,6 +407,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
             const sessionID = String(data?.sessionID ?? event?.sessionID ?? '');
             if (sessionID) {
                 consumeActiveHandoff(sessionID);
+                sessionChains.delete(sessionID);
             }
             if (!requestID || typeof requestID !== 'string') {
                 dbg(`${event.type}: no request id`);

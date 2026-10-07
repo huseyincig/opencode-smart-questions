@@ -28,3 +28,9 @@ export declare function isQuestionExplicitlyManual(q: QuestionInfo, manualMarker
 export declare function classifyQuestions(questions: QuestionInfo[] | Record<string, unknown>, recommendedMarker?: string | string[], manualMarker?: string | string[], handoff?: OpenCodeHandoff | Record<string, unknown> | null, options?: {
     requireExactlyOneRecommendation?: boolean;
 }): QuestionClassification;
+/**
+ * Computes a deterministic normalized fingerprint for a set of questions.
+ * Used for scoping loop protection to identical unclassified chains rather than
+ * permanently disabling Smart Questions across an entire session lifetime.
+ */
+export declare function computeQuestionFingerprint(questions: QuestionInfo[] | unknown): string;

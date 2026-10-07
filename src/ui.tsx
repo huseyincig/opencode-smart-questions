@@ -16,7 +16,10 @@ import {
   loadConfig as loadSharedConfig,
   resolveSmartQuestionConfig,
 } from './config.js';
-import { detectRecommendations as detectSharedRecommendations } from './detector.js';
+import {
+  detectRecommendations as detectSharedRecommendations,
+  computeQuestionFingerprint,
+} from './detector.js';
 import {
   canUseDraftCoordination,
   deleteLockfile,
@@ -577,7 +580,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
   >({});
   const pending = new Map<string, V2Pending>();
   const remediatedForms = new Set<string>();
-  const sessionRemediations = new Map<string, number>();
+  const sessionChains = new Map<string, { fingerprint: string; consecutiveFailures: number }>();
 
   const updateSessionState = (
     sessionID: string,
@@ -690,6 +693,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     );
 
     if (classification.status === 'manual') {
+      sessionChains.delete(form.sessionID);
       log(
         `skip form=${form.id} reason=manual-classification matched=${classification.matchedMarker ?? 'none'}`
       );
@@ -703,20 +707,28 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         return;
       }
 
+      const fingerprint = computeQuestionFingerprint(classification.questions);
       const maxRemediations =
         typeof config.maxUnclassifiedRemediations === 'number'
           ? config.maxUnclassifiedRemediations
           : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
-      const currentCount = sessionRemediations.get(form.sessionID) ?? 0;
+
+      const existingChain = sessionChains.get(form.sessionID);
+      const isSameChain = existingChain !== undefined && existingChain.fingerprint === fingerprint;
+      const currentCount = isSameChain ? existingChain.consecutiveFailures : 0;
+
       if (currentCount >= maxRemediations) {
         log(
-          `unclassified remediation budget exhausted session=${form.sessionID} count=${currentCount}/${maxRemediations}`
+          `unclassified remediation budget exhausted session=${form.sessionID} fingerprint=${fingerprint} count=${currentCount}/${maxRemediations}`
         );
         return;
       }
 
       remediatedForms.add(form.id);
-      sessionRemediations.set(form.sessionID, currentCount + 1);
+      sessionChains.set(form.sessionID, {
+        fingerprint,
+        consecutiveFailures: currentCount + 1,
+      });
 
       const promptText = buildUnclassifiedRemediationPrompt(
         config.recommendedMarker,
@@ -766,16 +778,23 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       }
       if (!remediationSent) {
         // Preserve in-flight duplicate suppression, but only consume the
-        // per-session remediation budget after an actual transport succeeds.
+        // per-chain remediation budget after an actual transport succeeds.
         remediatedForms.delete(form.id);
-        if (currentCount === 0) sessionRemediations.delete(form.sessionID);
-        else sessionRemediations.set(form.sessionID, currentCount);
+        if (currentCount === 0) {
+          sessionChains.delete(form.sessionID);
+        } else {
+          sessionChains.set(form.sessionID, {
+            fingerprint,
+            consecutiveFailures: currentCount,
+          });
+        }
         log(`remediation not sent form=${form.id}; retry remains allowed`);
       }
       return;
     }
 
     // Here classification.status === 'auto'
+    sessionChains.delete(form.sessionID);
     const detection: DetectionResult = classification.detection;
     const lockPath = resolveLockPath(config.configDir, form.id);
     const expiresAt = Date.now() + config.timeoutMs;
@@ -908,7 +927,10 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       event?.data?.sessionID ??
       event?.data?.form?.sessionID ??
       event?.properties?.sessionID;
-    if (typeof sessionID === 'string') consumeActiveHandoff(sessionID);
+    if (typeof sessionID === 'string' && sessionID !== 'global') {
+      consumeActiveHandoff(sessionID);
+      sessionChains.delete(sessionID);
+    }
     if (typeof formID === 'string') {
       remediatedForms.delete(formID);
       clearPending(formID);
@@ -955,6 +977,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
           const role = event?.data?.role ?? event?.data?.info?.role ?? event?.data?.message?.role;
           if (role === 'user') {
             invalidateActiveHandoff(sessionID);
+            sessionChains.delete(sessionID);
           }
         }
       });
@@ -964,7 +987,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         const sessionID = String(event?.data?.id ?? event?.data?.sessionID ?? event?.sessionID ?? '');
         if (sessionID && sessionID !== 'global') {
           clearActiveHandoff(sessionID);
-          sessionRemediations.delete(sessionID);
+          sessionChains.delete(sessionID);
         }
       });
       if (typeof sessionDelDisposer === 'function') cleanups.push(sessionDelDisposer);

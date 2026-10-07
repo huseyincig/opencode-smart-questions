@@ -429,6 +429,21 @@ function classifyQuestions(questions, recommendedMarker = DEFAULT_CONFIG.recomme
     matchedMarker
   };
 }
+function computeQuestionFingerprint(questions) {
+  if (questions && typeof questions === "object" && !Array.isArray(questions) && ("client" in questions || "directory" in questions)) {
+    return {};
+  }
+  if (!Array.isArray(questions) || questions.length === 0) return "empty";
+  return questions.map((q) => {
+    const header = typeof q?.header === "string" ? q.header.trim().toLowerCase().normalize("NFC") : "";
+    const text = typeof q?.question === "string" ? q.question.trim().toLowerCase().normalize("NFC") : "";
+    const opts = Array.isArray(q?.options) ? q.options.map((o) => {
+      if (typeof o === "string") return o.trim().toLowerCase().normalize("NFC");
+      return typeof o?.label === "string" ? o.label.trim().toLowerCase().normalize("NFC") : "";
+    }).filter((s) => s.length > 0).sort().join("|") : "";
+    return `${header}::${text}::${opts}`;
+  }).join("///");
+}
 
 // src/draft-guard.ts
 import fs2 from "node:fs";
@@ -1395,7 +1410,7 @@ var setup = async (context) => {
   const [activeBySession, setActiveBySession] = createSignal({});
   const pending = /* @__PURE__ */ new Map();
   const remediatedForms = /* @__PURE__ */ new Set();
-  const sessionRemediations = /* @__PURE__ */ new Map();
+  const sessionChains = /* @__PURE__ */ new Map();
   const updateSessionState = (sessionID, updater) => {
     setActiveBySession((current) => {
       const next = {
@@ -1483,6 +1498,7 @@ var setup = async (context) => {
       requireExactlyOneRecommendation: config.requireExactlyOneRecommendation
     });
     if (classification.status === "manual") {
+      sessionChains.delete(form.sessionID);
       log(`skip form=${form.id} reason=manual-classification matched=${classification.matchedMarker ?? "none"}`);
       return;
     }
@@ -1492,14 +1508,20 @@ var setup = async (context) => {
         log(`suppress duplicate remediation form=${form.id}`);
         return;
       }
+      const fingerprint = computeQuestionFingerprint(classification.questions);
       const maxRemediations = typeof config.maxUnclassifiedRemediations === "number" ? config.maxUnclassifiedRemediations : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
-      const currentCount = sessionRemediations.get(form.sessionID) ?? 0;
+      const existingChain = sessionChains.get(form.sessionID);
+      const isSameChain = existingChain !== void 0 && existingChain.fingerprint === fingerprint;
+      const currentCount = isSameChain ? existingChain.consecutiveFailures : 0;
       if (currentCount >= maxRemediations) {
-        log(`unclassified remediation budget exhausted session=${form.sessionID} count=${currentCount}/${maxRemediations}`);
+        log(`unclassified remediation budget exhausted session=${form.sessionID} fingerprint=${fingerprint} count=${currentCount}/${maxRemediations}`);
         return;
       }
       remediatedForms.add(form.id);
-      sessionRemediations.set(form.sessionID, currentCount + 1);
+      sessionChains.set(form.sessionID, {
+        fingerprint,
+        consecutiveFailures: currentCount + 1
+      });
       const promptText = buildUnclassifiedRemediationPrompt(config.recommendedMarker, config.manualMarker);
       let remediationSent = false;
       try {
@@ -1551,12 +1573,19 @@ var setup = async (context) => {
       }
       if (!remediationSent) {
         remediatedForms.delete(form.id);
-        if (currentCount === 0) sessionRemediations.delete(form.sessionID);
-        else sessionRemediations.set(form.sessionID, currentCount);
+        if (currentCount === 0) {
+          sessionChains.delete(form.sessionID);
+        } else {
+          sessionChains.set(form.sessionID, {
+            fingerprint,
+            consecutiveFailures: currentCount
+          });
+        }
         log(`remediation not sent form=${form.id}; retry remains allowed`);
       }
       return;
     }
+    sessionChains.delete(form.sessionID);
     const detection = classification.detection;
     const lockPath = resolveLockPath(config.configDir, form.id);
     const expiresAt = Date.now() + config.timeoutMs;
@@ -1658,7 +1687,10 @@ var setup = async (context) => {
   const onFormSettled = (event) => {
     const formID = event?.data?.id ?? event?.data?.form?.id ?? event?.properties?.id;
     const sessionID = event?.data?.sessionID ?? event?.data?.form?.sessionID ?? event?.properties?.sessionID;
-    if (typeof sessionID === "string") consumeActiveHandoff(sessionID);
+    if (typeof sessionID === "string" && sessionID !== "global") {
+      consumeActiveHandoff(sessionID);
+      sessionChains.delete(sessionID);
+    }
     if (typeof formID === "string") {
       remediatedForms.delete(formID);
       clearPending(formID);
@@ -1700,6 +1732,7 @@ var setup = async (context) => {
           const role = event?.data?.role ?? event?.data?.info?.role ?? event?.data?.message?.role;
           if (role === "user") {
             invalidateActiveHandoff(sessionID);
+            sessionChains.delete(sessionID);
           }
         }
       });
@@ -1708,7 +1741,7 @@ var setup = async (context) => {
         const sessionID = String(event?.data?.id ?? event?.data?.sessionID ?? event?.sessionID ?? "");
         if (sessionID && sessionID !== "global") {
           clearActiveHandoff(sessionID);
-          sessionRemediations.delete(sessionID);
+          sessionChains.delete(sessionID);
         }
       });
       if (typeof sessionDelDisposer === "function") cleanups.push(sessionDelDisposer);

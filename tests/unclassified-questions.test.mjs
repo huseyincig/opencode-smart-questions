@@ -418,7 +418,7 @@ test('TEST 9 - Repeated unclassified questions obey bounded limit without infini
           sessionID: TEST_ROOT_SESSION_ID,
           questions: [
             {
-              question: `Unclassified question ${i}`,
+              question: 'Repeated unclassified question',
               options: [{ label: 'A' }, { label: 'B' }],
             },
           ],
@@ -430,7 +430,328 @@ test('TEST 9 - Repeated unclassified questions obey bounded limit without infini
   assert.equal(
     promptCalls.length,
     2,
-    'Remediation count must not exceed configured max budget (2)'
+    'Remediation count must not exceed configured max budget (2) for identical unclassified chain'
+  );
+});
+
+test('TEST 9B - Different unclassified question gets a fresh chain instead of session-lifetime suppression', async () => {
+  const { hooks, promptCalls } = await createPluginHarness({
+    timeoutMs: 30,
+    maxUnclassifiedRemediations: 2,
+  });
+
+  // Question 1 fails twice and hits budget
+  for (let i = 1; i <= 3; i++) {
+    await hooks.event({
+      event: {
+        type: 'question.asked',
+        sessionID: TEST_ROOT_SESSION_ID,
+        data: {
+          id: `req-q1-${i}`,
+          sessionID: TEST_ROOT_SESSION_ID,
+          questions: [
+            {
+              question: 'First unclassified question',
+              options: [{ label: 'A' }, { label: 'B' }],
+            },
+          ],
+        },
+      },
+    });
+  }
+  assert.equal(promptCalls.length, 2, 'Q1 should receive exactly 2 remediations');
+
+  // Question 2 is a DIFFERENT substantive question: must start a new chain and receive remediation!
+  await hooks.event({
+    event: {
+      type: 'question.asked',
+      sessionID: TEST_ROOT_SESSION_ID,
+      data: {
+        id: 'req-q2-1',
+        sessionID: TEST_ROOT_SESSION_ID,
+        questions: [
+          {
+            question: 'Second unclassified question with different options',
+            options: [{ label: 'X' }, { label: 'Y' }],
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(
+    promptCalls.length,
+    3,
+    'A new substantive question fingerprint must receive remediation rather than being permanently suppressed'
+  );
+});
+
+test('TEST 9C - Successful AUTO question resets unclassified remediation chain', async () => {
+  const { hooks, promptCalls } = await createPluginHarness({
+    timeoutMs: 30,
+    maxUnclassifiedRemediations: 2,
+  });
+
+  // Question 1 hits budget
+  for (let i = 1; i <= 2; i++) {
+    await hooks.event({
+      event: {
+        type: 'question.asked',
+        sessionID: TEST_ROOT_SESSION_ID,
+        data: {
+          id: `req-q1-${i}`,
+          sessionID: TEST_ROOT_SESSION_ID,
+          questions: [
+            {
+              question: 'Config question',
+              options: [{ label: 'A' }, { label: 'B' }],
+            },
+          ],
+        },
+      },
+    });
+  }
+  assert.equal(promptCalls.length, 2);
+
+  // Agent produces a successful AUTO question
+  await hooks.event({
+    event: {
+      type: 'question.asked',
+      sessionID: TEST_ROOT_SESSION_ID,
+      data: {
+        id: 'req-auto-success',
+        sessionID: TEST_ROOT_SESSION_ID,
+        questions: [
+          {
+            question: 'Config question',
+            options: [{ label: 'A [SQ:recommended]' }, { label: 'B' }],
+          },
+        ],
+      },
+    },
+  });
+
+  // Later in session, another unclassified question appears: chain was reset by AUTO!
+  await hooks.event({
+    event: {
+      type: 'question.asked',
+      sessionID: TEST_ROOT_SESSION_ID,
+      data: {
+        id: 'req-after-auto',
+        sessionID: TEST_ROOT_SESSION_ID,
+        questions: [
+          {
+            question: 'Config question',
+            options: [{ label: 'A' }, { label: 'B' }],
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(
+    promptCalls.length,
+    3,
+    'Successful AUTO classification must reset the unclassified chain'
+  );
+});
+
+test('TEST 9D - Explicit MANUAL question resets unclassified remediation chain', async () => {
+  const { hooks, promptCalls } = await createPluginHarness({
+    timeoutMs: 30,
+    maxUnclassifiedRemediations: 2,
+  });
+
+  // Question 1 hits budget
+  for (let i = 1; i <= 2; i++) {
+    await hooks.event({
+      event: {
+        type: 'question.asked',
+        sessionID: TEST_ROOT_SESSION_ID,
+        data: {
+          id: `req-q1-${i}`,
+          sessionID: TEST_ROOT_SESSION_ID,
+          questions: [
+            {
+              question: 'Dangerous operation',
+              options: [{ label: 'Yes' }, { label: 'No' }],
+            },
+          ],
+        },
+      },
+    });
+  }
+  assert.equal(promptCalls.length, 2);
+
+  // Agent marks question MANUAL
+  await hooks.event({
+    event: {
+      type: 'question.asked',
+      sessionID: TEST_ROOT_SESSION_ID,
+      data: {
+        id: 'req-manual',
+        sessionID: TEST_ROOT_SESSION_ID,
+        questions: [
+          {
+            question: 'Dangerous operation',
+            options: [{ label: 'Yes [SQ:manual]' }, { label: 'No' }],
+          },
+        ],
+      },
+    },
+  });
+
+  // Later, another unclassified question appears: chain was reset by MANUAL!
+  await hooks.event({
+    event: {
+      type: 'question.asked',
+      sessionID: TEST_ROOT_SESSION_ID,
+      data: {
+        id: 'req-after-manual',
+        sessionID: TEST_ROOT_SESSION_ID,
+        questions: [
+          {
+            question: 'Dangerous operation',
+            options: [{ label: 'Yes' }, { label: 'No' }],
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(
+    promptCalls.length,
+    3,
+    'Explicit MANUAL classification must reset the unclassified chain'
+  );
+});
+
+test('TEST 9E - Settled question via question.replied resets unclassified remediation chain', async () => {
+  const { hooks, promptCalls } = await createPluginHarness({
+    timeoutMs: 30,
+    maxUnclassifiedRemediations: 2,
+  });
+
+  // Question hits budget
+  for (let i = 1; i <= 2; i++) {
+    await hooks.event({
+      event: {
+        type: 'question.asked',
+        sessionID: TEST_ROOT_SESSION_ID,
+        data: {
+          id: `req-q1-${i}`,
+          sessionID: TEST_ROOT_SESSION_ID,
+          questions: [
+            {
+              question: 'Select database',
+              options: [{ label: 'PG' }, { label: 'SQLite' }],
+            },
+          ],
+        },
+      },
+    });
+  }
+  assert.equal(promptCalls.length, 2);
+
+  // User replies to question
+  await hooks.event({
+    event: {
+      type: 'question.replied',
+      sessionID: TEST_ROOT_SESSION_ID,
+      data: {
+        id: 'req-q1-2',
+        sessionID: TEST_ROOT_SESSION_ID,
+      },
+    },
+  });
+
+  // Later unclassified question arrives: chain was reset by question settlement!
+  await hooks.event({
+    event: {
+      type: 'question.asked',
+      sessionID: TEST_ROOT_SESSION_ID,
+      data: {
+        id: 'req-after-reply',
+        sessionID: TEST_ROOT_SESSION_ID,
+        questions: [
+          {
+            question: 'Select database',
+            options: [{ label: 'PG' }, { label: 'SQLite' }],
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(
+    promptCalls.length,
+    3,
+    'Settled question via question.replied must reset the unclassified chain'
+  );
+});
+
+test('TEST 9F - New user message resets unclassified remediation chain', async () => {
+  const { hooks, promptCalls } = await createPluginHarness({
+    timeoutMs: 30,
+    maxUnclassifiedRemediations: 2,
+  });
+
+  // Question hits budget
+  for (let i = 1; i <= 2; i++) {
+    await hooks.event({
+      event: {
+        type: 'question.asked',
+        sessionID: TEST_ROOT_SESSION_ID,
+        data: {
+          id: `req-q1-${i}`,
+          sessionID: TEST_ROOT_SESSION_ID,
+          questions: [
+            {
+              question: 'Choice',
+              options: [{ label: '1' }, { label: '2' }],
+            },
+          ],
+        },
+      },
+    });
+  }
+  assert.equal(promptCalls.length, 2);
+
+  // Human sends a new message in chat
+  await hooks.event({
+    event: {
+      type: 'message.created',
+      sessionID: TEST_ROOT_SESSION_ID,
+      data: {
+        sessionID: TEST_ROOT_SESSION_ID,
+        role: 'user',
+        text: 'Continue with option 1',
+      },
+    },
+  });
+
+  // Later unclassified question arrives: chain was reset by new user turn!
+  await hooks.event({
+    event: {
+      type: 'question.asked',
+      sessionID: TEST_ROOT_SESSION_ID,
+      data: {
+        id: 'req-after-user-turn',
+        sessionID: TEST_ROOT_SESSION_ID,
+        questions: [
+          {
+            question: 'Choice',
+            options: [{ label: '1' }, { label: '2' }],
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(
+    promptCalls.length,
+    3,
+    'New user message must reset the unclassified chain'
   );
 });
 

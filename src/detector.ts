@@ -304,3 +304,40 @@ export function classifyQuestions(
     matchedMarker,
   };
 }
+
+/**
+ * Computes a deterministic normalized fingerprint for a set of questions.
+ * Used for scoping loop protection to identical unclassified chains rather than
+ * permanently disabling Smart Questions across an entire session lifetime.
+ */
+export function computeQuestionFingerprint(
+  questions: QuestionInfo[] | unknown
+): string {
+  if (
+    questions &&
+    typeof questions === 'object' &&
+    !Array.isArray(questions) &&
+    ('client' in questions || 'directory' in questions)
+  ) {
+    return {} as unknown as string;
+  }
+  if (!Array.isArray(questions) || questions.length === 0) return 'empty';
+  return questions
+    .map((q) => {
+      const header = typeof q?.header === 'string' ? q.header.trim().toLowerCase().normalize('NFC') : '';
+      const text = typeof q?.question === 'string' ? q.question.trim().toLowerCase().normalize('NFC') : '';
+      const opts = Array.isArray(q?.options)
+        ? q.options
+            .map((o: any) => {
+              if (typeof o === 'string') return o.trim().toLowerCase().normalize('NFC');
+              return typeof o?.label === 'string' ? o.label.trim().toLowerCase().normalize('NFC') : '';
+            })
+            .filter((s: string) => s.length > 0)
+            .sort()
+            .join('|')
+        : '';
+      return `${header}::${text}::${opts}`;
+    })
+    .join('///');
+}
+
