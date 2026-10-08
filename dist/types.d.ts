@@ -139,6 +139,7 @@ export interface Hooks {
 export type Plugin = (input: PluginInput, options?: Record<string, unknown>) => Promise<Hooks>;
 export interface PendingQuestionState {
     requestID: string;
+    sessionID: string;
     timer: NodeJS.Timeout;
     answers: string[][];
     status: 'pending' | 'firing' | 'replied' | 'cancelled';

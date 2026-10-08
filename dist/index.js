@@ -1,7 +1,7 @@
 import { createSmartQuestionHooks } from './backend.js';
-import { resolveSmartQuestionConfig } from './config.js';
+import { hasSmartQuestionConfigOptions, resolveSmartQuestionConfig, } from './config.js';
 import { buildRecommendationGuidance, SQ_GUIDANCE_SENTINEL } from './guidance.js';
-import { resolveV2SessionScope } from './session-scope.js';
+import { isRootSessionInfo } from './session-scope.js';
 export * from './types.js';
 export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_MANUAL_MARKERS, DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS, DEFAULT_CONFIG, } from './config.js';
 export * from './detector.js';
@@ -14,8 +14,34 @@ import { registerSmartQuestionsCapability, setActiveHandoff, extractCurrentTurnG
  * OpenCode v1 plugin factory.
  */
 export const SmartQuestion = async (input, options) => {
-    registerSmartQuestionsCapability();
-    return createSmartQuestionHooks(input, options);
+    const pluginOptions = options;
+    const config = resolveSmartQuestionConfig(input.directory, pluginOptions);
+    if (!config?.enabled)
+        return {};
+    const unregisterCapability = registerSmartQuestionsCapability();
+    try {
+        const hooks = await createSmartQuestionHooks(input, pluginOptions);
+        const originalDispose = hooks.dispose;
+        return {
+            ...hooks,
+            dispose: async () => {
+                try {
+                    await originalDispose?.();
+                }
+                finally {
+                    if (typeof unregisterCapability === 'function') {
+                        unregisterCapability();
+                    }
+                }
+            },
+        };
+    }
+    catch (error) {
+        if (typeof unregisterCapability === 'function') {
+            unregisterCapability();
+        }
+        throw error;
+    }
 };
 const setupV2 = async (context) => {
     // OpenCode v1/transition builds may discover this v2-shaped plugin object and
@@ -27,12 +53,13 @@ const setupV2 = async (context) => {
         typeof context.session?.get !== 'function') {
         return;
     }
-    const config = resolveSmartQuestionConfig(context.location?.directory, context.options);
-    if (!config?.enabled)
-        return;
-    registerSmartQuestionsCapability();
-    const guidance = buildRecommendationGuidance(config);
-    const sessionScope = new Map();
+    const pluginOptions = context.options;
+    if (hasSmartQuestionConfigOptions(pluginOptions)) {
+        const explicitConfig = resolveSmartQuestionConfig(context.location?.directory, pluginOptions);
+        if (!explicitConfig?.enabled)
+            return;
+    }
+    const unregisterCapability = registerSmartQuestionsCapability();
     const registrations = [];
     const disposeRegistrations = async () => {
         // Complete cleanup strictly in reverse registration order. Each disposer
@@ -47,26 +74,33 @@ const setupV2 = async (context) => {
             }
         }
     };
-    const isRootSession = async (sessionID) => {
-        if (!sessionID)
-            return false;
-        if (sessionScope.has(sessionID))
-            return sessionScope.get(sessionID) === true;
-        const scope = await resolveV2SessionScope(context.session, sessionID);
-        if (scope === 'root') {
-            sessionScope.set(sessionID, true);
-            return true;
-        }
-        if (scope === 'child') {
-            sessionScope.set(sessionID, false);
-            return false;
-        }
-        return false;
-    };
     try {
         const contextRegistration = await context.session.hook('context', async (event) => {
-            if (!(await isRootSession(String(event.sessionID ?? ''))))
+            const sessionID = String(event.sessionID ?? '');
+            if (!sessionID)
                 return;
+            let sessionInfo;
+            try {
+                sessionInfo = await context.session.get({ sessionID });
+            }
+            catch {
+                return;
+            }
+            if (!isRootSessionInfo(sessionInfo))
+                return;
+            const sessionDirectory = sessionInfo &&
+                typeof sessionInfo === 'object' &&
+                'location' in sessionInfo &&
+                sessionInfo.location &&
+                typeof sessionInfo.location === 'object' &&
+                'directory' in sessionInfo.location &&
+                typeof sessionInfo.location.directory === 'string'
+                ? sessionInfo.location.directory
+                : context.location?.directory;
+            const config = resolveSmartQuestionConfig(sessionDirectory, pluginOptions);
+            if (!config?.enabled)
+                return;
+            const guidance = buildRecommendationGuidance(config);
             const alreadyInjected = event.system.some((part) => part.type === 'text' &&
                 typeof part.text === 'string' &&
                 part.text.includes(SQ_GUIDANCE_SENTINEL));
@@ -79,7 +113,7 @@ const setupV2 = async (context) => {
             if (Array.isArray(event.messages)) {
                 const handoff = extractCurrentTurnGuardianHandoff(event.messages);
                 if (handoff && typeof handoff === 'object' && 'version' in handoff) {
-                    setActiveHandoff(String(event.sessionID ?? ''), handoff);
+                    setActiveHandoff(sessionID, handoff);
                 }
             }
         });
@@ -88,11 +122,23 @@ const setupV2 = async (context) => {
         }
         registrations.push(contextRegistration);
     }
-    catch (error) {
+    catch {
         await disposeRegistrations();
-        throw new Error('[smart-question] V2 backend registration failed', { cause: error });
+        if (typeof unregisterCapability === 'function') {
+            unregisterCapability();
+        }
+        throw new Error('[smart-question] V2 backend registration failed');
     }
-    return disposeRegistrations;
+    return async () => {
+        try {
+            await disposeRegistrations();
+        }
+        finally {
+            if (typeof unregisterCapability === 'function') {
+                unregisterCapability();
+            }
+        }
+    };
 };
 /**
  * OpenCode v2 backend plugin definition. The v2 backend injects recommendation

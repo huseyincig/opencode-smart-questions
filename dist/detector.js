@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { DEFAULT_CONFIG, DEFAULT_MANUAL_MARKERS, normalizeParamMarkers } from './config.js';
 export function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMarkers, options = {}) {
     // If invoked directly by OpenCode's plugin engine as a plugin factory, return an empty hooks object
@@ -311,22 +312,32 @@ export function computeQuestionFingerprint(questions) {
     }
     if (!Array.isArray(questions) || questions.length === 0)
         return 'empty';
-    return questions
-        .map((q) => {
-        const header = typeof q?.header === 'string' ? q.header.trim().toLowerCase().normalize('NFC') : '';
-        const text = typeof q?.question === 'string' ? q.question.trim().toLowerCase().normalize('NFC') : '';
-        const opts = Array.isArray(q?.options)
-            ? q.options
-                .map((o) => {
-                if (typeof o === 'string')
-                    return o.trim().toLowerCase().normalize('NFC');
-                return typeof o?.label === 'string' ? o.label.trim().toLowerCase().normalize('NFC') : '';
-            })
-                .filter((s) => s.length > 0)
-                .sort()
-                .join('|')
-            : '';
-        return `${header}::${text}::${opts}`;
-    })
-        .join('///');
+    const normalized = questions.map((q) => ({
+        header: typeof q?.header === 'string'
+            ? q.header.trim().toLowerCase().normalize('NFC')
+            : '',
+        question: typeof q?.question === 'string'
+            ? q.question.trim().toLowerCase().normalize('NFC')
+            : '',
+        multiple: q?.multiple === true,
+        // Preserve option order because fallback-first semantics depend on it.
+        options: Array.isArray(q?.options)
+            ? q.options.map((option) => ({
+                label: typeof option === 'string'
+                    ? option.trim().toLowerCase().normalize('NFC')
+                    : typeof option?.label === 'string'
+                        ? option.label.trim().toLowerCase().normalize('NFC')
+                        : '',
+                value: option && typeof option === 'object' && typeof option.value === 'string'
+                    ? option.value.trim().normalize('NFC')
+                    : '',
+            }))
+            : [],
+    }));
+    // Fingerprints are loop-control identifiers, not diagnostics. Hash the
+    // normalized structure so raw question/option text never enters logs.
+    return createHash('sha256')
+        .update(JSON.stringify(normalized))
+        .digest('hex')
+        .slice(0, 24);
 }
