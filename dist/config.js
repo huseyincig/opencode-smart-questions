@@ -115,8 +115,11 @@ export function normalizeSmartQuestionConfig(raw, configDir) {
     if (parsed.enabled === false)
         return null;
     // Invalid explicit settings must never silently enable a different auto-reply policy.
-    // Omitted settings are fine: they use the documented defaults.
-    if ((parsed.enabled !== undefined && parsed.enabled !== true) ||
+    // Omitted settings are fine: they use the documented defaults. Unknown keys
+    // are rejected so a typo such as "enabledd": false cannot silently leave
+    // automatic selection enabled.
+    if (Object.keys(parsed).some((key) => !SMART_QUESTION_CONFIG_KEYS.has(key)) ||
+        (parsed.enabled !== undefined && parsed.enabled !== true) ||
         (parsed.timeoutMs !== undefined &&
             (typeof parsed.timeoutMs !== 'number' ||
                 !Number.isFinite(parsed.timeoutMs) ||

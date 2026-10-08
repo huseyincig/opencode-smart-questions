@@ -101,6 +101,56 @@ function createDiagnosticLogger(config: SmartQuestionConfig, prefix: string) {
   };
 }
 
+function hasInternalSyntheticPart(parts: unknown): boolean {
+  if (!Array.isArray(parts)) return false;
+  return parts.some((part) => {
+    if (!part || typeof part !== 'object' || Array.isArray(part)) return false;
+    const record = part as Record<string, unknown>;
+    const metadata =
+      record.metadata &&
+      typeof record.metadata === 'object' &&
+      !Array.isArray(record.metadata)
+        ? record.metadata as Record<string, unknown>
+        : undefined;
+    return (
+      record.synthetic === true ||
+      record.ignored === true ||
+      metadata?.['opencode-guardian'] === true ||
+      metadata?.['opencode-smart-questions'] === true
+    );
+  });
+}
+
+function v1EventPayload(
+  event: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  const properties =
+    event.properties &&
+    typeof event.properties === 'object' &&
+    !Array.isArray(event.properties)
+      ? event.properties as Record<string, unknown>
+      : undefined;
+  const nestedData =
+    properties?.data &&
+    typeof properties.data === 'object' &&
+    !Array.isArray(properties.data)
+      ? properties.data as Record<string, unknown>
+      : undefined;
+  const info =
+    properties?.info &&
+    typeof properties.info === 'object' &&
+    !Array.isArray(properties.info)
+      ? properties.info as Record<string, unknown>
+      : undefined;
+  const directData =
+    event.data &&
+    typeof event.data === 'object' &&
+    !Array.isArray(event.data)
+      ? event.data as Record<string, unknown>
+      : undefined;
+  return nestedData ?? info ?? directData ?? properties ?? event;
+}
+
 function ensureDraftLock(lockPath: string, _payload: Record<string, unknown>): boolean {
   try {
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
@@ -422,9 +472,7 @@ export const tui: TuiPlugin = async (api, options) => {
   };
 
   const onAsked = (event: Record<string, unknown>) => {
-    const data = (event?.properties ?? event?.data ?? event) as
-      | Record<string, unknown>
-      | undefined;
+    const data = v1EventPayload(event);
     const requestID = data?.id ?? data?.requestID ?? event?.id;
     const sessionID = String(data?.sessionID ?? event?.sessionID ?? '');
     const questions = (data?.questions ?? event?.questions ?? []) as QuestionInfo[];
@@ -626,9 +674,7 @@ export const tui: TuiPlugin = async (api, options) => {
   };
 
   const onEnd = (event: Record<string, unknown>) => {
-    const data = (event?.properties ?? event?.data ?? event) as
-      | Record<string, unknown>
-      | undefined;
+    const data = v1EventPayload(event);
     const requestID = data?.requestID ?? data?.id ?? event?.id;
     const sessionID = String(data?.sessionID ?? event?.sessionID ?? '');
     if (sessionID) {
@@ -642,9 +688,7 @@ export const tui: TuiPlugin = async (api, options) => {
   };
 
   const onMessageCreated = (event: Record<string, unknown>) => {
-    const data = (event?.properties ?? event?.data ?? event) as
-      | Record<string, unknown>
-      | undefined;
+    const data = v1EventPayload(event);
     const sessionID = String(data?.sessionID ?? event?.sessionID ?? '');
     if (!sessionID) return;
     const handoff = extractTrustedGuardianHandoff(data);
@@ -652,7 +696,12 @@ export const tui: TuiPlugin = async (api, options) => {
       setActiveHandoff(sessionID, handoff);
     } else {
       const role = data?.role ?? (data?.message as any)?.role;
-      if (role === 'user') {
+      if (
+        role === 'user' &&
+        (data as any)?.metadata?.['opencode-guardian'] !== true &&
+        (data?.message as any)?.metadata?.['opencode-guardian'] !== true &&
+        !hasInternalSyntheticPart(data?.parts ?? (data?.message as any)?.parts)
+      ) {
         invalidateActiveHandoff(sessionID);
         sessionChains.delete(sessionID);
       }
@@ -660,9 +709,7 @@ export const tui: TuiPlugin = async (api, options) => {
   };
 
   const onSessionDeleted = (event: Record<string, unknown>) => {
-    const data = (event?.properties ?? event?.data ?? event) as
-      | Record<string, unknown>
-      | undefined;
+    const data = v1EventPayload(event);
     const sessionID = String(data?.id ?? data?.sessionID ?? event?.sessionID ?? '');
     if (sessionID) {
       clearActiveHandoff(sessionID);
@@ -774,11 +821,14 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     if (!explicitConfig?.enabled) return;
   }
 
+  let disposed = false;
+  const lifecycleController = new AbortController();
+
   const [activeBySession, setActiveBySession] = createSignal<
     Record<string, OverlayState>
   >({});
   const pending = new Map<string, V2Pending>();
-  const remediatedForms = new Set<string>();
+  const remediatedForms = new Map<string, string>();
   const sessionChains = new Map<string, { fingerprint: string; consecutiveFailures: number }>();
 
   const updateSessionState = (
@@ -814,6 +864,15 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     }
   };
 
+  const clearSessionState = (sessionID: string) => {
+    for (const [id, item] of pending.entries()) {
+      if (item.sessionID === sessionID) {
+        clearPending(id);
+      }
+    }
+    updateSessionState(sessionID, () => undefined);
+  };
+
   const cancelSessionAutoSelection = (sessionID: string, reason: string) => {
     const state = activeBySession()[sessionID];
     if (!state?.formID || state.focusDisabled) return;
@@ -841,6 +900,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
   };
 
   const onFormCreated = async (event: any) => {
+    if (disposed) return;
     const form = event?.data?.form as V2FormInfo | undefined;
     if (!form?.id || !form.sessionID || form.sessionID === 'global') return;
 
@@ -887,7 +947,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       config.unclassifiedQuestionPolicy === 'fallback-first' ||
       config.fallbackToFirstOption === true;
 
-    const classification = classifyV2Form(
+    let classification = classifyV2Form(
       form,
       config.recommendedMarkers,
       config.manualMarkers,
@@ -952,33 +1012,56 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         log(
           `unclassified remediation budget exhausted session=${form.sessionID} fingerprint=${fingerprint} count=${currentCount}/${maxRemediations}`
         );
-        ensureDraftLock(lockPath, { formID: form.id, sessionID: form.sessionID, ts: Date.now(), reason: 'budget-exhausted' });
-        const state: OverlayState = {
-          requestID: form.id,
-          formID: form.id,
-          sessionID: form.sessionID,
-          questions: classification.questions,
-          detection: { ok: false, reason: 'Remediation budget exhausted' },
-          agentName: form.sessionID.slice(0, 8),
-          agentFound: false,
-          focusDisabled: true,
-          status: 'error',
-          errorMessage: config.uiText.budgetExhausted,
-          lockPath,
-          markers: config.recommendedMarkers,
-          uiText: config.uiText,
-        };
-        updateSessionState(form.sessionID, () => state);
-        return;
+
+        if (config.unclassifiedQuestionPolicy === 'remediate-then-fallback') {
+          const fallbackClassification = classifyV2Form(
+            form,
+            config.recommendedMarkers,
+            config.manualMarkers,
+            handoff,
+            {
+              requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
+              allowFallback: true,
+              allowFallbackOnManual: config.fallbackOnManual === true,
+            }
+          );
+          if (fallbackClassification.status === 'auto') {
+            classification = fallbackClassification;
+            sessionChains.delete(form.sessionID);
+            log(`remediation budget exhausted, activating fallback form=${form.id}`);
+          }
+        }
+
+        if (classification.status !== 'auto') {
+          ensureDraftLock(lockPath, { formID: form.id, sessionID: form.sessionID, ts: Date.now(), reason: 'budget-exhausted' });
+          const state: OverlayState = {
+            requestID: form.id,
+            formID: form.id,
+            sessionID: form.sessionID,
+            questions: classification.questions,
+            detection: { ok: false, reason: 'Remediation budget exhausted' },
+            agentName: form.sessionID.slice(0, 8),
+            agentFound: false,
+            focusDisabled: true,
+            status: 'error',
+            errorMessage: config.uiText.budgetExhausted,
+            lockPath,
+            markers: config.recommendedMarkers,
+            uiText: config.uiText,
+          };
+          updateSessionState(form.sessionID, () => state);
+          return;
+        }
       }
 
-      remediatedForms.add(form.id);
-      sessionChains.set(form.sessionID, {
-        fingerprint,
-        consecutiveFailures: currentCount + 1,
-      });
+      if (classification.status === 'unclassified') {
+        remediatedForms.set(form.id, form.sessionID);
+        sessionChains.set(form.sessionID, {
+          fingerprint,
+          consecutiveFailures: currentCount + 1,
+        });
 
-      ensureDraftLock(lockPath, { formID: form.id, sessionID: form.sessionID, ts: Date.now(), reason: 'unclassified' });
+        ensureDraftLock(lockPath, { formID: form.id, sessionID: form.sessionID, ts: Date.now(), reason: 'unclassified' });
       const state: OverlayState = {
         requestID: form.id,
         formID: form.id,
@@ -1002,42 +1085,19 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       );
       let remediationSent = false;
       try {
-        if (context.client?.session && typeof (context.client.session as any).synthetic === 'function') {
-          await (context.client.session as any).synthetic({
-            sessionID: form.sessionID,
-            text: promptText,
-            description: 'Smart Questions protocol remediation',
-            metadata: { 'opencode-smart-questions': true },
-            delivery: 'queue',
-            resume: true,
-          });
-          remediationSent = true;
-        } else if (context.client?.session && typeof (context.client.session as any).prompt === 'function') {
-          await (context.client.session as any).prompt({
-            sessionID: form.sessionID,
-            prompt: promptText,
-          });
-          remediationSent = true;
-        } else if (context.data?.session && typeof (context.data.session as any).synthetic === 'function') {
-          await (context.data.session as any).synthetic({
-            sessionID: form.sessionID,
-            text: promptText,
-            description: 'Smart Questions protocol remediation',
-            metadata: { 'opencode-smart-questions': true },
-            delivery: 'queue',
-            resume: true,
-          });
-          remediationSent = true;
-        } else if ((context as any).session && typeof (context as any).session?.synthetic === 'function') {
-          await (context as any).session.synthetic({
-            sessionID: form.sessionID,
-            text: promptText,
-            description: 'Smart Questions protocol remediation',
-            metadata: { 'opencode-smart-questions': true },
-            delivery: 'queue',
-            resume: true,
-          });
-          remediationSent = true;
+        if (!disposed) {
+          await context.client.session.synthetic(
+            {
+              sessionID: form.sessionID,
+              text: promptText,
+              description: 'Smart Questions protocol remediation',
+              metadata: { 'opencode-smart-questions': true },
+              delivery: 'queue',
+              resume: true,
+            },
+            { signal: lifecycleController.signal }
+          );
+          remediationSent = !disposed;
         }
       } catch (err) {
         log(`remediation send failed form=${form.id} code=${diagnosticErrorCode(err)}`);
@@ -1060,11 +1120,12 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
             : current
         );
         log(`remediation not sent form=${form.id}; retry remains allowed`);
+        }
+        return;
       }
-      return;
     }
 
-    // Here classification.status === 'auto'
+    if (classification.status !== 'auto' || disposed) return;
     sessionChains.delete(form.sessionID);
     const detection: DetectionResult = classification.detection;
     const lockPath = resolveLockPath(config.configDir, form.id);
@@ -1102,7 +1163,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     };
 
     const fire = async () => {
-      if (pending.get(form.id) !== item || item.status !== 'pending') return;
+      if (disposed || pending.get(form.id) !== item || item.status !== 'pending') return;
       item.status = 'firing';
       if (item.interval) {
         clearInterval(item.interval);
@@ -1111,6 +1172,10 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
       try {
         await context.data.session.form.sync(form.sessionID, item.location);
+        if (disposed) {
+          clearPending(form.id);
+          return;
+        }
         const forms = context.data.session.form.list(form.sessionID, item.location);
         const stillPending =
           Array.isArray(forms) && forms.some((candidate) => candidate.id === form.id);
@@ -1140,6 +1205,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
           },
           item.location
         );
+        if (disposed) return;
         item.status = 'replied';
         consumeActiveHandoff(form.sessionID);
         try {
@@ -1260,9 +1326,15 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
           setActiveHandoff(sessionID, handoff);
         } else {
           const role = event?.data?.role ?? event?.data?.info?.role ?? event?.data?.message?.role;
-          if (role === 'user') {
+          if (
+            role === 'user' &&
+            event?.data?.metadata?.['opencode-guardian'] !== true &&
+            event?.data?.message?.metadata?.['opencode-guardian'] !== true &&
+            !hasInternalSyntheticPart(event?.data?.parts ?? event?.data?.message?.parts)
+          ) {
             invalidateActiveHandoff(sessionID);
             sessionChains.delete(sessionID);
+            clearSessionState(sessionID);
           }
         }
       });
@@ -1273,6 +1345,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         if (sessionID && sessionID !== 'global') {
           clearActiveHandoff(sessionID);
           sessionChains.delete(sessionID);
+          clearSessionState(sessionID);
         }
       });
       if (typeof sessionDelDisposer === 'function') cleanups.push(sessionDelDisposer);
@@ -1301,18 +1374,28 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       },
     }));
   } catch (error) {
+    disposed = true;
+    lifecycleController.abort();
     disposeCleanups();
-    for (const formID of pending.keys()) {
+    for (const formID of [...pending.keys()]) {
       clearPending(formID);
     }
+    remediatedForms.clear();
+    sessionChains.clear();
+    setActiveBySession({});
     throw error;
   }
 
   return () => {
+    disposed = true;
+    lifecycleController.abort();
     disposeCleanups();
-    for (const formID of pending.keys()) {
+    for (const formID of [...pending.keys()]) {
       clearPending(formID);
     }
+    remediatedForms.clear();
+    sessionChains.clear();
+    setActiveBySession({});
   };
 };
 

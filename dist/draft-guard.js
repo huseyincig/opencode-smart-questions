@@ -65,7 +65,7 @@ export function cleanupStaleDrafts(configDir, timeoutMs, dbg) {
             return;
         }
         const effectiveTimeout = typeof timeoutMs === 'number' && timeoutMs >= 0 ? timeoutMs : DEFAULT_CONFIG.timeoutMs;
-        const staleThresholdMs = effectiveTimeout * 4;
+        const staleThresholdMs = Math.max(effectiveTimeout * 4, DEFAULT_CONFIG.timeoutMs * 4);
         const now = Date.now();
         const entries = fs.readdirSync(opencodeDir);
         for (const entry of entries) {

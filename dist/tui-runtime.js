@@ -170,7 +170,7 @@ function normalizeSmartQuestionConfig(raw, configDir) {
   }
   const parsed = raw ?? {};
   if (parsed.enabled === false) return null;
-  if (parsed.enabled !== void 0 && parsed.enabled !== true || parsed.timeoutMs !== void 0 && (typeof parsed.timeoutMs !== "number" || !Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs < 0 || parsed.timeoutMs > MAX_TIMEOUT_MS) || parsed.requireExactlyOneRecommendation !== void 0 && typeof parsed.requireExactlyOneRecommendation !== "boolean" || parsed.recommendedMarkers !== void 0 && (!Array.isArray(parsed.recommendedMarkers) || parsed.recommendedMarkers.length === 0 || parsed.recommendedMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.recommendedMarker !== void 0 && (typeof parsed.recommendedMarker !== "string" || parsed.recommendedMarker.trim().length === 0) || parsed.debugLog !== void 0 && typeof parsed.debugLog !== "string" || parsed.configDir !== void 0 && (typeof parsed.configDir !== "string" || parsed.configDir.trim().length === 0) || parsed.manualMarkers !== void 0 && (!Array.isArray(parsed.manualMarkers) || parsed.manualMarkers.length === 0 || parsed.manualMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.manualMarker !== void 0 && (typeof parsed.manualMarker !== "string" || parsed.manualMarker.trim().length === 0) || parsed.maxUnclassifiedRemediations !== void 0 && (typeof parsed.maxUnclassifiedRemediations !== "number" || !Number.isFinite(parsed.maxUnclassifiedRemediations) || parsed.maxUnclassifiedRemediations < 0) || parsed.unclassifiedQuestionPolicy !== void 0 && parsed.unclassifiedQuestionPolicy !== "remediate" && parsed.unclassifiedQuestionPolicy !== "ignore" && parsed.unclassifiedQuestionPolicy !== "fallback-first" && parsed.unclassifiedQuestionPolicy !== "remediate-then-fallback" || parsed.fallbackToFirstOption !== void 0 && typeof parsed.fallbackToFirstOption !== "boolean" || parsed.fallbackOnManual !== void 0 && typeof parsed.fallbackOnManual !== "boolean" || parsed.uiText !== void 0 && (parsed.uiText === null || typeof parsed.uiText !== "object" || Array.isArray(parsed.uiText) || Object.values(parsed.uiText).some((value) => typeof value !== "string" || value.trim().length === 0))) {
+  if (Object.keys(parsed).some((key) => !SMART_QUESTION_CONFIG_KEYS.has(key)) || parsed.enabled !== void 0 && parsed.enabled !== true || parsed.timeoutMs !== void 0 && (typeof parsed.timeoutMs !== "number" || !Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs < 0 || parsed.timeoutMs > MAX_TIMEOUT_MS) || parsed.requireExactlyOneRecommendation !== void 0 && typeof parsed.requireExactlyOneRecommendation !== "boolean" || parsed.recommendedMarkers !== void 0 && (!Array.isArray(parsed.recommendedMarkers) || parsed.recommendedMarkers.length === 0 || parsed.recommendedMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.recommendedMarker !== void 0 && (typeof parsed.recommendedMarker !== "string" || parsed.recommendedMarker.trim().length === 0) || parsed.debugLog !== void 0 && typeof parsed.debugLog !== "string" || parsed.configDir !== void 0 && (typeof parsed.configDir !== "string" || parsed.configDir.trim().length === 0) || parsed.manualMarkers !== void 0 && (!Array.isArray(parsed.manualMarkers) || parsed.manualMarkers.length === 0 || parsed.manualMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.manualMarker !== void 0 && (typeof parsed.manualMarker !== "string" || parsed.manualMarker.trim().length === 0) || parsed.maxUnclassifiedRemediations !== void 0 && (typeof parsed.maxUnclassifiedRemediations !== "number" || !Number.isFinite(parsed.maxUnclassifiedRemediations) || parsed.maxUnclassifiedRemediations < 0) || parsed.unclassifiedQuestionPolicy !== void 0 && parsed.unclassifiedQuestionPolicy !== "remediate" && parsed.unclassifiedQuestionPolicy !== "ignore" && parsed.unclassifiedQuestionPolicy !== "fallback-first" && parsed.unclassifiedQuestionPolicy !== "remediate-then-fallback" || parsed.fallbackToFirstOption !== void 0 && typeof parsed.fallbackToFirstOption !== "boolean" || parsed.fallbackOnManual !== void 0 && typeof parsed.fallbackOnManual !== "boolean" || parsed.uiText !== void 0 && (parsed.uiText === null || typeof parsed.uiText !== "object" || Array.isArray(parsed.uiText) || Object.values(parsed.uiText).some((value) => typeof value !== "string" || value.trim().length === 0))) {
     return null;
   }
   const recommendedMarkers = normalizeConfigMarkers(
@@ -255,6 +255,7 @@ function loadConfig(projectDir) {
 }
 
 // src/detector.ts
+import { createHash } from "node:crypto";
 function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMarkers, options = {}) {
   if (questions && typeof questions === "object" && !Array.isArray(questions) && ("client" in questions || "directory" in questions)) {
     return {};
@@ -501,15 +502,17 @@ function computeQuestionFingerprint(questions) {
     return {};
   }
   if (!Array.isArray(questions) || questions.length === 0) return "empty";
-  return questions.map((q) => {
-    const header = typeof q?.header === "string" ? q.header.trim().toLowerCase().normalize("NFC") : "";
-    const text = typeof q?.question === "string" ? q.question.trim().toLowerCase().normalize("NFC") : "";
-    const opts = Array.isArray(q?.options) ? q.options.map((o) => {
-      if (typeof o === "string") return o.trim().toLowerCase().normalize("NFC");
-      return typeof o?.label === "string" ? o.label.trim().toLowerCase().normalize("NFC") : "";
-    }).filter((s) => s.length > 0).sort().join("|") : "";
-    return `${header}::${text}::${opts}`;
-  }).join("///");
+  const normalized = questions.map((q) => ({
+    header: typeof q?.header === "string" ? q.header.trim().toLowerCase().normalize("NFC") : "",
+    question: typeof q?.question === "string" ? q.question.trim().toLowerCase().normalize("NFC") : "",
+    multiple: q?.multiple === true,
+    // Preserve option order because fallback-first semantics depend on it.
+    options: Array.isArray(q?.options) ? q.options.map((option) => ({
+      label: typeof option === "string" ? option.trim().toLowerCase().normalize("NFC") : typeof option?.label === "string" ? option.label.trim().toLowerCase().normalize("NFC") : "",
+      value: option && typeof option === "object" && typeof option.value === "string" ? option.value.trim().normalize("NFC") : ""
+    })) : []
+  }));
+  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex").slice(0, 24);
 }
 
 // src/draft-guard.ts
@@ -774,9 +777,12 @@ function isRootSessionInfo(value) {
 var OPENCODE_HANDOFF_HEADER = "[OPENCODE_HANDOFF:v1]";
 var GUARDIAN_REMEDIATION_MARKER = "[opencode-guardian remediation]";
 var GUARDIAN_PROVENANCE_KEY = "opencode-guardian";
+var GUARDIAN_PROVENANCE_TOKEN_KEY = "opencode-guardian-provenance";
+var GUARDIAN_KIND_KEY = "opencode-guardian-kind";
 var DEFAULT_HANDOFF_TTL_MS = 12e4;
 var CLOSED_HANDOFF_TTL_MS = 10 * 6e4;
 var MAX_CLOSED_HANDOFF_IDS = 512;
+var MAX_ACTIVE_HANDOFFS = 512;
 var COORDINATION_SYMBOL = Symbol.for("opencode.coordination.v1");
 function isRecord(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -786,10 +792,38 @@ function isPluginInput(arg) {
     arg && typeof arg === "object" && ("client" in arg || "directory" in arg || "project" in arg)
   );
 }
-function hasGuardianMetadata(value) {
+function guardianMetadata(value) {
+  if (!isRecord(value)) return void 0;
+  return isRecord(value.metadata) ? value.metadata : void 0;
+}
+function hasGuardianMetadata(value, expectedKind) {
+  const metadata = guardianMetadata(value);
+  if (metadata?.[GUARDIAN_PROVENANCE_KEY] !== true) return false;
+  const token = metadata[GUARDIAN_PROVENANCE_TOKEN_KEY];
+  const kind = metadata[GUARDIAN_KIND_KEY];
+  if (token !== void 0 || kind !== void 0) {
+    if (typeof token !== "string" || token.length === 0) return false;
+    if (kind !== "remediation" && kind !== "visible") return false;
+    if (expectedKind && kind !== expectedKind) return false;
+    return true;
+  }
+  return expectedKind !== "visible";
+}
+function isGuardianOwnedNonHumanMessage(value) {
   if (!isRecord(value)) return false;
-  const metadata = isRecord(value.metadata) ? value.metadata : void 0;
-  return metadata?.[GUARDIAN_PROVENANCE_KEY] === true;
+  const kind = guardianMetadata(value)?.[GUARDIAN_KIND_KEY];
+  if (hasGuardianMetadata(value) && (value.type === "synthetic" || value.synthetic === true || value.ignored === true || kind === "remediation" || kind === "visible" || guardianMetadata(value)?.[GUARDIAN_PROVENANCE_KEY] === true)) {
+    return true;
+  }
+  const parts = messageParts(value);
+  if (parts?.some((part) => {
+    if (!isRecord(part) || !hasGuardianMetadata(part)) return false;
+    const partKind = guardianMetadata(part)?.[GUARDIAN_KIND_KEY];
+    return part.synthetic === true || part.ignored === true || partKind === "remediation" || partKind === "visible" || guardianMetadata(part)?.[GUARDIAN_PROVENANCE_KEY] === true;
+  })) {
+    return true;
+  }
+  return isRecord(value.message) ? isGuardianOwnedNonHumanMessage(value.message) : false;
 }
 function messageRole(value) {
   if (!isRecord(value)) return void 0;
@@ -875,7 +909,10 @@ function extractHandoffFromParts(parts, options) {
   const requireProvenance = typeof options === "boolean" ? true : options?.requireGuardianProvenance ?? true;
   for (const part of parts) {
     if (!isRecord(part) || typeof part.text !== "string") continue;
-    if (requireProvenance && !hasGuardianMetadata(part)) continue;
+    if (requireProvenance && !hasGuardianMetadata(part, "remediation")) continue;
+    if (requireProvenance && part.synthetic !== true && part.ignored !== true && guardianMetadata(part)?.[GUARDIAN_KIND_KEY] !== "remediation") {
+      continue;
+    }
     if (requireMarker && !part.text.includes(GUARDIAN_REMEDIATION_MARKER)) continue;
     const parsed = parseOpenCodeHandoff(part.text, false);
     if (parsed && typeof parsed === "object" && "version" in parsed) {
@@ -888,7 +925,7 @@ function extractTrustedGuardianHandoff(source) {
   if (isPluginInput(source)) return {};
   if (!isRecord(source)) return null;
   const message = isRecord(source.message) ? source.message : void 0;
-  const directProvenance = hasGuardianMetadata(source) || hasGuardianMetadata(source.info) || hasGuardianMetadata(message) || (message ? hasGuardianMetadata(message.info) : false);
+  const directProvenance = hasGuardianMetadata(source, "remediation") || hasGuardianMetadata(source.info, "remediation") || hasGuardianMetadata(message, "remediation") || (message ? hasGuardianMetadata(message.info, "remediation") : false);
   const parts = messageParts(source);
   if (parts) {
     const fromParts = extractHandoffFromParts(parts, {
@@ -899,7 +936,7 @@ function extractTrustedGuardianHandoff(source) {
       return fromParts;
     }
   }
-  if (directProvenance) {
+  if (directProvenance && isGuardianOwnedNonHumanMessage(source)) {
     for (const text of messageTextCandidates(source)) {
       const parsed = parseOpenCodeHandoff(text, { requireRemediationMarker: true });
       if (parsed && typeof parsed === "object" && "version" in parsed) {
@@ -918,7 +955,7 @@ function extractCurrentTurnGuardianHandoff(messages) {
     if (handoff && typeof handoff === "object" && "version" in handoff) {
       return handoff;
     }
-    if (messageRole(message) === "user") {
+    if (messageRole(message) === "user" && !isGuardianOwnedNonHumanMessage(message)) {
       return null;
     }
   }
@@ -968,6 +1005,17 @@ function closeHandoffId(state, handoffId, now = Date.now()) {
   state.closedHandoffIds.set(handoffId, now);
   pruneClosedHandoffs(state, now);
 }
+function boundActiveHandoffs(state, now = Date.now()) {
+  while (state.activeHandoffsBySession.size > MAX_ACTIVE_HANDOFFS) {
+    const oldestSessionID = state.activeHandoffsBySession.keys().next().value;
+    if (!oldestSessionID) break;
+    const oldest = state.activeHandoffsBySession.get(oldestSessionID);
+    state.activeHandoffsBySession.delete(oldestSessionID);
+    if (oldest?.handoff.handoffId) {
+      closeHandoffId(state, oldest.handoff.handoffId, now);
+    }
+  }
+}
 function setActiveHandoff(sessionID, handoff, timestamp) {
   if (isPluginInput(sessionID)) return {};
   const sID = String(sessionID ?? "");
@@ -978,10 +1026,12 @@ function setActiveHandoff(sessionID, handoff, timestamp) {
   if (state.closedHandoffIds.has(h.handoffId)) {
     return false;
   }
+  state.activeHandoffsBySession.delete(sID);
   state.activeHandoffsBySession.set(sID, {
     handoff: h,
     createdAt: typeof timestamp === "number" ? timestamp : Date.now()
   });
+  boundActiveHandoffs(state);
   return true;
 }
 function getActiveHandoff(sessionID, maxAgeMs = DEFAULT_HANDOFF_TTL_MS) {
@@ -1079,6 +1129,22 @@ function createDiagnosticLogger(config, prefix) {
     } catch {
     }
   };
+}
+function hasInternalSyntheticPart(parts) {
+  if (!Array.isArray(parts)) return false;
+  return parts.some((part) => {
+    if (!part || typeof part !== "object" || Array.isArray(part)) return false;
+    const record = part;
+    const metadata = record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata) ? record.metadata : void 0;
+    return record.synthetic === true || record.ignored === true || metadata?.["opencode-guardian"] === true || metadata?.["opencode-smart-questions"] === true;
+  });
+}
+function v1EventPayload(event) {
+  const properties = event.properties && typeof event.properties === "object" && !Array.isArray(event.properties) ? event.properties : void 0;
+  const nestedData = properties?.data && typeof properties.data === "object" && !Array.isArray(properties.data) ? properties.data : void 0;
+  const info = properties?.info && typeof properties.info === "object" && !Array.isArray(properties.info) ? properties.info : void 0;
+  const directData = event.data && typeof event.data === "object" && !Array.isArray(event.data) ? event.data : void 0;
+  return nestedData ?? info ?? directData ?? properties ?? event;
 }
 function ensureDraftLock(lockPath, _payload) {
   try {
@@ -1416,7 +1482,7 @@ var tui = async (api, options) => {
     api.renderer?.requestRender?.();
   };
   const onAsked = (event) => {
-    const data = event?.properties ?? event?.data ?? event;
+    const data = v1EventPayload(event);
     const requestID = data?.id ?? data?.requestID ?? event?.id;
     const sessionID = String(data?.sessionID ?? event?.sessionID ?? "");
     const questions = data?.questions ?? event?.questions ?? [];
@@ -1602,7 +1668,7 @@ var tui = async (api, options) => {
     }
   };
   const onEnd = (event) => {
-    const data = event?.properties ?? event?.data ?? event;
+    const data = v1EventPayload(event);
     const requestID = data?.requestID ?? data?.id ?? event?.id;
     const sessionID = String(data?.sessionID ?? event?.sessionID ?? "");
     if (sessionID) {
@@ -1615,7 +1681,7 @@ var tui = async (api, options) => {
     }
   };
   const onMessageCreated = (event) => {
-    const data = event?.properties ?? event?.data ?? event;
+    const data = v1EventPayload(event);
     const sessionID = String(data?.sessionID ?? event?.sessionID ?? "");
     if (!sessionID) return;
     const handoff = extractTrustedGuardianHandoff(data);
@@ -1623,14 +1689,14 @@ var tui = async (api, options) => {
       setActiveHandoff(sessionID, handoff);
     } else {
       const role = data?.role ?? data?.message?.role;
-      if (role === "user") {
+      if (role === "user" && data?.metadata?.["opencode-guardian"] !== true && data?.message?.metadata?.["opencode-guardian"] !== true && !hasInternalSyntheticPart(data?.parts ?? data?.message?.parts)) {
         invalidateActiveHandoff(sessionID);
         sessionChains.delete(sessionID);
       }
     }
   };
   const onSessionDeleted = (event) => {
-    const data = event?.properties ?? event?.data ?? event;
+    const data = v1EventPayload(event);
     const sessionID = String(data?.id ?? data?.sessionID ?? event?.sessionID ?? "");
     if (sessionID) {
       clearActiveHandoff(sessionID);
@@ -1715,9 +1781,11 @@ var setup = async (context) => {
     const explicitConfig = resolveV2TuiConfig(context);
     if (!explicitConfig?.enabled) return;
   }
+  let disposed = false;
+  const lifecycleController = new AbortController();
   const [activeBySession, setActiveBySession] = createSignal({});
   const pending = /* @__PURE__ */ new Map();
-  const remediatedForms = /* @__PURE__ */ new Set();
+  const remediatedForms = /* @__PURE__ */ new Map();
   const sessionChains = /* @__PURE__ */ new Map();
   const updateSessionState = (sessionID, updater) => {
     setActiveBySession((current) => {
@@ -1744,6 +1812,14 @@ var setup = async (context) => {
       updateSessionState(item.sessionID, (current) => current?.formID === formID ? void 0 : current);
     }
   };
+  const clearSessionState = (sessionID) => {
+    for (const [id, item] of pending.entries()) {
+      if (item.sessionID === sessionID) {
+        clearPending(id);
+      }
+    }
+    updateSessionState(sessionID, () => void 0);
+  };
   const cancelSessionAutoSelection = (sessionID, reason) => {
     const state = activeBySession()[sessionID];
     if (!state?.formID || state.focusDisabled) return;
@@ -1768,6 +1844,7 @@ var setup = async (context) => {
     item.log(`manual interaction form=${item.formID} session=${sessionID} reason=${reason}`);
   };
   const onFormCreated = async (event) => {
+    if (disposed) return;
     const form = event?.data?.form;
     if (!form?.id || !form.sessionID || form.sessionID === "global") return;
     let sessionInfo;
@@ -1803,7 +1880,7 @@ var setup = async (context) => {
       }
     }
     const fallbackActive = config.unclassifiedQuestionPolicy === "fallback-first" || config.fallbackToFirstOption === true;
-    const classification = classifyV2Form(form, config.recommendedMarkers, config.manualMarkers, handoff, {
+    let classification = classifyV2Form(form, config.recommendedMarkers, config.manualMarkers, handoff, {
       requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
       allowFallback: fallbackActive,
       allowFallbackOnManual: config.fallbackOnManual === true
@@ -1857,131 +1934,120 @@ var setup = async (context) => {
       const lockPath2 = resolveLockPath(config.configDir, form.id);
       if (currentCount >= maxRemediations) {
         log(`unclassified remediation budget exhausted session=${form.sessionID} fingerprint=${fingerprint} count=${currentCount}/${maxRemediations}`);
+        if (config.unclassifiedQuestionPolicy === "remediate-then-fallback") {
+          const fallbackClassification = classifyV2Form(form, config.recommendedMarkers, config.manualMarkers, handoff, {
+            requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
+            allowFallback: true,
+            allowFallbackOnManual: config.fallbackOnManual === true
+          });
+          if (fallbackClassification.status === "auto") {
+            classification = fallbackClassification;
+            sessionChains.delete(form.sessionID);
+            log(`remediation budget exhausted, activating fallback form=${form.id}`);
+          }
+        }
+        if (classification.status !== "auto") {
+          ensureDraftLock(lockPath2, {
+            formID: form.id,
+            sessionID: form.sessionID,
+            ts: Date.now(),
+            reason: "budget-exhausted"
+          });
+          const state2 = {
+            requestID: form.id,
+            formID: form.id,
+            sessionID: form.sessionID,
+            questions: classification.questions,
+            detection: {
+              ok: false,
+              reason: "Remediation budget exhausted"
+            },
+            agentName: form.sessionID.slice(0, 8),
+            agentFound: false,
+            focusDisabled: true,
+            status: "error",
+            errorMessage: config.uiText.budgetExhausted,
+            lockPath: lockPath2,
+            markers: config.recommendedMarkers,
+            uiText: config.uiText
+          };
+          updateSessionState(form.sessionID, () => state2);
+          return;
+        }
+      }
+      if (classification.status === "unclassified") {
+        remediatedForms.set(form.id, form.sessionID);
+        sessionChains.set(form.sessionID, {
+          fingerprint,
+          consecutiveFailures: currentCount + 1
+        });
         ensureDraftLock(lockPath2, {
           formID: form.id,
           sessionID: form.sessionID,
           ts: Date.now(),
-          reason: "budget-exhausted"
+          reason: "unclassified"
         });
-        const state3 = {
+        const state2 = {
           requestID: form.id,
           formID: form.id,
           sessionID: form.sessionID,
           questions: classification.questions,
           detection: {
             ok: false,
-            reason: "Remediation budget exhausted"
+            reason: classification.reason
           },
           agentName: form.sessionID.slice(0, 8),
           agentFound: false,
           focusDisabled: true,
-          status: "error",
-          errorMessage: config.uiText.budgetExhausted,
+          status: "unclassified",
+          statusMessage: config.uiText.unclassifiedSubtitle,
           lockPath: lockPath2,
           markers: config.recommendedMarkers,
           uiText: config.uiText
         };
-        updateSessionState(form.sessionID, () => state3);
+        updateSessionState(form.sessionID, () => state2);
+        const promptText = buildUnclassifiedRemediationPrompt(config.recommendedMarker, config.manualMarker);
+        let remediationSent = false;
+        try {
+          if (!disposed) {
+            await context.client.session.synthetic({
+              sessionID: form.sessionID,
+              text: promptText,
+              description: "Smart Questions protocol remediation",
+              metadata: {
+                "opencode-smart-questions": true
+              },
+              delivery: "queue",
+              resume: true
+            }, {
+              signal: lifecycleController.signal
+            });
+            remediationSent = !disposed;
+          }
+        } catch (err) {
+          log(`remediation send failed form=${form.id} code=${diagnosticErrorCode(err)}`);
+        }
+        if (!remediationSent) {
+          remediatedForms.delete(form.id);
+          if (currentCount === 0) {
+            sessionChains.delete(form.sessionID);
+          } else {
+            sessionChains.set(form.sessionID, {
+              fingerprint,
+              consecutiveFailures: currentCount
+            });
+          }
+          updateSessionState(form.sessionID, (current) => current?.formID === form.id ? {
+            ...current,
+            status: "error",
+            errorMessage: config.uiText.remediationFailed
+          } : current);
+          log(`remediation not sent form=${form.id}; retry remains allowed`);
+        }
         return;
       }
-      remediatedForms.add(form.id);
-      sessionChains.set(form.sessionID, {
-        fingerprint,
-        consecutiveFailures: currentCount + 1
-      });
-      ensureDraftLock(lockPath2, {
-        formID: form.id,
-        sessionID: form.sessionID,
-        ts: Date.now(),
-        reason: "unclassified"
-      });
-      const state2 = {
-        requestID: form.id,
-        formID: form.id,
-        sessionID: form.sessionID,
-        questions: classification.questions,
-        detection: {
-          ok: false,
-          reason: classification.reason
-        },
-        agentName: form.sessionID.slice(0, 8),
-        agentFound: false,
-        focusDisabled: true,
-        status: "unclassified",
-        statusMessage: config.uiText.unclassifiedSubtitle,
-        lockPath: lockPath2,
-        markers: config.recommendedMarkers,
-        uiText: config.uiText
-      };
-      updateSessionState(form.sessionID, () => state2);
-      const promptText = buildUnclassifiedRemediationPrompt(config.recommendedMarker, config.manualMarker);
-      let remediationSent = false;
-      try {
-        if (context.client?.session && typeof context.client.session.synthetic === "function") {
-          await context.client.session.synthetic({
-            sessionID: form.sessionID,
-            text: promptText,
-            description: "Smart Questions protocol remediation",
-            metadata: {
-              "opencode-smart-questions": true
-            },
-            delivery: "queue",
-            resume: true
-          });
-          remediationSent = true;
-        } else if (context.client?.session && typeof context.client.session.prompt === "function") {
-          await context.client.session.prompt({
-            sessionID: form.sessionID,
-            prompt: promptText
-          });
-          remediationSent = true;
-        } else if (context.data?.session && typeof context.data.session.synthetic === "function") {
-          await context.data.session.synthetic({
-            sessionID: form.sessionID,
-            text: promptText,
-            description: "Smart Questions protocol remediation",
-            metadata: {
-              "opencode-smart-questions": true
-            },
-            delivery: "queue",
-            resume: true
-          });
-          remediationSent = true;
-        } else if (context.session && typeof context.session?.synthetic === "function") {
-          await context.session.synthetic({
-            sessionID: form.sessionID,
-            text: promptText,
-            description: "Smart Questions protocol remediation",
-            metadata: {
-              "opencode-smart-questions": true
-            },
-            delivery: "queue",
-            resume: true
-          });
-          remediationSent = true;
-        }
-      } catch (err) {
-        log(`remediation send failed form=${form.id} code=${diagnosticErrorCode(err)}`);
-      }
-      if (!remediationSent) {
-        remediatedForms.delete(form.id);
-        if (currentCount === 0) {
-          sessionChains.delete(form.sessionID);
-        } else {
-          sessionChains.set(form.sessionID, {
-            fingerprint,
-            consecutiveFailures: currentCount
-          });
-        }
-        updateSessionState(form.sessionID, (current) => current?.formID === form.id ? {
-          ...current,
-          status: "error",
-          errorMessage: config.uiText.remediationFailed
-        } : current);
-        log(`remediation not sent form=${form.id}; retry remains allowed`);
-      }
-      return;
     }
+    if (classification.status !== "auto" || disposed) return;
     sessionChains.delete(form.sessionID);
     const detection = classification.detection;
     const lockPath = resolveLockPath(config.configDir, form.id);
@@ -2016,7 +2082,7 @@ var setup = async (context) => {
       interval: null
     };
     const fire = async () => {
-      if (pending.get(form.id) !== item || item.status !== "pending") return;
+      if (disposed || pending.get(form.id) !== item || item.status !== "pending") return;
       item.status = "firing";
       if (item.interval) {
         clearInterval(item.interval);
@@ -2024,6 +2090,10 @@ var setup = async (context) => {
       }
       try {
         await context.data.session.form.sync(form.sessionID, item.location);
+        if (disposed) {
+          clearPending(form.id);
+          return;
+        }
         const forms = context.data.session.form.list(form.sessionID, item.location);
         const stillPending = Array.isArray(forms) && forms.some((candidate) => candidate.id === form.id);
         if (!stillPending || pending.get(form.id) !== item || item.status !== "firing" || activeBySession()[form.sessionID]?.formID !== form.id || activeBySession()[form.sessionID]?.focusDisabled) {
@@ -2040,6 +2110,7 @@ var setup = async (context) => {
           formID: form.id,
           answer: item.answer
         }, item.location);
+        if (disposed) return;
         item.status = "replied";
         consumeActiveHandoff(form.sessionID);
         try {
@@ -2140,9 +2211,10 @@ var setup = async (context) => {
           setActiveHandoff(sessionID, handoff);
         } else {
           const role = event?.data?.role ?? event?.data?.info?.role ?? event?.data?.message?.role;
-          if (role === "user") {
+          if (role === "user" && event?.data?.metadata?.["opencode-guardian"] !== true && event?.data?.message?.metadata?.["opencode-guardian"] !== true && !hasInternalSyntheticPart(event?.data?.parts ?? event?.data?.message?.parts)) {
             invalidateActiveHandoff(sessionID);
             sessionChains.delete(sessionID);
+            clearSessionState(sessionID);
           }
         }
       });
@@ -2152,6 +2224,7 @@ var setup = async (context) => {
         if (sessionID && sessionID !== "global") {
           clearActiveHandoff(sessionID);
           sessionChains.delete(sessionID);
+          clearSessionState(sessionID);
         }
       });
       if (typeof sessionDelDisposer === "function") cleanups.push(sessionDelDisposer);
@@ -2178,17 +2251,27 @@ var setup = async (context) => {
       }
     }));
   } catch (error) {
+    disposed = true;
+    lifecycleController.abort();
     disposeCleanups();
-    for (const formID of pending.keys()) {
+    for (const formID of [...pending.keys()]) {
       clearPending(formID);
     }
+    remediatedForms.clear();
+    sessionChains.clear();
+    setActiveBySession({});
     throw error;
   }
   return () => {
+    disposed = true;
+    lifecycleController.abort();
     disposeCleanups();
-    for (const formID of pending.keys()) {
+    for (const formID of [...pending.keys()]) {
       clearPending(formID);
     }
+    remediatedForms.clear();
+    sessionChains.clear();
+    setActiveBySession({});
   };
 };
 var pluginModule = {

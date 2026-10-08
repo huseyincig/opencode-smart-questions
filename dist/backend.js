@@ -8,6 +8,50 @@ import { createDiagnosticError, diagnosticErrorCode } from './diagnostics.js';
 import { resolveV1SessionScope } from './session-scope.js';
 import { getActiveHandoff, setActiveHandoff, consumeActiveHandoff, clearActiveHandoff, invalidateActiveHandoff, extractTrustedGuardianHandoff, extractCurrentTurnGuardianHandoff, } from './handoff.js';
 export const SQ_REMEDIATION_HEADER = '[Smart Questions protocol remediation]';
+function transportRejected(result) {
+    if (!result || typeof result !== 'object' || Array.isArray(result))
+        return false;
+    const record = result;
+    return Boolean(record.error) || record.ok === false;
+}
+function hasInternalSyntheticPart(parts) {
+    if (!Array.isArray(parts))
+        return false;
+    return parts.some((part) => {
+        if (!part || typeof part !== 'object' || Array.isArray(part))
+            return false;
+        const record = part;
+        const metadata = record.metadata &&
+            typeof record.metadata === 'object' &&
+            !Array.isArray(record.metadata)
+            ? record.metadata
+            : undefined;
+        return (record.synthetic === true ||
+            record.ignored === true ||
+            metadata?.['opencode-guardian'] === true ||
+            metadata?.['opencode-smart-questions'] === true);
+    });
+}
+function fallbackAnswersFromQuestions(questions) {
+    if (!Array.isArray(questions) || questions.length === 0)
+        return null;
+    const answers = [];
+    for (const raw of questions) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+            return null;
+        const options = raw.options;
+        if (!Array.isArray(options) || options.length === 0)
+            return null;
+        const first = options[0];
+        if (!first || typeof first !== 'object' || Array.isArray(first))
+            return null;
+        const label = first.label;
+        if (typeof label !== 'string' || label.length === 0)
+            return null;
+        answers.push([label]);
+    }
+    return answers;
+}
 export function buildUnclassifiedRemediationPrompt(primaryMarker, manualMarker = '[SQ:manual]') {
     // If invoked directly by OpenCode's plugin engine as a plugin factory, return an empty hooks object
     if (primaryMarker &&
@@ -52,7 +96,7 @@ async function sendSyntheticRemediation(client, sessionID, directory, promptText
             return true;
         }
         if (client?.session && typeof client.session.promptAsync === 'function') {
-            await client.session.promptAsync({
+            const result = await client.session.promptAsync({
                 path: { id: sessionID },
                 ...(directory ? { query: { directory } } : {}),
                 body: {
@@ -64,10 +108,12 @@ async function sendSyntheticRemediation(client, sessionID, directory, promptText
                         }],
                 },
             });
+            if (transportRejected(result))
+                return false;
             return true;
         }
         if (client?.session && typeof client.session.prompt === 'function') {
-            await client.session.prompt({
+            const result = await client.session.prompt({
                 path: { id: sessionID },
                 ...(directory ? { query: { directory } } : {}),
                 body: {
@@ -79,10 +125,12 @@ async function sendSyntheticRemediation(client, sessionID, directory, promptText
                         }],
                 },
             });
+            if (transportRejected(result))
+                return false;
             return true;
         }
         if (client?._client && typeof client._client.post === 'function') {
-            await client._client.post({
+            const result = await client._client.post({
                 url: `/session/${encodeURIComponent(sessionID)}/prompt_async`,
                 body: {
                     parts: [{
@@ -93,6 +141,8 @@ async function sendSyntheticRemediation(client, sessionID, directory, promptText
                         }],
                 },
             });
+            if (transportRejected(result))
+                return false;
             return true;
         }
     }
@@ -120,7 +170,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
         return {};
     const effectiveConfigDir = config.configDir || path.resolve(directory || process.cwd(), '.opencode');
     const pendingRequests = new Map();
-    const remediatedRequests = new Set();
+    const remediatedRequests = new Map();
     const sessionChains = new Map();
     const sessionScope = new Map();
     const debugLogPath = typeof config.debugLog === 'string' && config.debugLog ? config.debugLog : null;
@@ -132,6 +182,48 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
         }
         catch {
             // Diagnostics must never break the hook.
+        }
+    };
+    const isInternalV1UserEvent = async (sessionID, payload) => {
+        if (payload?.metadata?.['opencode-guardian'] === true ||
+            payload?.message?.metadata?.['opencode-guardian'] === true ||
+            payload?.metadata?.['opencode-smart-questions'] === true ||
+            payload?.message?.metadata?.['opencode-smart-questions'] === true ||
+            hasInternalSyntheticPart(payload?.parts ?? payload?.message?.parts)) {
+            return true;
+        }
+        const messageID = payload?.id ?? payload?.messageID ?? payload?.message?.id;
+        if (typeof messageID !== 'string' ||
+            !client?.session ||
+            typeof client.session.messages !== 'function') {
+            return false;
+        }
+        try {
+            const response = await client.session.messages({ path: { id: sessionID } });
+            const messages = response?.data ?? response;
+            if (!Array.isArray(messages))
+                return false;
+            const match = messages.find((item) => (item?.info?.id ?? item?.id) === messageID);
+            return hasInternalSyntheticPart(match?.parts);
+        }
+        catch {
+            // If provenance cannot be inspected, treat the user-role event as human
+            // so automation fails safely by cancelling any pending auto-selection.
+            return false;
+        }
+    };
+    const clearSessionRequestState = (sessionID) => {
+        for (const [requestID, pending] of pendingRequests) {
+            if (pending.sessionID !== sessionID)
+                continue;
+            clearTimeout(pending.timer);
+            pending.status = 'cancelled';
+            pendingRequests.delete(requestID);
+            deleteLockfile(resolveLockPath(effectiveConfigDir, requestID), dbg);
+        }
+        for (const [requestID, ownerSessionID] of remediatedRequests) {
+            if (ownerSessionID === sessionID)
+                remediatedRequests.delete(requestID);
         }
     };
     const server = describeServer(serverUrl);
@@ -159,7 +251,11 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
     const eventHook = async ({ event }) => {
         if (!event || typeof event.type !== 'string')
             return;
-        const payload = event.data ?? event.properties?.data ?? event.properties ?? null;
+        const payload = event.data ??
+            event.properties?.data ??
+            event.properties?.info ??
+            event.properties ??
+            null;
         if (event.type === 'message.created' || event.type === 'message.updated') {
             const sessionID = String(payload?.sessionID ?? event?.sessionID ?? '');
             if (sessionID && (await isRootSession(sessionID))) {
@@ -170,10 +266,13 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                 }
                 else {
                     const role = payload?.role ?? payload?.info?.role ?? payload?.message?.role ?? payload?.message?.info?.role;
-                    if (event.type === 'message.created' && role === 'user') {
+                    if ((event.type === 'message.created' || event.type === 'message.updated') &&
+                        role === 'user' &&
+                        !(await isInternalV1UserEvent(sessionID, payload))) {
                         invalidateActiveHandoff(sessionID);
                         sessionChains.delete(sessionID);
-                        dbg(`invalidated stale handoff and reset unclassified chain on new user turn session=${sessionID}`);
+                        clearSessionRequestState(sessionID);
+                        dbg(`invalidated stale handoff and cancelled pending auto-selection on new user turn session=${sessionID}`);
                     }
                 }
             }
@@ -185,7 +284,8 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                 clearActiveHandoff(sessionID);
                 sessionScope.delete(sessionID);
                 sessionChains.delete(sessionID);
-                dbg(`session deleted, cleared handoff, scope and unclassified chain session=${sessionID}`);
+                clearSessionRequestState(sessionID);
+                dbg(`session deleted, cleared handoff, pending requests, scope and unclassified chain session=${sessionID}`);
             }
             return;
         }
@@ -270,7 +370,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                     }
                 }
                 else {
-                    remediatedRequests.add(requestID);
+                    remediatedRequests.set(requestID, sessionID);
                     sessionChains.set(sessionID, {
                         fingerprint,
                         consecutiveFailures: currentCount + 1,
@@ -298,7 +398,11 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
             // Build answers if unclassified or manual fell through via fallback
             const effectiveAnswers = classification.status === 'auto'
                 ? classification.answers
-                : data.questions.map((q) => q.options?.[0]?.label ? [q.options[0].label] : []);
+                : fallbackAnswersFromQuestions(data.questions);
+            if (!effectiveAnswers || effectiveAnswers.some((answer) => answer.length === 0)) {
+                dbg(`skip request=${requestID} reason=invalid-fallback-question-shape`);
+                return;
+            }
             sessionChains.delete(sessionID);
             if (!canUseDraftCoordination(effectiveConfigDir, dbg)) {
                 dbg(`skip request=${requestID} reason=draft-coordination-unavailable`);
@@ -308,6 +412,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
             dbg(`schedule request=${requestID} in ${config.timeoutMs}ms questions=${effectiveAnswers.length} selections=${selectionCount}`);
             const pending = {
                 requestID,
+                sessionID,
                 timer: undefined,
                 answers: effectiveAnswers,
                 status: 'pending',
@@ -450,7 +555,13 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
             clearTimeout(pending.timer);
             pending.status = 'cancelled';
         }
+        for (const pending of pendingRequests.values()) {
+            deleteLockfile(resolveLockPath(effectiveConfigDir, pending.requestID), dbg);
+        }
         pendingRequests.clear();
+        remediatedRequests.clear();
+        sessionChains.clear();
+        sessionScope.clear();
     };
     const guidance = buildRecommendationGuidance(config);
     const systemTransformHook = async (hookInput, output) => {
@@ -474,10 +585,12 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
         }
         else {
             const role = output?.message?.role ?? output?.message?.info?.role ?? output?.role;
-            if (role === 'user') {
+            if (role === 'user' &&
+                !hasInternalSyntheticPart(output?.parts ?? output?.message?.parts)) {
                 invalidateActiveHandoff(sessionID);
                 sessionChains.delete(sessionID);
-                dbg(`invalidated stale handoff and reset unclassified chain on new user turn in chat.message session=${sessionID}`);
+                clearSessionRequestState(sessionID);
+                dbg(`invalidated stale handoff and cancelled pending auto-selection on new user turn in chat.message session=${sessionID}`);
             }
         }
     };

@@ -141,6 +141,7 @@ export type Plugin = (input: PluginInput, options?: Record<string, unknown>) => 
 
 export interface PendingQuestionState {
   requestID: string;
+  sessionID: string;
   timer: NodeJS.Timeout;
   answers: string[][];
   status: 'pending' | 'firing' | 'replied' | 'cancelled';

@@ -5,9 +5,12 @@
 export const OPENCODE_HANDOFF_HEADER = '[OPENCODE_HANDOFF:v1]';
 export const GUARDIAN_REMEDIATION_MARKER = '[opencode-guardian remediation]';
 export const GUARDIAN_PROVENANCE_KEY = 'opencode-guardian';
+export const GUARDIAN_PROVENANCE_TOKEN_KEY = 'opencode-guardian-provenance';
+export const GUARDIAN_KIND_KEY = 'opencode-guardian-kind';
 export const DEFAULT_HANDOFF_TTL_MS = 120_000;
 export const CLOSED_HANDOFF_TTL_MS = 10 * 60_000;
 export const MAX_CLOSED_HANDOFF_IDS = 512;
+export const MAX_ACTIVE_HANDOFFS = 512;
 export const COORDINATION_SYMBOL = Symbol.for('opencode.coordination.v1');
 function isRecord(value) {
     return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -17,11 +20,63 @@ function isPluginInput(arg) {
         typeof arg === 'object' &&
         ('client' in arg || 'directory' in arg || 'project' in arg));
 }
-function hasGuardianMetadata(value) {
+function guardianMetadata(value) {
+    if (!isRecord(value))
+        return undefined;
+    return isRecord(value.metadata) ? value.metadata : undefined;
+}
+function hasGuardianMetadata(value, expectedKind) {
+    const metadata = guardianMetadata(value);
+    if (metadata?.[GUARDIAN_PROVENANCE_KEY] !== true)
+        return false;
+    const token = metadata[GUARDIAN_PROVENANCE_TOKEN_KEY];
+    const kind = metadata[GUARDIAN_KIND_KEY];
+    // Current Guardian writes a session-scoped provenance token and explicit
+    // message kind. When either modern field is present, require the complete
+    // pair instead of accepting a partially spoofed metadata object.
+    if (token !== undefined || kind !== undefined) {
+        if (typeof token !== 'string' || token.length === 0)
+            return false;
+        if (kind !== 'remediation' && kind !== 'visible')
+            return false;
+        if (expectedKind && kind !== expectedKind)
+            return false;
+        return true;
+    }
+    // Backward compatibility for older Guardian versions that only emitted the
+    // boolean provenance flag. Callers still require the remediation marker and
+    // a Guardian-owned synthetic/ignored message boundary.
+    return expectedKind !== 'visible';
+}
+function isGuardianOwnedNonHumanMessage(value) {
     if (!isRecord(value))
         return false;
-    const metadata = isRecord(value.metadata) ? value.metadata : undefined;
-    return metadata?.[GUARDIAN_PROVENANCE_KEY] === true;
+    const kind = guardianMetadata(value)?.[GUARDIAN_KIND_KEY];
+    if (hasGuardianMetadata(value) &&
+        (value.type === 'synthetic' ||
+            value.synthetic === true ||
+            value.ignored === true ||
+            kind === 'remediation' ||
+            kind === 'visible' ||
+            guardianMetadata(value)?.[GUARDIAN_PROVENANCE_KEY] === true)) {
+        return true;
+    }
+    const parts = messageParts(value);
+    if (parts?.some((part) => {
+        if (!isRecord(part) || !hasGuardianMetadata(part))
+            return false;
+        const partKind = guardianMetadata(part)?.[GUARDIAN_KIND_KEY];
+        return (part.synthetic === true ||
+            part.ignored === true ||
+            partKind === 'remediation' ||
+            partKind === 'visible' ||
+            guardianMetadata(part)?.[GUARDIAN_PROVENANCE_KEY] === true);
+    })) {
+        return true;
+    }
+    return isRecord(value.message)
+        ? isGuardianOwnedNonHumanMessage(value.message)
+        : false;
 }
 function messageRole(value) {
     if (!isRecord(value))
@@ -73,15 +128,47 @@ function messageTextCandidates(value) {
 /**
  * Register Smart Questions capability in the global OpenCode coordination registry.
  */
+let smartQuestionsRegistrationCount = 0;
+let previousSmartQuestionsCapability;
 export function registerSmartQuestionsCapability(arg) {
     if (isPluginInput(arg))
         return {};
     const globalObj = globalThis;
     const root = (globalObj[COORDINATION_SYMBOL] ??= {});
+    if (smartQuestionsRegistrationCount === 0) {
+        previousSmartQuestionsCapability = root.smartQuestions
+            ? { ...root.smartQuestions }
+            : undefined;
+    }
+    smartQuestionsRegistrationCount += 1;
     root.smartQuestions = {
         version: 1,
         mainAgentOnly: true,
         supportsAutoSelect: true,
+    };
+    let disposed = false;
+    return () => {
+        if (disposed)
+            return;
+        disposed = true;
+        smartQuestionsRegistrationCount = Math.max(0, smartQuestionsRegistrationCount - 1);
+        if (smartQuestionsRegistrationCount > 0)
+            return;
+        const current = globalObj[COORDINATION_SYMBOL];
+        if (!current) {
+            previousSmartQuestionsCapability = undefined;
+            return;
+        }
+        if (previousSmartQuestionsCapability) {
+            current.smartQuestions = previousSmartQuestionsCapability;
+        }
+        else {
+            delete current.smartQuestions;
+        }
+        previousSmartQuestionsCapability = undefined;
+        if (!current.guardian && !current.smartQuestions) {
+            delete globalObj[COORDINATION_SYMBOL];
+        }
     };
 }
 /**
@@ -177,8 +264,14 @@ export function extractHandoffFromParts(parts, options) {
     for (const part of parts) {
         if (!isRecord(part) || typeof part.text !== 'string')
             continue;
-        if (requireProvenance && !hasGuardianMetadata(part))
+        if (requireProvenance && !hasGuardianMetadata(part, 'remediation'))
             continue;
+        if (requireProvenance &&
+            part.synthetic !== true &&
+            part.ignored !== true &&
+            guardianMetadata(part)?.[GUARDIAN_KIND_KEY] !== 'remediation') {
+            continue;
+        }
         if (requireMarker && !part.text.includes(GUARDIAN_REMEDIATION_MARKER))
             continue;
         const parsed = parseOpenCodeHandoff(part.text, false);
@@ -198,10 +291,10 @@ export function extractTrustedGuardianHandoff(source) {
     if (!isRecord(source))
         return null;
     const message = isRecord(source.message) ? source.message : undefined;
-    const directProvenance = hasGuardianMetadata(source) ||
-        hasGuardianMetadata(source.info) ||
-        hasGuardianMetadata(message) ||
-        (message ? hasGuardianMetadata(message.info) : false);
+    const directProvenance = hasGuardianMetadata(source, 'remediation') ||
+        hasGuardianMetadata(source.info, 'remediation') ||
+        hasGuardianMetadata(message, 'remediation') ||
+        (message ? hasGuardianMetadata(message.info, 'remediation') : false);
     const parts = messageParts(source);
     if (parts) {
         const fromParts = extractHandoffFromParts(parts, {
@@ -212,7 +305,7 @@ export function extractTrustedGuardianHandoff(source) {
             return fromParts;
         }
     }
-    if (directProvenance) {
+    if (directProvenance && isGuardianOwnedNonHumanMessage(source)) {
         for (const text of messageTextCandidates(source)) {
             const parsed = parseOpenCodeHandoff(text, { requireRemediationMarker: true });
             if (parsed && typeof parsed === 'object' && 'version' in parsed) {
@@ -238,7 +331,8 @@ export function extractCurrentTurnGuardianHandoff(messages) {
         if (handoff && typeof handoff === 'object' && 'version' in handoff) {
             return handoff;
         }
-        if (messageRole(message) === 'user') {
+        if (messageRole(message) === 'user' &&
+            !isGuardianOwnedNonHumanMessage(message)) {
             return null;
         }
     }
@@ -293,6 +387,18 @@ function closeHandoffId(state, handoffId, now = Date.now()) {
     state.closedHandoffIds.set(handoffId, now);
     pruneClosedHandoffs(state, now);
 }
+function boundActiveHandoffs(state, now = Date.now()) {
+    while (state.activeHandoffsBySession.size > MAX_ACTIVE_HANDOFFS) {
+        const oldestSessionID = state.activeHandoffsBySession.keys().next().value;
+        if (!oldestSessionID)
+            break;
+        const oldest = state.activeHandoffsBySession.get(oldestSessionID);
+        state.activeHandoffsBySession.delete(oldestSessionID);
+        if (oldest?.handoff.handoffId) {
+            closeHandoffId(state, oldest.handoff.handoffId, now);
+        }
+    }
+}
 /**
  * Store an active handoff for a session.
  * Fails safe and ignores recently closed handoff IDs to prevent replay loops.
@@ -309,10 +415,14 @@ export function setActiveHandoff(sessionID, handoff, timestamp) {
     if (state.closedHandoffIds.has(h.handoffId)) {
         return false;
     }
+    // Refresh insertion order when a session receives a newer handoff so the
+    // bounded map evicts truly oldest session state first.
+    state.activeHandoffsBySession.delete(sID);
     state.activeHandoffsBySession.set(sID, {
         handoff: h,
         createdAt: typeof timestamp === 'number' ? timestamp : Date.now(),
     });
+    boundActiveHandoffs(state);
     return true;
 }
 /**

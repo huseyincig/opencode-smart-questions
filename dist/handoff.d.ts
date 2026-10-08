@@ -5,9 +5,12 @@
 export declare const OPENCODE_HANDOFF_HEADER = "[OPENCODE_HANDOFF:v1]";
 export declare const GUARDIAN_REMEDIATION_MARKER = "[opencode-guardian remediation]";
 export declare const GUARDIAN_PROVENANCE_KEY = "opencode-guardian";
+export declare const GUARDIAN_PROVENANCE_TOKEN_KEY = "opencode-guardian-provenance";
+export declare const GUARDIAN_KIND_KEY = "opencode-guardian-kind";
 export declare const DEFAULT_HANDOFF_TTL_MS = 120000;
 export declare const CLOSED_HANDOFF_TTL_MS: number;
 export declare const MAX_CLOSED_HANDOFF_IDS = 512;
+export declare const MAX_ACTIVE_HANDOFFS = 512;
 export type HandoffKind = 'clarification' | 'choice' | 'approval';
 export type HandoffAutoSelect = 'allowed' | 'forbidden';
 export interface OpenCodeHandoff {
@@ -37,10 +40,7 @@ export interface OpenCodeCoordinationRegistry {
         supportsAutoSelect?: boolean;
     };
 }
-/**
- * Register Smart Questions capability in the global OpenCode coordination registry.
- */
-export declare function registerSmartQuestionsCapability(arg?: unknown): void | Record<string, unknown>;
+export declare function registerSmartQuestionsCapability(arg?: unknown): (() => void) | Record<string, unknown>;
 /**
  * Check if Guardian is registered in the in-process capability registry.
  */
