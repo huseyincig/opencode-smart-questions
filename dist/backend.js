@@ -85,7 +85,7 @@ export function buildUnclassifiedRemediationPrompt(primaryMarker, manualMarker =
 async function sendSyntheticRemediation(client, sessionID, directory, promptText, dbg) {
     try {
         if (client?.session && typeof client.session.synthetic === 'function') {
-            await client.session.synthetic({
+            const response = await client.session.synthetic({
                 sessionID,
                 text: promptText,
                 description: 'Smart Questions protocol remediation',
@@ -93,6 +93,8 @@ async function sendSyntheticRemediation(client, sessionID, directory, promptText
                 delivery: 'queue',
                 resume: true,
             });
+            if (transportRejected(response))
+                return false;
             return true;
         }
         if (client?.session && typeof client.session.promptAsync === 'function') {

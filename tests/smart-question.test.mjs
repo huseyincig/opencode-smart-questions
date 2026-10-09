@@ -2013,6 +2013,41 @@ function createV2TuiMock(tempDir, timeoutMs = 25) {
   };
 }
 
+test('V2 TUI structured synthetic rejection remains retryable', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-v2-structured-retry-'));
+  try {
+    const ui = await import('../dist/ui.js');
+    const mock = createV2TuiMock(tempDir, 20);
+    let attempts = 0;
+    mock.context.client = {
+      session: {
+        async synthetic() {
+          attempts++;
+          return attempts === 1 ? { error: { code: 'REJECTED' } } : { ok: true };
+        },
+      },
+    };
+    const cleanup = await ui.setup(mock.context);
+    try {
+      const form = {
+        id: 'form-v2-structured-rejection',
+        sessionID: 'ses-v2-ui',
+        fields: [{ key: 'choice', type: 'string',
+          options: [{ value: 'a', label: 'Option A' }, { value: 'b', label: 'Option B' }] }],
+      };
+      mock.emitCreated(form);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      mock.emitCreated(form);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(attempts, 2);
+    } finally {
+      await cleanup?.();
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('V2 TUI unclassified remediation send failure remains retryable', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-v2-remediation-retry-'));
   try {

@@ -358,6 +358,43 @@ test('TEST 8 - Duplicate event on same unclassified request ID does not duplicat
   assert.equal(promptCalls.length, 1, 'Duplicate event must be suppressed; remediation count <= 1');
 });
 
+test('V1 native synthetic rejection does not use the remediation budget', async () => {
+  let calls = 0;
+  const client = withSessionClient({
+    session: {
+      async synthetic() {
+        calls++;
+        return calls === 1 ? { error: { code: 'REJECTED' } } : { ok: true };
+      },
+    },
+  });
+  const hooks = await SmartQuestionPlugin({ client }, {
+    timeoutMs: 30,
+    maxUnclassifiedRemediations: 1,
+  });
+  try {
+    const eventPayload = {
+      event: {
+        type: 'question.asked',
+        sessionID: TEST_ROOT_SESSION_ID,
+        data: {
+          id: 'req-native-synthetic-rejection',
+          sessionID: TEST_ROOT_SESSION_ID,
+          questions: [{ question: 'Choose a backend',
+            options: [{ label: 'A' }, { label: 'B' }] }],
+        },
+      },
+    };
+    await hooks.event(eventPayload);
+    await hooks.event(eventPayload);
+    assert.equal(calls, 2, 'Native transport rejection must remain retryable');
+    await hooks.event(eventPayload);
+    assert.equal(calls, 2, 'Successful resend must consume the single permitted remediation');
+  } finally {
+    await hooks.dispose?.();
+  }
+});
+
 test('Failed V1 unclassified remediation transport does not consume duplicate/budget state', async () => {
   let attempts = 0;
   const client = withSessionClient({

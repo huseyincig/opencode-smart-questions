@@ -2010,7 +2010,7 @@ var setup = async (context) => {
         let remediationSent = false;
         try {
           if (!disposed) {
-            await context.client.session.synthetic({
+            const response = await context.client.session.synthetic({
               sessionID: form.sessionID,
               text: promptText,
               description: "Smart Questions protocol remediation",
@@ -2022,7 +2022,8 @@ var setup = async (context) => {
             }, {
               signal: lifecycleController.signal
             });
-            remediationSent = !disposed;
+            const rejected = response && typeof response === "object" && !Array.isArray(response) && (Boolean(response.error) || response.ok === false);
+            remediationSent = !disposed && !rejected;
           }
         } catch (err) {
           log(`remediation send failed form=${form.id} code=${diagnosticErrorCode(err)}`);
@@ -2254,7 +2255,7 @@ var setup = async (context) => {
     disposed = true;
     lifecycleController.abort();
     disposeCleanups();
-    for (const formID of [...pending.keys()]) {
+    for (const formID of pending.keys()) {
       clearPending(formID);
     }
     remediatedForms.clear();
@@ -2266,7 +2267,7 @@ var setup = async (context) => {
     disposed = true;
     lifecycleController.abort();
     disposeCleanups();
-    for (const formID of [...pending.keys()]) {
+    for (const formID of pending.keys()) {
       clearPending(formID);
     }
     remediatedForms.clear();

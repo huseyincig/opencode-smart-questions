@@ -123,7 +123,7 @@ async function sendSyntheticRemediation(
 ): Promise<boolean> {
   try {
     if (client?.session && typeof (client.session as Record<string, unknown>).synthetic === 'function') {
-      await (client.session as Record<string, unknown> & { synthetic: Function }).synthetic({
+      const response: unknown = await (client.session as Record<string, unknown> & { synthetic: Function }).synthetic({
         sessionID,
         text: promptText,
         description: 'Smart Questions protocol remediation',
@@ -131,6 +131,7 @@ async function sendSyntheticRemediation(
         delivery: 'queue',
         resume: true,
       });
+      if (transportRejected(response)) return false;
       return true;
     }
     if (client?.session && typeof client.session.promptAsync === 'function') {

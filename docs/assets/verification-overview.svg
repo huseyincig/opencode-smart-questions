@@ -1,15 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="318" viewBox="0 0 1200 318" role="img" aria-labelledby="title description">
 <title id="title">OpenCode Smart Questions test results</title>
-<desc id="description">148 of 148 v0.7.0 local automated tests and 8 of 8 sandbox scenarios pass. The 7 of 7 OpenCode V1 (v1.18.34) and OpenCode V2 (v2.0.24) live-host acceptance results are verified on real host with opencode-go/mimo-v2.6-flash. See acceptance reports for details.</desc>
+<desc id="description">150 of 150 v0.8.0 local automated tests and 8 of 8 sandbox scenarios pass. The 7 of 7 OpenCode V1 (v1.18.34) and OpenCode V2 (v2.0.24) live-host acceptance results are verified on real host with opencode-go/mimo-v2.6-flash. See acceptance reports for details.</desc>
 <rect width="1200" height="318" rx="14" fill="#111619"/>
 <rect x=".5" y=".5" width="1199" height="317" rx="13.5" stroke="#353e42" fill="none"/>
 <circle cx="48" cy="52" r="16" fill="none" stroke="#f59e0b" stroke-width="2"/>
 <path d="M48 44v9m0 6v2" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round"/>
 <text x="76" y="46" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#f2f5f4">OPENCODE SMART QUESTIONS</text>
-<text x="76" y="68" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#94a6a1">v0.7.0 Automated Verification • Dual-Host V1 &amp; V2 Live Acceptance</text>
+<text x="76" y="68" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#94a6a1">v0.8.0 Automated Verification • Dual-Host V1 &amp; V2 Live Acceptance</text>
 <path d="M36 91H1164" stroke="#353e42"/>
 <text x="40" y="138" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing=".8" fill="#a3b2ae">AUTOMATED TESTS</text>
-<text x="40" y="206" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="55" font-weight="700" fill="#f2f5f4">148<tspan font-size="25" font-weight="400" fill="#94a6a1"> / 148</tspan></text>
+<text x="40" y="206" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="55" font-weight="700" fill="#f2f5f4">150<tspan font-size="25" font-weight="400" fill="#94a6a1"> / 150</tspan></text>
 <text x="40" y="242" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#72d9ad">PASS</text>
 <text x="40" y="271" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#94a6a1">Unit and regression</text>
 <path d="M310 117v165" stroke="#353e42"/>

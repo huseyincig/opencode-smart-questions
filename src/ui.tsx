@@ -1086,7 +1086,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       let remediationSent = false;
       try {
         if (!disposed) {
-          await context.client.session.synthetic(
+          const response: unknown = await context.client.session.synthetic(
             {
               sessionID: form.sessionID,
               text: promptText,
@@ -1097,7 +1097,10 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
             },
             { signal: lifecycleController.signal }
           );
-          remediationSent = !disposed;
+          const rejected = response && typeof response === 'object' && !Array.isArray(response) &&
+            (Boolean((response as { error?: unknown }).error) ||
+              (response as { ok?: unknown }).ok === false);
+          remediationSent = !disposed && !rejected;
         }
       } catch (err) {
         log(`remediation send failed form=${form.id} code=${diagnosticErrorCode(err)}`);
@@ -1377,7 +1380,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     disposed = true;
     lifecycleController.abort();
     disposeCleanups();
-    for (const formID of [...pending.keys()]) {
+    for (const formID of pending.keys()) {
       clearPending(formID);
     }
     remediatedForms.clear();
@@ -1390,7 +1393,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     disposed = true;
     lifecycleController.abort();
     disposeCleanups();
-    for (const formID of [...pending.keys()]) {
+    for (const formID of pending.keys()) {
       clearPending(formID);
     }
     remediatedForms.clear();
