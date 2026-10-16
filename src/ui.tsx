@@ -713,6 +713,10 @@ export const tui: TuiPlugin = async (api, options) => {
     const sessionID = String(data?.id ?? data?.sessionID ?? event?.sessionID ?? '');
     if (sessionID) {
       clearActiveHandoff(sessionID);
+      sessionChains.delete(sessionID);
+      if (activeQuestion()?.sessionID === sessionID) {
+        clearActive();
+      }
     }
   };
 

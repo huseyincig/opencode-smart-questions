@@ -219,7 +219,7 @@ export function detectV2FormRecommendations(
           reason: `Recommended selections for field ${field.key} exceed maxItems`,
         };
       }
-      answer[field.key] = selectedValues as string[];
+      Object.defineProperty(answer, field.key, { value: selectedValues as string[], enumerable: true, writable: true, configurable: true });
     } else {
       const value = selectedValues[0];
       if (typeof value !== 'string') {
@@ -228,7 +228,7 @@ export function detectV2FormRecommendations(
           reason: `Missing recommendation value for field ${field.key}`,
         };
       }
-      answer[field.key] = value;
+      Object.defineProperty(answer, field.key, { value, enumerable: true, writable: true, configurable: true });
     }
   }
 
@@ -458,7 +458,7 @@ export function classifyV2Form(
           questions,
         };
       }
-      answer[field.key] = selectedValues as string[];
+      Object.defineProperty(answer, field.key, { value: selectedValues as string[], enumerable: true, writable: true, configurable: true });
     } else {
       const value = selectedValues[0];
       if (typeof value !== 'string') {
@@ -468,7 +468,7 @@ export function classifyV2Form(
           questions,
         };
       }
-      answer[field.key] = value;
+      Object.defineProperty(answer, field.key, { value, enumerable: true, writable: true, configurable: true });
     }
   }
 

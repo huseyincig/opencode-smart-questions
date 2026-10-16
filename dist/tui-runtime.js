@@ -718,7 +718,7 @@ function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers, manua
           questions
         };
       }
-      answer[field.key] = selectedValues;
+      Object.defineProperty(answer, field.key, { value: selectedValues, enumerable: true, writable: true, configurable: true });
     } else {
       const value = selectedValues[0];
       if (typeof value !== "string") {
@@ -728,7 +728,7 @@ function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers, manua
           questions
         };
       }
-      answer[field.key] = value;
+      Object.defineProperty(answer, field.key, { value, enumerable: true, writable: true, configurable: true });
     }
   }
   return {
@@ -1700,6 +1700,10 @@ var tui = async (api, options) => {
     const sessionID = String(data?.id ?? data?.sessionID ?? event?.sessionID ?? "");
     if (sessionID) {
       clearActiveHandoff(sessionID);
+      sessionChains.delete(sessionID);
+      if (activeQuestion()?.sessionID === sessionID) {
+        clearActive();
+      }
     }
   };
   const stopAsked = api.event?.on?.("question.asked", onAsked);

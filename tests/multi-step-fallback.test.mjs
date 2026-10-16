@@ -3,7 +3,19 @@ import test from 'node:test';
 
 import { SmartQuestion as SmartQuestionPlugin } from '../dist/index.js';
 import { classifyQuestions } from '../dist/detector.js';
-import { classifyV2Form } from '../dist/form-adapter.js';
+import { classifyV2Form, detectV2FormRecommendations } from '../dist/form-adapter.js';
+
+test('V2 form reserved field key preserves an own serialized answer', () => {
+  const form = { id: 'form-reserved', sessionID: 'root', fields: [{
+    key: '__proto__', type: 'multiselect',
+    options: [{ value: 'safe', label: 'Safe [SQ:recommended]' }],
+  }] };
+  for (const result of [classifyV2Form(form), detectV2FormRecommendations(form)]) {
+    const answer = result.answer;
+    assert.equal(Object.hasOwn(answer, '__proto__'), true);
+    assert.deepEqual(JSON.parse(JSON.stringify(answer)), Object.fromEntries([['__proto__', ['safe']]]));
+  }
+});
 
 const TEST_ROOT_SESSION_ID = 'ses-multi-step-root';
 

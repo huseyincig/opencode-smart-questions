@@ -120,6 +120,30 @@ test('computeOverlayViewModel computes distinct visual metadata for AUTO, MANUAL
   assert.match(errorModel.errorMessage, /Automatic remediation stopped/);
 });
 
+test('V1 TUI: deleting owning session clears manual question lock and overlay', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-delete-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const events = new Map();
+  let renders = 0;
+  await v1Tui({
+    state: { path: { directory: dir }, session: { get(id) { return { id }; } } },
+    event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
+    renderer: { keyInput: { on() {}, off() {} }, requestRender() { renders++; } },
+    slots: { register() {} },
+    lifecycle: { onDispose() {} },
+  }, { configDir: path.join(dir, '.opencode') });
+  events.get('question.asked')({ properties: {
+    id: 'deleted-request', sessionID: 'deleted-session',
+    questions: [{ question: 'Delete?', options: [{ label: 'Yes [SQ:manual]' }, { label: 'No' }] }],
+  } });
+  const lock = resolveLockPath(path.join(dir, '.opencode'), 'deleted-request');
+  assert.equal(fs.existsSync(lock), true);
+  const before = renders;
+  events.get('session.deleted')({ properties: { id: 'deleted-session' } });
+  assert.equal(fs.existsSync(lock), false, 'deleted session must release question lock');
+  assert.ok(renders > before, 'deleted session must clear and rerender overlay');
+});
+
 test('V1 TUI: AUTO question activates overlay slot and lockfile', async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-auto-'));
   t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
