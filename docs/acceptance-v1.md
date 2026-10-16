@@ -14,8 +14,8 @@ Guardian ve Smart Questions, gerçek OpenCode V1 hostunda hem bağımsız hem bi
 | Test model | `opencode-go/mimo-v2.6-flash` |
 | Guardian commit | `cb1cb140797f9bd775c621f8fae42a426a2f8459` |
 | Guardian version/tag | `v0.10.0` |
-| Smart Questions commit | `ecd43c879a9d74b8323fc316370a3b6247166909` |
-| Smart Questions version/tag | `v0.8.0` |
+| Smart Questions commit | `6a57fe489b2ba4a986133e0876d850fd72482467` |
+| Smart Questions version/tag | `v0.8.1` |
 | Platform | Linux x86_64 |
 
 The repositories were tested from fresh source checkouts in an isolated sandbox.
@@ -383,8 +383,8 @@ Model: opencode-go/mimo-v2.6-flash
 
 Guardian SHA: cb1cb140797f9bd775c621f8fae42a426a2f8459
 Guardian version: v0.10.0
-Smart Questions SHA: ecd43c879a9d74b8323fc316370a3b6247166909
-Smart Questions version: v0.8.0
+Smart Questions SHA: 6a57fe489b2ba4a986133e0876d850fd72482467
+Smart Questions version: v0.8.1
 
 GUARDIAN ONLY: PASS
 SMART QUESTIONS ONLY: PASS
