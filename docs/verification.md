@@ -1,73 +1,74 @@
 # Verification and limitations
 
-This document describes the **v0.8.1** source evaluation on **17 October 2026**. It distinguishes automated host simulations from integration with an actual OpenCode installation.
+This document describes the **v0.8.2** source evaluation on **20 October 2026**. Automated adapter tests and historical real-host acceptance are separate evidence.
 
 ## Automated checks
 
-Run these commands on Node 22 or 24 from the repository root:
+Run these commands from the repository root:
 
 ```bash
 npm ci
 npm run typecheck
+npm run typecheck:strict
+npm run lint
 npm test
 node sandbox/smoke-test.mjs
 node sandbox/comprehensive-test.mjs
-npm audit
 npm pack --dry-run
 ```
 
-The unit/regression suite covers recommendation parsing in different writing systems, custom Unicode markers, invalid configuration rejection, V1 reply and timer handling, draft-lock cancellation and fail-safe coordination, V1 TUI event ordering and setup rollback, V2 form mapping and constraints, live-location changes, user intervention, form replacement, cancellation during asynchronous synchronization, privacy-safe diagnostics, sequential cleanup and partial setup rollback. The separate 10-scenario sandbox exercises a simulated V1 server adapter. CI runs these checks on Node 22 and 24.
+CI declares Node 22.x, 24.x and 26.x. The local run used Node **24.22.0** and installed plugin SDKs **@opencode-ai/plugin 1.18.34** and **@opencode/plugin 2.0.22**. A configured CI matrix is not evidence that all those runtimes were executed locally.
 
-Automated tests validate the tested inputs and mock-host behavior. They do not measure real-world failure rates or prove that every V1/V2 build delivers the expected hooks.
+## Current results
+
+| Check | Observed result |
+| --- | --- |
+| Unit and regression tests | **169/169 passed**, including 13 new debugging regressions |
+| Strict TypeScript and lint | **Passed**, warnings denied |
+| Simulated V1 comprehensive scenarios | **10/10 passed** |
+| Separate smoke test | **Passed** |
+| Packaging dry run | Expected server, UI, TUI, declaration and release-document files included |
+| Dependency audits | Not rerun for this patch; dependency versions unchanged |
+| Fresh real V1/V2 host and interactive TUI acceptance | **Not run for v0.8.2** |
+
+The [V1](acceptance-v1.md) and [V2](acceptance-v2.md) acceptance reports are historical records with their original host builds, plugin versions, commits and test results. They do not certify this patch's live behavior.
+
+## v0.8.2 regression coverage
+
+- V1 exhausted remediation preserves recommendations in every classified step, including multiselects; the TUI does not block that fallback with a manual lock.
+- Disposal, session deletion, new human messages and settlement cancel V1 question handling that is awaiting session/history lookup. A rejected history lookup cannot reschedule cancelled work.
+- Duplicate events during rejected remediation preserve the retry budget and duplicate-suppression state correctly.
+- V2 duplicate form events retain their reply owner and user-interaction cancellation during sync and reply; stale async completions cannot clear another owner's pending entry.
+- V2 label-to-value mapping rejects repeated labels even with fallback enabled.
+- V1 partial-setup testing uses an explicit local configuration directory, independent of global user preferences.
+- `includeSubagents: true` is tested across V1/V2 server and TUI adapters; the default remains root-only.
 
 ## Implemented boundaries
 
 | Area | Current behavior | Boundary |
 | --- | --- | --- |
-| Language handling | Exact recommendation suffixes (default `[SQ:recommended]` plus legacy English/Turkish markers), Unicode NFC normalization and configurable UI text | No translation, semantic understanding, automatic locale inference or verification of an agent's recommendation |
-| Single/multiple choice | Exactly one marked option is required for a single-choice question; multi-select supports several | Unmarked root-session questions trigger protocol remediation (`[Smart Questions protocol remediation]`); child sessions remain isolated |
-| V1 events | A per-request timer handles `question.asked/replied/rejected`; the TUI creates a draft lock on user input | The countdown panel and keyboard cancellation require the V1 TUI adapter to be loaded; a reply already sent cannot be withdrawn |
-| V1 transport | Native question client, internal client or a supported REST fallback | Host routing and authentication must be verified on the actual V1 build |
-| V2 forms | Supported selectable form fields map exact labels to stable values; synchronization and pending state are checked before reply | An already-issued reply cannot be recalled; custom tools, global forms and unsupported fields are outside automatic selection |
-| Error handling | Invalid explicit configuration disables auto-selection; reply errors are logged, and V2 displays a manual-answer warning | Logging/UI availability depends on host delivery; an error after sending may have an uncertain remote outcome |
-| V2 registration lifecycle | Awaited `tool.transform` and `session.hook('context')` registrations; rollback on partial setup failure; cleanup is idempotent | Real-host loader behavior, reload events and disposal require actual V2 host verification |
-| Configuration isolation | Project files take precedence over `~/.config/opencode/smart-question.json`; missing-config tests isolate their home-directory lookup | Global user preferences intentionally remain effective in normal installations |
-| Approval | Prompt guidance asks the agent not to mark sensitive choices | The marker is not an authorization system or a pre-execution safety control |
+| Recommendation parsing | Configured markers, Unicode NFC normalization, flexible prefix/suffix/description matching in the runtime classifier | No semantic understanding or verification of the recommended action; the legacy detector retains exact suffix semantics |
+| Selection policies | Default unclassified-question remediation; explicit first-option fallback preserves recommendations in other steps | Fallback can resolve ambiguous recommendations by choosing the first match; ambiguous V2 label-to-value mapping is still rejected |
+| Session scope | Root sessions by default; host-confirmed children only with `includeSubagents: true` | Unknown topology is excluded; Guardian's interactive handoffs remain root-scoped |
+| V1 events and transport | Per-request timers, cancellation ownership, native question client/internal client/REST fallback | Keyboard cancellation requires the V1 TUI; already-sent replies cannot be withdrawn |
+| V2 forms | Supported selectable fields map to stable values; synchronization, pending ownership and cancellation are rechecked | Global, hidden, conditional and unsupported fields are excluded; already-issued replies cannot be recalled |
+| V2 backend registration | `session.hook('context')` guidance with idempotent registration disposal | Real loader, hot-reload and interactive rendering need host acceptance; no global tool transform is registered |
+| Configuration | Malformed explicit settings disable selection; project files take precedence over global settings | Global preferences remain effective during normal installation; tests isolate configuration when needed |
+| Manual classification | Default `fallbackOnManual: false` honors manual markers and Guardian `auto_select=forbidden` | Enabling `fallbackOnManual` opts out of this guard. Selection never grants execution permission |
 
-The legacy `requireExactlyOneRecommendation` setting is accepted for compatibility but does not relax single-choice ambiguity checks. `timeoutMs: 0` provides no practical opportunity to cancel an automatic reply.
-
-## Current automated acceptance — 17 October 2026
-
-The local evaluation used Node **24.21.0** in an isolated checkout. The GitHub CI matrix separately runs Node **22.x** and **24.x**. The following results were obtained for the v0.8.1 source tree:
-
-| Check | Observed result |
-| --- | ---: |
-| Unit and regression tests | **152/152 passed** |
-| Strict TypeScript checks (`noUnused*`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) | **Passed** |
-| V1 simulated sandbox scenarios | **10/10 passed** |
-| Smoke test and TypeScript typecheck | **Passed** |
-| Full `npm audit` | **0 reported vulnerabilities** |
-| `npm pack --dry-run` | **42 files**, expected exports present |
-| Real OpenCode V1/V2 host acceptance for v0.8.1 | **PASSED (see acceptance-v1.md & acceptance-v2.md)** |
-
-OpenTUI's development dependency currently declares Node >=26.4 or Bun >=1.3; npm installation on Node 24 reports an engine warning. Passing the Node 22/24 automated suite does not demonstrate full native TUI runtime compatibility.
+`requireExactlyOneRecommendation` is accepted for compatibility but setting it to `false` alone does not relax single-choice ambiguity checks. `timeoutMs: 0` gives no practical opportunity to cancel.
 
 ## Real-host checks still required
 
-**V1:** Install both the server and TUI adapters on a selected OpenCode V1 version. Verify question-event delivery, countdown visibility, the native and fallback reply paths as applicable, manual input near timeout, question rejection, overlapping questions and plugin unload.
+On pinned V1/V2 hosts, load the packaged server and TUI entrypoints and exercise countdown rendering, keyboard/paste cancellation, settlement, duplicate delivery, session switching/deletion and unload. Check native and fallback transports as applicable, multi-step/multiselect fallback, opt-in child sessions, unsupported forms, malformed configuration and manual-classification policy. Record exact host versions and observed outcomes before making a new host-compatibility claim.
 
-**V2:** On a real V2 build supporting the required APIs, verify server context guidance, TUI package discovery, `form.created/replied/cancelled` delivery, option-label-to-value mapping, user interaction during synchronization, form replacement, UI failure messaging, session switching and plugin cleanup.
+OpenTUI's native runtime requirements must be checked independently from the Node-based core and simulated tests. Importing the package successfully does not prove that the terminal widget renders or reacts correctly.
 
-Test both with normal and malformed configuration, single- and multi-select forms, Unicode option labels, and unsupported form fields. Record the exact host build and observed results before making a real-host compatibility claim.
-
-There is no coupling to OpenCode Guardian. Neither plugin is required to install or run the other.
+Neither plugin requires the other. Optional coordination is described in [Guardian integration](guardian-integration.md).
 
 ## Source and test references
 
-- [V1 backend and transport](https://github.com/huseyincig/opencode-smart-questions/blob/main/src/backend.ts)
-- [V1/V2 TUI and countdowns](https://github.com/huseyincig/opencode-smart-questions/blob/main/src/ui.tsx)
-- [Language-independent detector](https://github.com/huseyincig/opencode-smart-questions/blob/main/src/detector.ts)
-- [Configuration validation](https://github.com/huseyincig/opencode-smart-questions/blob/main/src/config.ts)
-- [Unit/regression tests](https://github.com/huseyincig/opencode-smart-questions/blob/main/tests/smart-question.test.mjs)
-- [Sandbox scenarios](https://github.com/huseyincig/opencode-smart-questions/blob/main/sandbox/comprehensive-test.mjs)
-- [CI workflow](https://github.com/huseyincig/opencode-smart-questions/blob/main/.github/workflows/ci.yml)
+- [Release notes](../CHANGELOG.md)
+- [V1 backend](../src/backend.ts), [V1/V2 TUI](../src/ui.tsx), [V2 forms](../src/form-adapter.ts)
+- [Debugging regressions](../tests/debug-regressions.test.mjs), [subagent support](../tests/subagent-support.test.mjs)
+- [Sandbox scenarios](../sandbox/comprehensive-test.mjs), [CI workflow](../.github/workflows/ci.yml)

@@ -427,7 +427,7 @@ export function classifyV2Form(
     const selectedLabels = classification.answers[i] ?? [];
     const selectedValues = selectedLabels.map((label) => {
       const matchingOptions = field.options.filter((candidate) => candidate.label === label);
-      return matchingOptions.length === 1 || (options?.allowFallback && matchingOptions.length > 1)
+      return matchingOptions.length === 1
         ? matchingOptions[0]?.value
         : undefined;
     });

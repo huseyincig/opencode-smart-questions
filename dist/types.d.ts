@@ -57,6 +57,7 @@ export interface SmartQuestionConfig {
     uiText: SmartQuestionUIText;
     debugLog?: string | undefined;
     configDir?: string | undefined;
+    includeSubagents?: boolean | undefined;
 }
 export interface DetectionSuccess {
     ok: true;

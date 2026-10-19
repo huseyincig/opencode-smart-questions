@@ -34,6 +34,7 @@ const SMART_QUESTION_CONFIG_KEYS = new Set([
   'uiText',
   'debugLog',
   'configDir',
+  'includeSubagents',
 ]);
 
 export function hasSmartQuestionConfigOptions(
@@ -182,6 +183,8 @@ export function normalizeSmartQuestionConfig(
       typeof parsed.fallbackToFirstOption !== 'boolean') ||
     (parsed.fallbackOnManual !== undefined &&
       typeof parsed.fallbackOnManual !== 'boolean') ||
+    (parsed.includeSubagents !== undefined &&
+      typeof parsed.includeSubagents !== 'boolean') ||
     (parsed.uiText !== undefined &&
       (parsed.uiText === null || typeof parsed.uiText !== 'object' ||
         Array.isArray(parsed.uiText) ||
@@ -252,6 +255,9 @@ export function normalizeSmartQuestionConfig(
   }
   if (typeof parsed.fallbackOnManual === 'boolean') {
     normalized.fallbackOnManual = parsed.fallbackOnManual;
+  }
+  if (typeof parsed.includeSubagents === 'boolean') {
+    normalized.includeSubagents = parsed.includeSubagents;
   }
   const resolvedConfigDir =
     typeof parsed.configDir === 'string' && parsed.configDir ? parsed.configDir : configDir;

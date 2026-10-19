@@ -3,8 +3,8 @@
 [![npm version](https://img.shields.io/npm/v/opencode-smart-questions?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
 [![npm downloads](https://img.shields.io/npm/dm/opencode-smart-questions?color=blue&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
 [![OpenCode: v1 & v2](https://img.shields.io/badge/OpenCode-v1%20%7C%20v2%20Dual--Mode-10b981?logo=terminal&logoColor=white)](https://opencode.ai)
-[![Live Acceptance: V1 & V2 Passed](https://img.shields.io/badge/Live%20Acceptance-V1%20%26%20V2%20Passed-10b981?logo=checkmarx&logoColor=white)](docs/acceptance-v1.md)
-[![Tests: 113/113 Passing](https://img.shields.io/badge/Tests-113%2F113%20Passing-339933?logo=githubactions&logoColor=white)](docs/verification.md)
+[![Historical V1/V2 host baseline](https://img.shields.io/badge/Host%20baseline-historical-10b981?logo=checkmarx&logoColor=white)](docs/acceptance-v1.md)
+[![Tests: 169/169 Passing](https://img.shields.io/badge/Tests-169%2F169%20Passing-339933?logo=githubactions&logoColor=white)](docs/verification.md)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.0.0-339933?logo=nodedotjs&logoColor=white)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -21,17 +21,19 @@ A high-performance, deterministic OpenCode plugin that automatically answers age
 
 ![Automated and host acceptance results](docs/assets/verification-overview.svg)
 
-> The graphic displays the current **v0.8.1 automated verification** along with real host acceptance on **OpenCode V1 (`1.18.34`)** and **OpenCode V2 (`2.0.24`)** executed with the mandatory test model `opencode-go/mimo-v2.6-flash`.
+> The graphic separates **v0.8.2 automated verification** from the historical OpenCode V1/V2 acceptance baseline. Live-host and interactive TUI acceptance have not been rerun for v0.8.2.
 
-Smart Questions **v0.8.1** is validated as follows:
+Smart Questions **v0.8.2** was checked on **20 October 2026**, using Node **24.22.0**:
 
-- **Current Automated Verification:** **152 / 152** unit, fallback, visibility, and regression tests passing.
-- **Sandbox Scenarios:** **8 / 8** isolated smoke and comprehensive test suites passing.
+- **Current Automated Verification:** **169 / 169** unit, fallback, visibility, subagent, and regression tests passing.
+- **Sandbox Scenarios:** **10 / 10** comprehensive scenarios and the separate smoke test pass.
 - **Static Analysis:** Standard and strict TypeScript gates pass; Oxlint reports **0 warnings / 0 errors**.
-- **Dependency Security:** **0 vulnerabilities** across production and development dependency audits.
-- **Real Host Acceptance (V1 & V2):** Both OpenCode V1 (`1.18.34`) and OpenCode V2 (`2.0.24`) verified with real LLM agent sessions (`opencode-go/mimo-v2.6-flash`).
+- **Dependency Audits:** Not rerun for this patch; no dependency versions changed.
+- **Historical Real Host Acceptance (V1 & V2):** Earlier recorded runs used OpenCode V1 (`1.18.34`) and V2 (`2.0.24`) with `opencode-go/mimo-v2.6-flash`. Their reports retain the original tested versions and results.
 
 Read the detailed [V1 Acceptance Report](docs/acceptance-v1.md), [V2 Acceptance Report](docs/acceptance-v2.md), and [Technical Verification](docs/verification.md) for full reproduction steps and test harnesses.
+
+See the [0.8.2 release notes](CHANGELOG.md) for fallback, cancellation, duplicate-event, and form-mapping fixes.
 
 ---
 
@@ -40,13 +42,13 @@ Read the detailed [V1 Acceptance Report](docs/acceptance-v1.md), [V2 Acceptance 
 - **100% Standalone Operation:** Operates independently without requiring any other plugins, external services, or background daemons.
 - **Dual-Mode Host Support:** Seamlessly supports both **OpenCode v1** (`@opencode-ai/plugin`) and **OpenCode v2** (`@opencode/plugin`) with decoupled runtime adapters.
 - **Flexible Recommendation Matching:** Recognizes prefix (`(Recommended)`, `(Önerilen)`), suffix (`[SQ:recommended]`), description text, case-insensitive variations, and Turkish tokens across single-choice and multi-select prompts.
-- **Multi-Step & Multi-Field Fallback (Unattended Safety):** In multi-step questions (Step 1, Step 2, Step 3) or multi-field forms, steps with explicit recommendations are honored, and steps without markers fall back to the logical first option. Ensures sessions never stall or deadlock when unattended for hours.
+- **Multi-Step & Multi-Field Fallback:** With an explicit fallback policy, recommended steps retain their selections and unresolved steps use the first option. The default policy requests bounded agent remediation instead.
 - **Configurable Fallback & Policies:** Supports `unclassifiedQuestionPolicy: 'fallback-first' | 'remediate-then-fallback' | 'remediate' | 'ignore'`, `fallbackToFirstOption: true`, and `fallbackOnManual: true` to provide complete autonomy without human intervention when needed.
 - **Comprehensive Overlay State Visibility:** Renders dedicated visual states across all handled selectable questions: **AUTO** (cyan border, green checklist, countdown timer), **MANUAL** (yellow border, manual decision required), **UNCLASSIFIED** (cyan border, agent remediation in progress), and **ERROR** (red border).
 - **Fingerprint-Scoped Loop Protection:** Unclassified question loop budgets are strictly scoped to identical failure chains and question fingerprints. Chains cleanly reset upon successful AUTO selection, explicit MANUAL classification, question reply/settlement, or new user messages.
 - **Transport Failure Resilience:** Failed synthetic prompt remediation preserves retry capability without exhausting duplicate or budget state.
 - **Instant User Intervention:** Cancels countdown immediately upon user typing, keyboard entry, draft file locking, or manual form selection.
-- **Subagent & Child Scope Isolation:** Operates strictly in the interactive root session; background child sessions and subagents are ignored without interference.
+- **Subagent & Child Scope:** Root sessions are eligible by default. Set `includeSubagents: true` to include host-confirmed child sessions across V1/V2; unknown session topology remains ineligible.
 - **Zero Runtime Dependencies:** Pure TypeScript compiled to `dist/` with no heavy third-party runtime dependencies.
 - **Decoupled Guardian Protocol:** Optional, zero-dependency handoff coordination when paired with [OpenCode Guardian](https://github.com/huseyincig/opencode-guardian).
 
@@ -54,7 +56,7 @@ Read the detailed [V1 Acceptance Report](docs/acceptance-v1.md), [V2 Acceptance 
 
 ## 📦 Installation
 
-The current version is **0.8.1**.
+The current version is **0.8.2**.
 
 ### 🟢 OpenCode V1 (1.x)
 
@@ -109,7 +111,7 @@ Use the `file:///` URL in `opencode.json`:
 
 1. The agent marks each recommended option by appending `[SQ:recommended]` to its label.
 2. The V1 backend intercepts `question.asked`; the V2 TUI intercepts `form.created`. Both execute the shared recommendation detector.
-3. Only questions with unambiguous recommendations are eligible. Single-select questions must contain exactly one recommended option.
+3. With the default `unclassifiedQuestionPolicy: "remediate"`, unclassified questions request bounded agent remediation. Explicit fallback policies can select the first option for unresolved steps while preserving recommendations in the other steps. Ambiguous V2 label-to-value mappings never auto-submit.
 4. A countdown timer begins (`30000 ms` default). Any keyboard typing or manual selection cancels the pending countdown immediately.
 5. If the request remains eligible upon expiry, V1 issues `client.question.reply`; V2 validates the pending form and submits `session.form.reply`.
 
@@ -124,12 +126,12 @@ The decision flow below illustrates Smart Questions' native, standalone operatio
 
 ```mermaid
 flowchart TD
-    Event["Question or form event received from OpenCode"] --> Scope{"Root session?"}
-    Scope -->|Child or subagent session| Ignore["Bypass event; no auto-reply"]
-    Scope -->|Root session| Detect["Scan options for recommendation markers"]
+    Event["Question or form event received from OpenCode"] --> Scope{"Eligible session?"}
+    Scope -->|Unknown topology or excluded child| Ignore["Bypass event; no auto-reply"]
+    Scope -->|Root or opted-in child| Detect["Scan options for recommendation markers"]
 
     Detect --> DetectCheck{"Recommendation status?"}
-    DetectCheck -->|Zero recommendations| Fallback["Leave to user manual selection"]
+    DetectCheck -->|Zero recommendations| Fallback["Apply configured remediation or fallback policy"]
     DetectCheck -->|Multiple in single-select| Fallback
     DetectCheck -->|Single valid recommendation| DraftCheck{"User draft lock active?"}
 
@@ -153,9 +155,9 @@ Smart Questions is **100% standalone and has no dependencies on Guardian**.
 
 However, when used together in the same OpenCode environment, they optionally coordinate through a decoupled, zero-dependency handoff protocol (`[OPENCODE_HANDOFF:v1]`):
 
-- **Destructive Action Safety:** If Guardian classifies an action as destructive or high-risk, it marks `auto_select=forbidden`. Smart Questions immediately suppresses the countdown timer and locks the choice to manual user approval.
+- **Destructive Action Safety:** With the default `fallbackOnManual: false`, Guardian's `auto_select=forbidden` suppresses the countdown and requires manual input. Enabling `fallbackOnManual` opts out of that manual classification guard; it does not grant execution permission.
 - **Safe Clarifications:** For routine choices, Guardian sets `auto_select=allowed`, allowing Smart Questions to execute its standard countdown.
-- **Anti-Spoofing & Replay Protection:** Handshakes without valid provenance are rejected; handoffs expire after 120s TTL and are tombstoned once consumed.
+- **Anti-Spoofing & Replay Protection:** Handshakes without valid provenance are rejected; handoffs expire after 120s TTL and consumed IDs are retained in bounded replay-protection memory.
 
 📖 For architecture diagrams, sequence flows, and contract details, see the [Guardian + Smart Questions Coordination Guide](docs/guardian-integration.md).
 
@@ -169,6 +171,9 @@ Settings are resolved hierarchically from `<project>/.opencode/smart-question.js
 {
   "enabled": true,
   "timeoutMs": 30000,
+  "includeSubagents": false,
+  "unclassifiedQuestionPolicy": "remediate",
+  "fallbackOnManual": false,
   "recommendedMarkers": [
     "[SQ:recommended]",
     "(Recommended)",
@@ -192,8 +197,13 @@ Settings are resolved hierarchically from `<project>/.opencode/smart-question.js
 | :--- | :---: | :--- |
 | `enabled` | `true` | Enables or disables the plugin. |
 | `timeoutMs` | `30000` | Countdown duration in milliseconds before auto-selecting. |
+| `includeSubagents` | `false` | Opts host-confirmed child sessions into guidance, countdown and reply handling. Unknown topology is excluded. |
+| `unclassifiedQuestionPolicy` | `"remediate"` | `remediate`, `ignore`, `fallback-first`, or `remediate-then-fallback`. Budget exhaustion with fallback preserves existing recommendations. |
+| `maxUnclassifiedRemediations` | `3` | Maximum protocol-remediation attempts in the same question-fingerprint chain. |
+| `fallbackToFirstOption` | `false` | Enables immediate first-option fallback for unresolved steps. |
+| `fallbackOnManual` | `false` | Allows manual classifications, including Guardian's forbidden handoff, to proceed through normal recommendation/fallback detection. |
 | `recommendedMarkers` | `["[SQ:recommended]", ...]` | Accepted suffix markers indicating an agent recommendation. |
-| `requireExactlyOneRecommendation` | `true` | Enforces unambiguous recommendation matching for single-choice questions. |
+| `requireExactlyOneRecommendation` | `true` | Legacy compatibility setting; setting it to `false` alone does not relax single-choice ambiguity checks. Explicit fallback policies have separate behavior. |
 | `uiText` | English labels | Localized TUI text strings for labels and warning notices. |
 | `debugLog` | `""` | File path for append-only diagnostic logging (`0600` permissions). |
 

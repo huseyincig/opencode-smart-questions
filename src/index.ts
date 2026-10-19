@@ -7,7 +7,7 @@ import {
 } from './config.js';
 import { buildRecommendationGuidance, SQ_GUIDANCE_SENTINEL } from './guidance.js';
 import type { PluginInput } from './types.js';
-import { isRootSessionInfo } from './session-scope.js';
+import { isEligibleSessionInfo } from './session-scope.js';
 
 export * from './types.js';
 export {
@@ -120,8 +120,6 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
       } catch {
         return;
       }
-      if (!isRootSessionInfo(sessionInfo)) return;
-
       const sessionDirectory =
         sessionInfo &&
         typeof sessionInfo === 'object' &&
@@ -135,6 +133,7 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
 
       const config = resolveSmartQuestionConfig(sessionDirectory, pluginOptions);
       if (!config?.enabled) return;
+      if (!isEligibleSessionInfo(sessionInfo, config.includeSubagents === true)) return;
       const guidance = buildRecommendationGuidance(config);
 
       const alreadyInjected = event.system.some(

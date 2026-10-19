@@ -3131,7 +3131,7 @@ test('V1 TUI rolls back raw key handlers when setup fails partway', async () => 
         slots: { register() { return 'slot'; } },
         keymap: { intercept() { return () => {}; } },
         lifecycle: { onDispose() { return () => {}; } },
-      }),
+      }, { configDir: root }),
       /synthetic paste registration failure/
     );
     assert.equal(inputs.size, 0, 'failed setup must not leave raw key handlers registered');

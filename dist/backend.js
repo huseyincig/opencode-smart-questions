@@ -32,26 +32,6 @@ function hasInternalSyntheticPart(parts) {
             metadata?.['opencode-smart-questions'] === true);
     });
 }
-function fallbackAnswersFromQuestions(questions) {
-    if (!Array.isArray(questions) || questions.length === 0)
-        return null;
-    const answers = [];
-    for (const raw of questions) {
-        if (!raw || typeof raw !== 'object' || Array.isArray(raw))
-            return null;
-        const options = raw.options;
-        if (!Array.isArray(options) || options.length === 0)
-            return null;
-        const first = options[0];
-        if (!first || typeof first !== 'object' || Array.isArray(first))
-            return null;
-        const label = first.label;
-        if (typeof label !== 'string' || label.length === 0)
-            return null;
-        answers.push([label]);
-    }
-    return answers;
-}
 export function buildUnclassifiedRemediationPrompt(primaryMarker, manualMarker = '[SQ:manual]') {
     // If invoked directly by OpenCode's plugin engine as a plugin factory, return an empty hooks object
     if (primaryMarker &&
@@ -175,6 +155,8 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
     const remediatedRequests = new Map();
     const sessionChains = new Map();
     const sessionScope = new Map();
+    const inFlightRequests = new Map();
+    let disposed = false;
     const debugLogPath = typeof config.debugLog === 'string' && config.debugLog ? config.debugLog : null;
     const dbg = (msg) => {
         if (!debugLogPath)
@@ -215,6 +197,10 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
         }
     };
     const clearSessionRequestState = (sessionID) => {
+        for (const [requestID, operation] of inFlightRequests) {
+            if (operation.sessionID === sessionID)
+                inFlightRequests.delete(requestID);
+        }
         for (const [requestID, pending] of pendingRequests) {
             if (pending.sessionID !== sessionID)
                 continue;
@@ -233,25 +219,29 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
     dbg(`hooks registered directory=${directory ? 'set' : 'none'} server=${server.origin} ` +
         `scheme=${server.protocol} timeoutMs=${config.timeoutMs} clientKeys=[${clientKeys}]`);
     cleanupStaleDrafts(effectiveConfigDir, config.timeoutMs, dbg);
-    const isRootSession = async (sessionID) => {
+    const isEligibleSession = async (sessionID) => {
         if (!sessionID)
             return false;
-        if (sessionScope.has(sessionID))
-            return sessionScope.get(sessionID) === true;
+        if (sessionScope.has(sessionID)) {
+            const isRoot = sessionScope.get(sessionID) === true;
+            return isRoot || config.includeSubagents === true;
+        }
         const scope = await resolveV1SessionScope(client, sessionID, directory);
+        if (disposed)
+            return false;
         if (scope === 'root') {
             sessionScope.set(sessionID, true);
             return true;
         }
         if (scope === 'child') {
             sessionScope.set(sessionID, false);
-            return false;
+            return config.includeSubagents === true;
         }
         dbg(`skip session=${sessionID} reason=session-scope-unknown`);
         return false;
     };
     const eventHook = async ({ event }) => {
-        if (!event || typeof event.type !== 'string')
+        if (disposed || !event || typeof event.type !== 'string')
             return;
         const payload = event.data ??
             event.properties?.data ??
@@ -260,7 +250,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
             null;
         if (event.type === 'message.created' || event.type === 'message.updated') {
             const sessionID = String(payload?.sessionID ?? event?.sessionID ?? '');
-            if (sessionID && (await isRootSession(sessionID))) {
+            if (sessionID && (await isEligibleSession(sessionID))) {
                 const handoff = extractTrustedGuardianHandoff(payload);
                 if (handoff && typeof handoff === 'object' && 'version' in handoff) {
                     setActiveHandoff(sessionID, handoff);
@@ -299,236 +289,256 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                 dbg('question.asked: no request id');
                 return;
             }
-            if (!(await isRootSession(sessionID))) {
-                dbg(`skip request=${requestID} reason=non-root-session`);
+            // A duplicate delivery must not replace the owner of an in-flight
+            // remediation, which still needs to roll back a rejected transport.
+            if (inFlightRequests.has(requestID))
                 return;
-            }
-            let handoff = getActiveHandoff(sessionID);
-            if (!handoff && client?.session && typeof client.session.messages === 'function') {
-                try {
-                    const res = await client.session.messages({ path: { id: sessionID } });
-                    const msgs = res?.data ?? res;
-                    if (Array.isArray(msgs)) {
-                        const extracted = extractCurrentTurnGuardianHandoff(msgs);
-                        if (extracted && typeof extracted === 'object' && 'version' in extracted) {
-                            if (setActiveHandoff(sessionID, extracted) === true) {
-                                handoff = extracted;
+            const operation = { sessionID };
+            inFlightRequests.set(requestID, operation);
+            const isCurrent = () => !disposed && inFlightRequests.get(requestID) === operation;
+            try {
+                if (!(await isEligibleSession(sessionID))) {
+                    dbg(`skip request=${requestID} reason=non-eligible-session`);
+                    return;
+                }
+                if (!isCurrent())
+                    return;
+                let handoff = getActiveHandoff(sessionID);
+                if (!handoff && client?.session && typeof client.session.messages === 'function') {
+                    try {
+                        const res = await client.session.messages({ path: { id: sessionID } });
+                        if (!isCurrent())
+                            return;
+                        const msgs = res?.data ?? res;
+                        if (Array.isArray(msgs)) {
+                            const extracted = extractCurrentTurnGuardianHandoff(msgs);
+                            if (extracted && typeof extracted === 'object' && 'version' in extracted) {
+                                if (setActiveHandoff(sessionID, extracted) === true) {
+                                    handoff = extracted;
+                                }
                             }
                         }
                     }
+                    catch {
+                        // Best effort message lookup
+                    }
                 }
-                catch {
-                    // Best effort message lookup
-                }
-            }
-            const existing = pendingRequests.get(requestID);
-            if (existing) {
-                clearTimeout(existing.timer);
-                existing.status = 'cancelled';
-                pendingRequests.delete(requestID);
-            }
-            const fallbackActive = config.unclassifiedQuestionPolicy === 'fallback-first' ||
-                config.fallbackToFirstOption === true;
-            const classification = classifyQuestions(data.questions, config.recommendedMarkers, config.manualMarkers, handoff, {
-                requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
-                allowFallback: fallbackActive,
-                allowFallbackOnManual: config.fallbackOnManual === true,
-            });
-            if (classification.status === 'manual') {
-                sessionChains.delete(sessionID);
-                if (config.fallbackOnManual === true) {
-                    dbg(`fallback on manual request=${requestID}`);
-                }
-                else {
-                    dbg(`skip request=${requestID} reason=manual-classification matched=${classification.matchedMarker ?? 'none'}`);
+                if (!isCurrent())
                     return;
+                const existing = pendingRequests.get(requestID);
+                if (existing) {
+                    clearTimeout(existing.timer);
+                    existing.status = 'cancelled';
+                    pendingRequests.delete(requestID);
                 }
-            }
-            if (classification.status === 'unclassified') {
-                if (config.unclassifiedQuestionPolicy === 'ignore') {
-                    dbg(`unclassified request=${requestID} ignored per unclassifiedQuestionPolicy`);
-                    return;
-                }
-                dbg(`unclassified request=${requestID} reason=${classification.reason}`);
-                if (remediatedRequests.has(requestID)) {
-                    dbg(`suppress duplicate remediation request=${requestID}`);
-                    return;
-                }
-                const fingerprint = computeQuestionFingerprint(data.questions);
-                const maxRemediations = typeof config.maxUnclassifiedRemediations === 'number'
-                    ? config.maxUnclassifiedRemediations
-                    : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
-                const existingChain = sessionChains.get(sessionID);
-                const isSameChain = existingChain !== undefined && existingChain.fingerprint === fingerprint;
-                const currentCount = isSameChain ? existingChain.consecutiveFailures : 0;
-                if (currentCount >= maxRemediations) {
-                    dbg(`unclassified remediation budget exhausted session=${sessionID} fingerprint=${fingerprint} count=${currentCount}/${maxRemediations}`);
-                    if (config.unclassifiedQuestionPolicy === 'remediate-then-fallback') {
-                        dbg(`remediation budget exhausted, activating fallback request=${requestID}`);
-                        // Fall through to auto-reply with first options
+                const fallbackActive = config.unclassifiedQuestionPolicy === 'fallback-first' ||
+                    config.fallbackToFirstOption === true;
+                let classification = classifyQuestions(data.questions, config.recommendedMarkers, config.manualMarkers, handoff, {
+                    requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
+                    allowFallback: fallbackActive,
+                    allowFallbackOnManual: config.fallbackOnManual === true,
+                });
+                if (classification.status === 'manual') {
+                    sessionChains.delete(sessionID);
+                    if (config.fallbackOnManual === true) {
+                        dbg(`fallback on manual request=${requestID}`);
                     }
                     else {
+                        dbg(`skip request=${requestID} reason=manual-classification matched=${classification.matchedMarker ?? 'none'}`);
                         return;
                     }
                 }
-                else {
-                    remediatedRequests.set(requestID, sessionID);
-                    sessionChains.set(sessionID, {
-                        fingerprint,
-                        consecutiveFailures: currentCount + 1,
-                    });
-                    const promptText = buildUnclassifiedRemediationPrompt(config.recommendedMarker, config.manualMarker);
-                    const sent = await sendSyntheticRemediation(client, sessionID, directory, promptText, dbg);
-                    if (!sent) {
-                        remediatedRequests.delete(requestID);
-                        if (currentCount === 0) {
-                            sessionChains.delete(sessionID);
+                if (classification.status === 'unclassified') {
+                    if (config.unclassifiedQuestionPolicy === 'ignore') {
+                        dbg(`unclassified request=${requestID} ignored per unclassifiedQuestionPolicy`);
+                        return;
+                    }
+                    dbg(`unclassified request=${requestID} reason=${classification.reason}`);
+                    if (remediatedRequests.has(requestID)) {
+                        dbg(`suppress duplicate remediation request=${requestID}`);
+                        return;
+                    }
+                    const fingerprint = computeQuestionFingerprint(data.questions);
+                    const maxRemediations = typeof config.maxUnclassifiedRemediations === 'number'
+                        ? config.maxUnclassifiedRemediations
+                        : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
+                    const existingChain = sessionChains.get(sessionID);
+                    const isSameChain = existingChain !== undefined && existingChain.fingerprint === fingerprint;
+                    const currentCount = isSameChain ? existingChain.consecutiveFailures : 0;
+                    if (currentCount >= maxRemediations) {
+                        dbg(`unclassified remediation budget exhausted session=${sessionID} fingerprint=${fingerprint} count=${currentCount}/${maxRemediations}`);
+                        if (config.unclassifiedQuestionPolicy === 'remediate-then-fallback') {
+                            dbg(`remediation budget exhausted, activating fallback request=${requestID}`);
+                            classification = classifyQuestions(data.questions, config.recommendedMarkers, config.manualMarkers, handoff, { allowFallback: true, allowFallbackOnManual: config.fallbackOnManual === true });
                         }
                         else {
-                            sessionChains.set(sessionID, {
-                                fingerprint,
-                                consecutiveFailures: currentCount,
-                            });
+                            return;
                         }
-                        dbg(`remediation not sent request=${requestID} session=${sessionID}; retry remains allowed`);
+                    }
+                    else {
+                        remediatedRequests.set(requestID, sessionID);
+                        sessionChains.set(sessionID, {
+                            fingerprint,
+                            consecutiveFailures: currentCount + 1,
+                        });
+                        const promptText = buildUnclassifiedRemediationPrompt(config.recommendedMarker, config.manualMarker);
+                        const sent = await sendSyntheticRemediation(client, sessionID, directory, promptText, dbg);
+                        if (!isCurrent())
+                            return;
+                        if (!sent) {
+                            remediatedRequests.delete(requestID);
+                            if (currentCount === 0) {
+                                sessionChains.delete(sessionID);
+                            }
+                            else {
+                                sessionChains.set(sessionID, {
+                                    fingerprint,
+                                    consecutiveFailures: currentCount,
+                                });
+                            }
+                            dbg(`remediation not sent request=${requestID} session=${sessionID}; retry remains allowed`);
+                            return;
+                        }
+                        dbg(`remediation sent request=${requestID} session=${sessionID} fingerprint=${fingerprint} count=${currentCount + 1}/${maxRemediations}`);
                         return;
                     }
-                    dbg(`remediation sent request=${requestID} session=${sessionID} fingerprint=${fingerprint} count=${currentCount + 1}/${maxRemediations}`);
+                }
+                if (classification.status !== 'auto')
+                    return;
+                const effectiveAnswers = classification.answers;
+                if (effectiveAnswers.some((answer) => answer.length === 0)) {
+                    dbg(`skip request=${requestID} reason=invalid-fallback-question-shape`);
                     return;
                 }
-            }
-            // Build answers if unclassified or manual fell through via fallback
-            const effectiveAnswers = classification.status === 'auto'
-                ? classification.answers
-                : fallbackAnswersFromQuestions(data.questions);
-            if (!effectiveAnswers || effectiveAnswers.some((answer) => answer.length === 0)) {
-                dbg(`skip request=${requestID} reason=invalid-fallback-question-shape`);
-                return;
-            }
-            sessionChains.delete(sessionID);
-            if (!canUseDraftCoordination(effectiveConfigDir, dbg)) {
-                dbg(`skip request=${requestID} reason=draft-coordination-unavailable`);
-                return;
-            }
-            const selectionCount = effectiveAnswers.reduce((sum, answer) => sum + answer.length, 0);
-            dbg(`schedule request=${requestID} in ${config.timeoutMs}ms questions=${effectiveAnswers.length} selections=${selectionCount}`);
-            const pending = {
-                requestID,
-                sessionID,
-                timer: undefined,
-                answers: effectiveAnswers,
-                status: 'pending',
-            };
-            pending.timer = setTimeout(async () => {
-                if (pendingRequests.get(requestID) !== pending || pending.status !== 'pending') {
+                sessionChains.delete(sessionID);
+                if (!canUseDraftCoordination(effectiveConfigDir, dbg)) {
+                    dbg(`skip request=${requestID} reason=draft-coordination-unavailable`);
                     return;
                 }
-                pending.status = 'firing';
-                const lockPath = resolveLockPath(effectiveConfigDir, requestID);
-                let userComposing = false;
-                let lockMissing = false;
-                try {
-                    fs.statSync(lockPath);
-                    userComposing = true;
-                }
-                catch (err) {
-                    const errCode = err?.code;
-                    if (errCode === 'ENOENT') {
-                        lockMissing = true;
+                const selectionCount = effectiveAnswers.reduce((sum, answer) => sum + answer.length, 0);
+                dbg(`schedule request=${requestID} in ${config.timeoutMs}ms questions=${effectiveAnswers.length} selections=${selectionCount}`);
+                const pending = {
+                    requestID,
+                    sessionID,
+                    timer: undefined,
+                    answers: effectiveAnswers,
+                    status: 'pending',
+                };
+                pending.timer = setTimeout(async () => {
+                    if (pendingRequests.get(requestID) !== pending || pending.status !== 'pending') {
+                        return;
                     }
-                    else {
-                        dbg(`lockfile check error request=${requestID} code=${diagnosticErrorCode(err)}`);
+                    pending.status = 'firing';
+                    const lockPath = resolveLockPath(effectiveConfigDir, requestID);
+                    let userComposing = false;
+                    let lockMissing = false;
+                    try {
+                        fs.statSync(lockPath);
                         userComposing = true;
                     }
-                }
-                if (userComposing) {
-                    dbg(`skip request=${requestID} reason=user composing`);
-                    pending.status = 'cancelled';
-                    if (pendingRequests.get(requestID) === pending)
-                        pendingRequests.delete(requestID);
-                    deleteLockfile(lockPath, dbg);
-                    return;
-                }
-                if (lockMissing && !canUseDraftCoordination(effectiveConfigDir, dbg)) {
-                    dbg(`skip request=${requestID} reason=draft-coordination-unavailable`);
-                    pending.status = 'cancelled';
-                    if (pendingRequests.get(requestID) === pending)
-                        pendingRequests.delete(requestID);
-                    return;
-                }
-                if (pendingRequests.get(requestID) !== pending || pending.status !== 'firing') {
-                    return;
-                }
-                try {
-                    dbg(`reply attempt request=${requestID}`);
-                    const internalClient = client?._client;
-                    if (client?.question && typeof client.question.reply === 'function') {
-                        const res = await client.question.reply({ requestID, answers: pending.answers });
-                        if (res && typeof res === 'object') {
-                            const outcome = res;
-                            if (outcome.error) {
-                                throw createDiagnosticError('native-reply-error');
-                            }
-                            if (outcome.ok === false) {
-                                throw createDiagnosticError('native-reply-not-ok');
-                            }
+                    catch (err) {
+                        const errCode = err?.code;
+                        if (errCode === 'ENOENT') {
+                            lockMissing = true;
+                        }
+                        else {
+                            dbg(`lockfile check error request=${requestID} code=${diagnosticErrorCode(err)}`);
+                            userComposing = true;
                         }
                     }
-                    else if (internalClient && typeof internalClient.post === 'function') {
-                        const res = await internalClient.post({
-                            url: `/question/${encodeURIComponent(requestID)}/reply`,
-                            body: { answers: pending.answers },
-                        });
-                        if (res && typeof res === 'object') {
-                            if (res.error) {
-                                throw createDiagnosticError('internal-reply-error');
+                    if (userComposing) {
+                        dbg(`skip request=${requestID} reason=user composing`);
+                        pending.status = 'cancelled';
+                        if (pendingRequests.get(requestID) === pending)
+                            pendingRequests.delete(requestID);
+                        deleteLockfile(lockPath, dbg);
+                        return;
+                    }
+                    if (lockMissing && !canUseDraftCoordination(effectiveConfigDir, dbg)) {
+                        dbg(`skip request=${requestID} reason=draft-coordination-unavailable`);
+                        pending.status = 'cancelled';
+                        if (pendingRequests.get(requestID) === pending)
+                            pendingRequests.delete(requestID);
+                        return;
+                    }
+                    if (pendingRequests.get(requestID) !== pending || pending.status !== 'firing') {
+                        return;
+                    }
+                    try {
+                        dbg(`reply attempt request=${requestID}`);
+                        const internalClient = client?._client;
+                        if (client?.question && typeof client.question.reply === 'function') {
+                            const res = await client.question.reply({ requestID, answers: pending.answers });
+                            if (res && typeof res === 'object') {
+                                const outcome = res;
+                                if (outcome.error) {
+                                    throw createDiagnosticError('native-reply-error');
+                                }
+                                if (outcome.ok === false) {
+                                    throw createDiagnosticError('native-reply-not-ok');
+                                }
                             }
-                            if (res.ok === false) {
-                                throw createDiagnosticError('internal-reply-not-ok');
+                        }
+                        else if (internalClient && typeof internalClient.post === 'function') {
+                            const res = await internalClient.post({
+                                url: `/question/${encodeURIComponent(requestID)}/reply`,
+                                body: { answers: pending.answers },
+                            });
+                            if (res && typeof res === 'object') {
+                                if (res.error) {
+                                    throw createDiagnosticError('internal-reply-error');
+                                }
+                                if (res.ok === false) {
+                                    throw createDiagnosticError('internal-reply-not-ok');
+                                }
                             }
                         }
-                    }
-                    else if (serverUrl) {
-                        const url = new URL(String(serverUrl));
-                        if (url.protocol === 'ws:')
-                            url.protocol = 'http:';
-                        else if (url.protocol === 'wss:')
-                            url.protocol = 'https:';
-                        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-                            throw new Error(`unsupported server URL protocol: ${url.protocol}`);
+                        else if (serverUrl) {
+                            const url = new URL(String(serverUrl));
+                            if (url.protocol === 'ws:')
+                                url.protocol = 'http:';
+                            else if (url.protocol === 'wss:')
+                                url.protocol = 'https:';
+                            if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+                                throw new Error(`unsupported server URL protocol: ${url.protocol}`);
+                            }
+                            const endpoint = `${url.origin}/question/${encodeURIComponent(requestID)}/reply${url.search}`;
+                            const res = await fetch(endpoint, {
+                                method: 'POST',
+                                headers: { 'content-type': 'application/json' },
+                                body: JSON.stringify({ answers: pending.answers }),
+                            });
+                            if (!res.ok) {
+                                throw createDiagnosticError(`HTTP_${res.status}`);
+                            }
                         }
-                        const endpoint = `${url.origin}/question/${encodeURIComponent(requestID)}/reply${url.search}`;
-                        const res = await fetch(endpoint, {
-                            method: 'POST',
-                            headers: { 'content-type': 'application/json' },
-                            body: JSON.stringify({ answers: pending.answers }),
-                        });
-                        if (!res.ok) {
-                            throw createDiagnosticError(`HTTP_${res.status}`);
+                        else {
+                            throw createDiagnosticError('no-reply-transport');
+                        }
+                        pending.status = 'replied';
+                        consumeActiveHandoff(sessionID);
+                        sessionChains.delete(sessionID);
+                        dbg(`reply OK request=${requestID}`);
+                        deleteLockfile(lockPath, dbg);
+                    }
+                    catch (err) {
+                        const code = diagnosticErrorCode(err);
+                        dbg(`reply ERROR request=${requestID} code=${code}`);
+                        console.error(`[smart-question] Auto-selection failed for question ${requestID} (${code})`);
+                    }
+                    finally {
+                        if (pendingRequests.get(requestID) === pending) {
+                            pendingRequests.delete(requestID);
                         }
                     }
-                    else {
-                        throw createDiagnosticError('no-reply-transport');
-                    }
-                    pending.status = 'replied';
-                    consumeActiveHandoff(sessionID);
-                    sessionChains.delete(sessionID);
-                    dbg(`reply OK request=${requestID}`);
-                    deleteLockfile(lockPath, dbg);
-                }
-                catch (err) {
-                    const code = diagnosticErrorCode(err);
-                    dbg(`reply ERROR request=${requestID} code=${code}`);
-                    console.error(`[smart-question] Auto-selection failed for question ${requestID} (${code})`);
-                }
-                finally {
-                    if (pendingRequests.get(requestID) === pending) {
-                        pendingRequests.delete(requestID);
-                    }
-                }
-            }, config.timeoutMs);
-            pendingRequests.set(requestID, pending);
-            return;
+                }, config.timeoutMs);
+                pendingRequests.set(requestID, pending);
+                return;
+            }
+            finally {
+                if (inFlightRequests.get(requestID) === operation)
+                    inFlightRequests.delete(requestID);
+            }
         }
         if (event.type === 'question.replied' || event.type === 'question.rejected') {
             const data = payload;
@@ -543,6 +553,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
                 return;
             }
             const pending = pendingRequests.get(requestID);
+            inFlightRequests.delete(requestID);
             if (pending) {
                 clearTimeout(pending.timer);
                 pending.status = 'cancelled';
@@ -553,6 +564,8 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
         }
     };
     const disposeHook = async () => {
+        disposed = true;
+        inFlightRequests.clear();
         for (const pending of pendingRequests.values()) {
             clearTimeout(pending.timer);
             pending.status = 'cancelled';
@@ -570,7 +583,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
         if (!Array.isArray(output?.system))
             return;
         const sessionID = typeof hookInput?.sessionID === 'string' ? hookInput.sessionID : '';
-        if (!(await isRootSession(sessionID)))
+        if (!(await isEligibleSession(sessionID)))
             return;
         if (!output.system.some((part) => part.includes(SQ_GUIDANCE_SENTINEL))) {
             output.system.push(guidance.system);
@@ -578,7 +591,7 @@ export async function createSmartQuestionHooks(input, pluginOptions) {
     };
     const chatMessageHook = async (input, output) => {
         const sessionID = typeof input?.sessionID === 'string' ? input.sessionID : '';
-        if (!sessionID || !(await isRootSession(sessionID)))
+        if (!sessionID || !(await isEligibleSession(sessionID)))
             return;
         const handoff = extractTrustedGuardianHandoff(output);
         if (handoff && typeof handoff === 'object' && 'version' in handoff) {

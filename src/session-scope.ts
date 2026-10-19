@@ -36,6 +36,22 @@ export function isRootSessionInfo(value: unknown): boolean {
   return classifySessionScope(value) === 'root';
 }
 
+export function isEligibleSessionScope(
+  scope: SessionScope,
+  includeSubagents = false
+): boolean {
+  if (scope === 'root') return true;
+  if (includeSubagents && scope === 'child') return true;
+  return false;
+}
+
+export function isEligibleSessionInfo(
+  value: unknown,
+  includeSubagents = false
+): boolean {
+  return isEligibleSessionScope(classifySessionScope(value), includeSubagents);
+}
+
 export async function resolveV1SessionScope(
   client: unknown,
   sessionID: string,

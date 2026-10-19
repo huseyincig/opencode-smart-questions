@@ -89,7 +89,8 @@ var SMART_QUESTION_CONFIG_KEYS = /* @__PURE__ */ new Set([
   "requireExactlyOneRecommendation",
   "uiText",
   "debugLog",
-  "configDir"
+  "configDir",
+  "includeSubagents"
 ]);
 function hasSmartQuestionConfigOptions(options) {
   if (!options || typeof options !== "object" || Array.isArray(options)) return false;
@@ -170,7 +171,7 @@ function normalizeSmartQuestionConfig(raw, configDir) {
   }
   const parsed = raw ?? {};
   if (parsed.enabled === false) return null;
-  if (Object.keys(parsed).some((key) => !SMART_QUESTION_CONFIG_KEYS.has(key)) || parsed.enabled !== void 0 && parsed.enabled !== true || parsed.timeoutMs !== void 0 && (typeof parsed.timeoutMs !== "number" || !Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs < 0 || parsed.timeoutMs > MAX_TIMEOUT_MS) || parsed.requireExactlyOneRecommendation !== void 0 && typeof parsed.requireExactlyOneRecommendation !== "boolean" || parsed.recommendedMarkers !== void 0 && (!Array.isArray(parsed.recommendedMarkers) || parsed.recommendedMarkers.length === 0 || parsed.recommendedMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.recommendedMarker !== void 0 && (typeof parsed.recommendedMarker !== "string" || parsed.recommendedMarker.trim().length === 0) || parsed.debugLog !== void 0 && typeof parsed.debugLog !== "string" || parsed.configDir !== void 0 && (typeof parsed.configDir !== "string" || parsed.configDir.trim().length === 0) || parsed.manualMarkers !== void 0 && (!Array.isArray(parsed.manualMarkers) || parsed.manualMarkers.length === 0 || parsed.manualMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.manualMarker !== void 0 && (typeof parsed.manualMarker !== "string" || parsed.manualMarker.trim().length === 0) || parsed.maxUnclassifiedRemediations !== void 0 && (typeof parsed.maxUnclassifiedRemediations !== "number" || !Number.isFinite(parsed.maxUnclassifiedRemediations) || parsed.maxUnclassifiedRemediations < 0) || parsed.unclassifiedQuestionPolicy !== void 0 && parsed.unclassifiedQuestionPolicy !== "remediate" && parsed.unclassifiedQuestionPolicy !== "ignore" && parsed.unclassifiedQuestionPolicy !== "fallback-first" && parsed.unclassifiedQuestionPolicy !== "remediate-then-fallback" || parsed.fallbackToFirstOption !== void 0 && typeof parsed.fallbackToFirstOption !== "boolean" || parsed.fallbackOnManual !== void 0 && typeof parsed.fallbackOnManual !== "boolean" || parsed.uiText !== void 0 && (parsed.uiText === null || typeof parsed.uiText !== "object" || Array.isArray(parsed.uiText) || Object.values(parsed.uiText).some((value) => typeof value !== "string" || value.trim().length === 0))) {
+  if (Object.keys(parsed).some((key) => !SMART_QUESTION_CONFIG_KEYS.has(key)) || parsed.enabled !== void 0 && parsed.enabled !== true || parsed.timeoutMs !== void 0 && (typeof parsed.timeoutMs !== "number" || !Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs < 0 || parsed.timeoutMs > MAX_TIMEOUT_MS) || parsed.requireExactlyOneRecommendation !== void 0 && typeof parsed.requireExactlyOneRecommendation !== "boolean" || parsed.recommendedMarkers !== void 0 && (!Array.isArray(parsed.recommendedMarkers) || parsed.recommendedMarkers.length === 0 || parsed.recommendedMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.recommendedMarker !== void 0 && (typeof parsed.recommendedMarker !== "string" || parsed.recommendedMarker.trim().length === 0) || parsed.debugLog !== void 0 && typeof parsed.debugLog !== "string" || parsed.configDir !== void 0 && (typeof parsed.configDir !== "string" || parsed.configDir.trim().length === 0) || parsed.manualMarkers !== void 0 && (!Array.isArray(parsed.manualMarkers) || parsed.manualMarkers.length === 0 || parsed.manualMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.manualMarker !== void 0 && (typeof parsed.manualMarker !== "string" || parsed.manualMarker.trim().length === 0) || parsed.maxUnclassifiedRemediations !== void 0 && (typeof parsed.maxUnclassifiedRemediations !== "number" || !Number.isFinite(parsed.maxUnclassifiedRemediations) || parsed.maxUnclassifiedRemediations < 0) || parsed.unclassifiedQuestionPolicy !== void 0 && parsed.unclassifiedQuestionPolicy !== "remediate" && parsed.unclassifiedQuestionPolicy !== "ignore" && parsed.unclassifiedQuestionPolicy !== "fallback-first" && parsed.unclassifiedQuestionPolicy !== "remediate-then-fallback" || parsed.fallbackToFirstOption !== void 0 && typeof parsed.fallbackToFirstOption !== "boolean" || parsed.fallbackOnManual !== void 0 && typeof parsed.fallbackOnManual !== "boolean" || parsed.includeSubagents !== void 0 && typeof parsed.includeSubagents !== "boolean" || parsed.uiText !== void 0 && (parsed.uiText === null || typeof parsed.uiText !== "object" || Array.isArray(parsed.uiText) || Object.values(parsed.uiText).some((value) => typeof value !== "string" || value.trim().length === 0))) {
     return null;
   }
   const recommendedMarkers = normalizeConfigMarkers(
@@ -202,6 +203,9 @@ function normalizeSmartQuestionConfig(raw, configDir) {
   }
   if (typeof parsed.fallbackOnManual === "boolean") {
     normalized.fallbackOnManual = parsed.fallbackOnManual;
+  }
+  if (typeof parsed.includeSubagents === "boolean") {
+    normalized.includeSubagents = parsed.includeSubagents;
   }
   const resolvedConfigDir = typeof parsed.configDir === "string" && parsed.configDir ? parsed.configDir : configDir;
   if (resolvedConfigDir) normalized.configDir = resolvedConfigDir;
@@ -694,7 +698,7 @@ function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers, manua
     const selectedLabels = classification.answers[i] ?? [];
     const selectedValues = selectedLabels.map((label) => {
       const matchingOptions = field.options.filter((candidate) => candidate.label === label);
-      return matchingOptions.length === 1 || options?.allowFallback && matchingOptions.length > 1 ? matchingOptions[0]?.value : void 0;
+      return matchingOptions.length === 1 ? matchingOptions[0]?.value : void 0;
     });
     if (selectedValues.length !== selectedLabels.length || selectedValues.some((value) => typeof value !== "string")) {
       return {
@@ -769,8 +773,13 @@ function classifySessionScope(value) {
   }
   return "unknown";
 }
-function isRootSessionInfo(value) {
-  return classifySessionScope(value) === "root";
+function isEligibleSessionScope(scope, includeSubagents = false) {
+  if (scope === "root") return true;
+  if (includeSubagents && scope === "child") return true;
+  return false;
+}
+function isEligibleSessionInfo(value, includeSubagents = false) {
+  return isEligibleSessionScope(classifySessionScope(value), includeSubagents);
 }
 
 // src/handoff.ts
@@ -1495,7 +1504,7 @@ var tui = async (api, options) => {
     } catch {
       return;
     }
-    if (!isRootSessionInfo(sessionInfo)) return;
+    if (!isEligibleSessionInfo(sessionInfo, config.includeSubagents === true)) return;
     let handoff = getActiveHandoff(sessionID);
     if (!handoff) {
       try {
@@ -1512,13 +1521,24 @@ var tui = async (api, options) => {
       }
     }
     const fallbackActive = config.unclassifiedQuestionPolicy === "fallback-first" || config.fallbackToFirstOption === true;
-    const classification = classifyQuestions(questions, config.recommendedMarkers, config.manualMarkers, handoff, {
+    let classification = classifyQuestions(questions, config.recommendedMarkers, config.manualMarkers, handoff, {
       requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
       allowFallback: fallbackActive,
       allowFallbackOnManual: config.fallbackOnManual === true
     });
     const agent = resolveAgentName(api, sessionID, data);
     const lockPath = resolveLockPath(config.configDir, requestID);
+    if (classification.status === "unclassified" && config.unclassifiedQuestionPolicy === "remediate-then-fallback") {
+      const fingerprint = computeQuestionFingerprint(questions);
+      const chain = sessionChains.get(sessionID);
+      const count = chain?.fingerprint === fingerprint ? chain.consecutiveFailures : 0;
+      if (count >= (config.maxUnclassifiedRemediations ?? DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS)) {
+        classification = classifyQuestions(questions, config.recommendedMarkers, config.manualMarkers, handoff, {
+          allowFallback: true,
+          allowFallbackOnManual: config.fallbackOnManual === true
+        });
+      }
+    }
     if (classification.status === "manual") {
       sessionChains.delete(sessionID);
       clearActive(!activeQuestion()?.focusDisabled);
@@ -1857,15 +1877,16 @@ var setup = async (context) => {
     } catch {
       return;
     }
-    if (!isRootSessionInfo(sessionInfo)) return;
+    const sessionLocation = sessionInfo?.location;
+    const location = event?.location ?? sessionLocation ?? context.location;
+    const config = resolveV2TuiConfig(context, location?.directory);
+    if (!isEligibleSessionInfo(sessionInfo, config?.includeSubagents === true)) return;
+    if (pending.has(form.id)) return;
     for (const [id, existing] of pending.entries()) {
       if (existing.sessionID === form.sessionID) {
         clearPending(id);
       }
     }
-    const sessionLocation = sessionInfo?.location;
-    const location = event?.location ?? sessionLocation ?? context.location;
-    const config = resolveV2TuiConfig(context, location?.directory);
     if (!config?.enabled) return;
     const log = createDiagnosticLogger(config, "smart-question-v2-ui");
     let handoff = getActiveHandoff(form.sessionID);
@@ -2095,6 +2116,7 @@ var setup = async (context) => {
       }
       try {
         await context.data.session.form.sync(form.sessionID, item.location);
+        if (pending.get(form.id) !== item) return;
         if (disposed) {
           clearPending(form.id);
           return;
@@ -2115,7 +2137,7 @@ var setup = async (context) => {
           formID: form.id,
           answer: item.answer
         }, item.location);
-        if (disposed) return;
+        if (disposed || pending.get(form.id) !== item) return;
         item.status = "replied";
         consumeActiveHandoff(form.sessionID);
         try {

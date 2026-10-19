@@ -33,7 +33,7 @@ import {
 import { buildUnclassifiedRemediationPrompt } from './backend.js';
 import { DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS } from './config.js';
 import { diagnosticErrorCode } from './diagnostics.js';
-import { isRootSessionInfo } from './session-scope.js';
+import { isEligibleSessionInfo } from './session-scope.js';
 import {
   getActiveHandoff,
   setActiveHandoff,
@@ -492,7 +492,7 @@ export const tui: TuiPlugin = async (api, options) => {
     } catch {
       return;
     }
-    if (!isRootSessionInfo(sessionInfo)) return;
+    if (!isEligibleSessionInfo(sessionInfo, config.includeSubagents === true)) return;
 
     let handoff = getActiveHandoff(sessionID);
     if (!handoff) {
@@ -515,7 +515,7 @@ export const tui: TuiPlugin = async (api, options) => {
       config.unclassifiedQuestionPolicy === 'fallback-first' ||
       config.fallbackToFirstOption === true;
 
-    const classification = classifyQuestions(
+    let classification = classifyQuestions(
       questions,
       config.recommendedMarkers,
       config.manualMarkers,
@@ -529,6 +529,21 @@ export const tui: TuiPlugin = async (api, options) => {
 
     const agent = resolveAgentName(api, sessionID, data);
     const lockPath = resolveLockPath(config.configDir, requestID);
+
+    if (
+      classification.status === 'unclassified' &&
+      config.unclassifiedQuestionPolicy === 'remediate-then-fallback'
+    ) {
+      const fingerprint = computeQuestionFingerprint(questions);
+      const chain = sessionChains.get(sessionID);
+      const count = chain?.fingerprint === fingerprint ? chain.consecutiveFailures : 0;
+      if (count >= (config.maxUnclassifiedRemediations ?? DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS)) {
+        classification = classifyQuestions(
+          questions, config.recommendedMarkers, config.manualMarkers, handoff,
+          { allowFallback: true, allowFallbackOnManual: config.fallbackOnManual === true }
+        );
+      }
+    }
 
     if (classification.status === 'manual') {
       sessionChains.delete(sessionID);
@@ -914,7 +929,15 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     } catch {
       return;
     }
-    if (!isRootSessionInfo(sessionInfo)) return;
+
+    const sessionLocation = (sessionInfo as any)?.location;
+    const location = event?.location ?? sessionLocation ?? context.location;
+    const config = resolveV2TuiConfig(context, location?.directory);
+    if (!isEligibleSessionInfo(sessionInfo, config?.includeSubagents === true)) return;
+
+    // Re-delivery of the same form must preserve its reply owner and any
+    // user-interaction cancellation instead of starting a new countdown.
+    if (pending.has(form.id)) return;
 
     // A newer form supersedes any prior timer in the same session, even if
     // the new form is not eligible for automatic selection.
@@ -924,9 +947,6 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       }
     }
 
-    const sessionLocation = (sessionInfo as any)?.location;
-    const location = event?.location ?? sessionLocation ?? context.location;
-    const config = resolveV2TuiConfig(context, location?.directory);
     if (!config?.enabled) return;
     const log = createDiagnosticLogger(config, 'smart-question-v2-ui');
 
@@ -1179,6 +1199,9 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
       try {
         await context.data.session.form.sync(form.sessionID, item.location);
+        // A duplicate form event can install a new timer while sync is in flight.
+        // Only the timer that still owns this entry may clear it or submit it.
+        if (pending.get(form.id) !== item) return;
         if (disposed) {
           clearPending(form.id);
           return;
@@ -1212,7 +1235,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
           },
           item.location
         );
-        if (disposed) return;
+        if (disposed || pending.get(form.id) !== item) return;
         item.status = 'replied';
         consumeActiveHandoff(form.sessionID);
         try {

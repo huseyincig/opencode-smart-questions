@@ -1,7 +1,7 @@
 import { createSmartQuestionHooks } from './backend.js';
 import { hasSmartQuestionConfigOptions, resolveSmartQuestionConfig, } from './config.js';
 import { buildRecommendationGuidance, SQ_GUIDANCE_SENTINEL } from './guidance.js';
-import { isRootSessionInfo } from './session-scope.js';
+import { isEligibleSessionInfo } from './session-scope.js';
 export * from './types.js';
 export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_MANUAL_MARKERS, DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS, DEFAULT_CONFIG, } from './config.js';
 export * from './detector.js';
@@ -86,8 +86,6 @@ const setupV2 = async (context) => {
             catch {
                 return;
             }
-            if (!isRootSessionInfo(sessionInfo))
-                return;
             const sessionDirectory = sessionInfo &&
                 typeof sessionInfo === 'object' &&
                 'location' in sessionInfo &&
@@ -99,6 +97,8 @@ const setupV2 = async (context) => {
                 : context.location?.directory;
             const config = resolveSmartQuestionConfig(sessionDirectory, pluginOptions);
             if (!config?.enabled)
+                return;
+            if (!isEligibleSessionInfo(sessionInfo, config.includeSubagents === true))
                 return;
             const guidance = buildRecommendationGuidance(config);
             const alreadyInjected = event.system.some((part) => part.type === 'text' &&
