@@ -61,6 +61,10 @@ runtimeTransformed = runtimeTransformed.replace(
   /from\s+["']@opentui\/core["']/g,
   'from "opentui:runtime-module:%40opentui%2Fcore"'
 );
+runtimeTransformed = runtimeTransformed.replace(
+  /from\s+["']@opencode\/plugin\/tui["']/g,
+  'from "opentui:runtime-module:%40opencode%2Fplugin%2Ftui"'
+);
 
 const esbuildRuntimeRes = buildSync({
   stdin: {
@@ -73,7 +77,7 @@ const esbuildRuntimeRes = buildSync({
   format: "esm",
   platform: "node",
   target: "node20",
-  external: ["opentui:*", "solid-js", "@opentui/*", "jsdom", "@opencode-ai/*", "@opencode/*"],
+  external: ["opentui:*", "solid-js", "@opentui/*", "jsdom", "@opencode/*"],
   write: false,
 });
 
@@ -117,7 +121,7 @@ const esbuildStandaloneRes = buildSync({
   format: "esm",
   platform: "node",
   target: "node20",
-  external: ["solid-js", "@opentui/*", "jsdom", "@opencode-ai/*", "@opencode/*"],
+  external: ["solid-js", "@opentui/*", "jsdom", "@opencode/*"],
   write: false,
 });
 
@@ -148,7 +152,6 @@ const mod = hostRuntimeAvailable
   : await import("./ui.js");
 
 export default mod.default;
-export const tui = mod.tui;
 export const setup = mod.setup;
 export const SmartQuestionOverlay = mod.SmartQuestionOverlay;
 export const detectRecommendations = mod.detectRecommendations;

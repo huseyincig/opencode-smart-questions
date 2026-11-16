@@ -9,7 +9,6 @@ const esbuild = (await import('esbuild')).default;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 import {
-  SmartQuestion as SmartQuestionPlugin,
   detectRecommendations,
   loadConfig,
   resolveLockPath,
@@ -18,75 +17,6 @@ import {
 } from '../dist/index.js';
 import { detectV2FormRecommendations } from '../dist/form-adapter.js';
 
-const TEST_ROOT_SESSION_ID = 'ses-test-root';
-
-function withRootSessionClient(client = {}) {
-  const existingSession =
-    client && typeof client.session === 'object' && client.session
-      ? client.session
-      : {};
-  return {
-    ...client,
-    session: {
-      ...existingSession,
-      async get({ path }) {
-        if (typeof existingSession.get === 'function') {
-          return existingSession.get({ path });
-        }
-        return { data: { id: path?.id ?? TEST_ROOT_SESSION_ID } };
-      },
-    },
-  };
-}
-
-async function SmartQuestion(input, options) {
-  const hooks = await SmartQuestionPlugin(
-    {
-      ...input,
-      client: withRootSessionClient(input?.client ?? {}),
-    },
-    options
-  );
-
-  const event = hooks.event;
-  const systemTransform = hooks['experimental.chat.system.transform'];
-  return {
-    ...hooks,
-    ...(event
-      ? {
-          event: async (payload) => {
-            const source = payload?.event;
-            if (
-              source &&
-              source.type === 'question.asked' &&
-              source.data &&
-              !source.data.sessionID
-            ) {
-              source.data.sessionID = TEST_ROOT_SESSION_ID;
-            }
-            if (
-              source &&
-              source.type === 'question.asked' &&
-              source.properties &&
-              !source.properties.sessionID
-            ) {
-              source.properties.sessionID = TEST_ROOT_SESSION_ID;
-            }
-            return event(payload);
-          },
-        }
-      : {}),
-    ...(systemTransform
-      ? {
-          'experimental.chat.system.transform': (hookInput, output) =>
-            systemTransform(
-              { ...hookInput, sessionID: hookInput?.sessionID ?? TEST_ROOT_SESSION_ID },
-              output
-            ),
-        }
-      : {}),
-  };
-}
 
 test('detectRecommendations - valid case: exactly one recommended per question', () => {
   const questions = [
@@ -342,890 +272,6 @@ test('loadConfig - loads valid config file and sets defaults', () => {
   assert.equal(config.requireExactlyOneRecommendation, true);
 });
 
-test('SmartQuestion plugin - missing config or enabled: false returns empty hooks', async () => {
-  const hooks = await SmartQuestion(
-    { client: {} },
-    { config: { enabled: false, timeoutMs: 1000, recommendedMarker: '(Recommended)', requireExactlyOneRecommendation: true } }
-  );
-  assert.deepEqual(hooks, {});
-});
-
-test('SmartQuestion plugin - valid question auto-replies after timeout', async () => {
-  const replies = [];
-  const mockClient = {
-    question: {
-      reply: async (payload) => {
-        replies.push(payload);
-      },
-    },
-  };
-
-  const hooks = await SmartQuestion(
-    { client: mockClient },
-    {
-      config: {
-        enabled: true,
-        timeoutMs: 30,
-        recommendedMarker: '(Recommended)',
-        requireExactlyOneRecommendation: true,
-      },
-    }
-  );
-
-  assert.ok(typeof hooks.event === 'function');
-
-  await hooks.event({
-    event: {
-      type: 'question.asked',
-      data: {
-        id: 'req-auto-1',
-        questions: [
-          {
-            question: 'Apply migration?',
-            header: 'Migration',
-            options: [
-              { label: 'Apply (Recommended)', description: 'Runs migration' },
-              { label: 'Cancel', description: 'Aborts' },
-            ],
-          },
-        ],
-      },
-    },
-  });
-
-  // Wait for timer to fire
-  await new Promise((resolve) => setTimeout(resolve, 60));
-
-  assert.equal(replies.length, 1);
-  assert.equal(replies[0].requestID, 'req-auto-1');
-  assert.deepEqual(replies[0].answers, [['Apply (Recommended)']]);
-
-  await hooks.dispose();
-});
-
-test('SmartQuestion plugin - T6 race: simulate timer firing AFTER reply-cancel path ran -> assert reply called exactly once total', async () => {
-  const totalReplies = [];
-  const mockClient = {
-    question: {
-      reply: async (payload) => {
-        totalReplies.push(payload);
-      },
-    },
-  };
-
-  const hooks = await SmartQuestion(
-    { client: mockClient },
-    {
-      config: {
-        enabled: true,
-        timeoutMs: 40,
-        recommendedMarker: '(Recommended)',
-        requireExactlyOneRecommendation: true,
-      },
-    }
-  );
-
-  await hooks.event({
-    event: {
-      type: 'question.asked',
-      data: {
-        id: 'req-race-boundary',
-        questions: [
-          {
-            question: 'Proceed?',
-            header: 'Confirm',
-            options: [
-              { label: 'Yes (Recommended)', description: '' },
-              { label: 'No', description: '' },
-            ],
-          },
-        ],
-      },
-    },
-  });
-
-  // User replies before or right at boundary: simulate user answering via client
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
-  // User sends their answer
-  await mockClient.question.reply({
-    requestID: 'req-race-boundary',
-    answers: [['No']],
-  });
-
-  // OpenCode fires question.replied event
-  await hooks.event({
-    event: {
-      type: 'question.replied',
-      data: {
-        requestID: 'req-race-boundary',
-        answers: [['No']],
-      },
-    },
-  });
-
-  // Now wait for timer expiration window to pass
-  await new Promise((resolve) => setTimeout(resolve, 60));
-
-  // Assert that reply function was called EXACTLY ONCE total (user's answer), never a 2nd reply
-  assert.equal(totalReplies.length, 1);
-  assert.deepEqual(totalReplies[0], {
-    requestID: 'req-race-boundary',
-    answers: [['No']],
-  });
-
-  await hooks.dispose();
-});
-
-test('SmartQuestion plugin - question.rejected also cancels auto-reply timer', async () => {
-  const pluginReplies = [];
-  const mockClient = {
-    question: {
-      reply: async (payload) => {
-        pluginReplies.push(payload);
-      },
-    },
-  };
-
-  const hooks = await SmartQuestion(
-    { client: mockClient },
-    {
-      config: {
-        enabled: true,
-        timeoutMs: 50,
-        recommendedMarker: '(Recommended)',
-        requireExactlyOneRecommendation: true,
-      },
-    }
-  );
-
-  await hooks.event({
-    event: {
-      type: 'question.asked',
-      data: {
-        id: 'req-reject-1',
-        questions: [
-          {
-            question: 'Proceed?',
-            header: 'Confirm',
-            options: [
-              { label: 'Yes (Recommended)', description: '' },
-              { label: 'No', description: '' },
-            ],
-          },
-        ],
-      },
-    },
-  });
-
-  await hooks.event({
-    event: {
-      type: 'question.rejected',
-      data: {
-        requestID: 'req-reject-1',
-      },
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 70));
-  assert.equal(pluginReplies.length, 0);
-
-  await hooks.dispose();
-});
-
-test('SmartQuestion plugin - T7 independence: two concurrent requests, cancel one, other still fires', async () => {
-  const replies = [];
-  const mockClient = {
-    question: {
-      reply: async (payload) => {
-        replies.push(payload);
-      },
-    },
-  };
-
-  const hooks = await SmartQuestion(
-    { client: mockClient },
-    {
-      config: {
-        enabled: true,
-        timeoutMs: 40,
-        recommendedMarker: '(Recommended)',
-        requireExactlyOneRecommendation: true,
-      },
-    }
-  );
-
-  // Q1 asked
-  await hooks.event({
-    event: {
-      type: 'question.asked',
-      data: {
-        id: 'req-indep-1',
-        questions: [
-          {
-            question: 'Q1',
-            header: 'H1',
-            options: [
-              { label: 'A1 (Recommended)', description: '' },
-              { label: 'B1', description: '' },
-            ],
-          },
-        ],
-      },
-    },
-  });
-
-  // Q2 asked
-  await hooks.event({
-    event: {
-      type: 'question.asked',
-      data: {
-        id: 'req-indep-2',
-        questions: [
-          {
-            question: 'Q2',
-            header: 'H2',
-            options: [
-              { label: 'A2', description: '' },
-              { label: 'B2 (Recommended)', description: '' },
-            ],
-          },
-        ],
-      },
-    },
-  });
-
-  // User answers Q1 before timer
-  await hooks.event({
-    event: {
-      type: 'question.replied',
-      data: {
-        requestID: 'req-indep-1',
-        answers: [['B1']],
-      },
-    },
-  });
-
-  // Wait for Q2 timer to fire
-  await new Promise((resolve) => setTimeout(resolve, 70));
-
-  // Only Q2 must have been replied to by plugin
-  assert.equal(replies.length, 1);
-  assert.equal(replies[0].requestID, 'req-indep-2');
-  assert.deepEqual(replies[0].answers, [['B2 (Recommended)']]);
-
-  await hooks.dispose();
-});
-
-test('SmartQuestion plugin - no auto-reply on invalid question (no recommended option)', async () => {
-  const replies = [];
-  const mockClient = {
-    question: {
-      reply: async (payload) => {
-        replies.push(payload);
-      },
-    },
-  };
-
-  const hooks = await SmartQuestion(
-    { client: mockClient },
-    {
-      config: {
-        enabled: true,
-        timeoutMs: 30,
-        recommendedMarker: '(Recommended)',
-        requireExactlyOneRecommendation: true,
-      },
-    }
-  );
-
-  await hooks.event({
-    event: {
-      type: 'question.asked',
-      data: {
-        id: 'req-invalid-1',
-        questions: [
-          {
-            question: 'Unmarked choices',
-            header: 'Choices',
-            options: [
-              { label: 'Opt 1', description: '' },
-              { label: 'Opt 2', description: '' },
-            ],
-          },
-        ],
-      },
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(replies.length, 0);
-
-  await hooks.dispose();
-});
-
-test('SmartQuestion plugin - v1 client without question.reply falls back to REST via serverUrl', async () => {
-  const calls = [];
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (url, options) => {
-    calls.push({ url: String(url), options });
-    return { ok: true, status: 200, text: async () => '' };
-  };
-
-  try {
-    // Production PluginInput: `client` is the v1 SDK client with NO question
-    // namespace; the reply must go to the v2 REST endpoint via serverUrl.
-    const hooks = await SmartQuestion(
-      {
-        client: {},
-        directory: '/tmp',
-        serverUrl: new URL('http://127.0.0.1:4096/'),
-      },
-      {
-        config: {
-          enabled: true,
-          timeoutMs: 30,
-          recommendedMarker: '(Recommended)',
-          requireExactlyOneRecommendation: true,
-          debugLog: '',
-        },
-      }
-    );
-
-    await hooks.event({
-      event: {
-        type: 'question.asked',
-        data: {
-          id: 'req-rest-1',
-          questions: [
-            {
-              question: 'Apply migration?',
-              header: 'Migration',
-              options: [
-                { label: 'Apply (Recommended)', description: 'Runs migration' },
-                { label: 'Cancel', description: 'Aborts' },
-              ],
-            },
-          ],
-        },
-      },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 60));
-
-    assert.equal(calls.length, 1, 'REST fallback must post exactly once');
-    assert.equal(calls[0].url, 'http://127.0.0.1:4096/question/req-rest-1/reply');
-    assert.equal(calls[0].options.method, 'POST');
-    assert.equal(calls[0].options.headers['content-type'], 'application/json');
-    assert.deepEqual(JSON.parse(calls[0].options.body), {
-      answers: [['Apply (Recommended)']],
-    });
-
-    await hooks.dispose();
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('SmartQuestion plugin - live SSE payload shape (properties, no data) is accepted', async () => {
-  const replies = [];
-  const mockClient = {
-    question: {
-      reply: async (payload) => {
-        replies.push(payload);
-      },
-    },
-  };
-
-  const hooks = await SmartQuestion(
-    { client: mockClient, directory: '/tmp' },
-    {
-      config: {
-        enabled: true,
-        timeoutMs: 30,
-        recommendedMarker: '(Recommended)',
-        requireExactlyOneRecommendation: true,
-        debugLog: '',
-      },
-    }
-  );
-
-  // Live OpenCode delivers events as { id, type, properties } — never `data`.
-  await hooks.event({
-    event: {
-      id: 'evt_1',
-      type: 'question.asked',
-      properties: {
-        id: 'req-props-1',
-        sessionID: 'ses_1',
-        questions: [
-          {
-            question: 'Continue?',
-            header: 'Continue',
-            options: [
-              { label: 'Continue (Recommended)', description: 'go on' },
-              { label: 'Stop', description: 'halt' },
-            ],
-          },
-        ],
-      },
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 60));
-
-  assert.equal(replies.length, 1, 'properties-shaped payload must still auto-reply');
-  assert.equal(replies[0].requestID, 'req-props-1');
-  assert.deepEqual(replies[0].answers, [['Continue (Recommended)']]);
-
-  await hooks.dispose();
-});
-
-test('SmartQuestion plugin - ws(s) serverUrl scheme is normalized to http(s) and query is kept', async () => {
-  const calls = [];
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (url, options) => {
-    calls.push({ url: String(url), options });
-    return { ok: true, status: 200, text: async () => '' };
-  };
-
-  try {
-    const hooks = await SmartQuestion(
-      {
-        client: {},
-        directory: '/tmp',
-        // Plugin transport URLs can be ws:// — REST must be http://
-        serverUrl: new URL('ws://127.0.0.1:26301/?token=secret'),
-      },
-      {
-        config: {
-          enabled: true,
-          timeoutMs: 30,
-          recommendedMarker: '(Recommended)',
-          requireExactlyOneRecommendation: true,
-          debugLog: '',
-        },
-      }
-    );
-
-    await hooks.event({
-      event: {
-        type: 'question.asked',
-        data: {
-          id: 'req-ws-1',
-          questions: [
-            {
-              question: 'Go?',
-              header: 'Go',
-              options: [
-                { label: 'Go (Recommended)', description: 'yes' },
-                { label: 'Stop', description: 'no' },
-              ],
-            },
-          ],
-        },
-      },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 60));
-
-    assert.equal(calls.length, 1);
-    assert.equal(
-      calls[0].url,
-      'http://127.0.0.1:26301/question/req-ws-1/reply?token=secret',
-      'ws:// must become http:// and the query token must be preserved'
-    );
-
-    await hooks.dispose();
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('SmartQuestion plugin - v1 client with _client.post routes reply via in-memory post and skips fetch', async () => {
-  const calls = [];
-  let fetchCalled = false;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => {
-    fetchCalled = true;
-    return { ok: true, status: 200, text: async () => '' };
-  };
-
-  const client = {
-    _client: {
-      post: async (opts) => {
-        calls.push(opts);
-        return {};
-      },
-    },
-  };
-
-  try {
-    const hooks = await SmartQuestion(
-      {
-        client,
-        directory: '/tmp',
-        serverUrl: new URL('http://127.0.0.1:4096/'),
-      },
-      {
-        config: {
-          enabled: true,
-          timeoutMs: 30,
-          recommendedMarker: '(Recommended)',
-          requireExactlyOneRecommendation: true,
-          debugLog: '',
-        },
-      }
-    );
-
-    await hooks.event({
-      event: {
-        type: 'question.asked',
-        data: {
-          id: 'req-cpost-1',
-          questions: [
-            {
-              question: 'Apply migration?',
-              header: 'Migration',
-              options: [
-                { label: 'Apply (Recommended)', description: 'Runs migration' },
-                { label: 'Cancel', description: 'Aborts' },
-              ],
-            },
-          ],
-        },
-      },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 60));
-
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, '/question/req-cpost-1/reply');
-    assert.deepEqual(calls[0].body.answers, [['Apply (Recommended)']]);
-    assert.equal(fetchCalled, false, 'globalThis.fetch was NOT called');
-
-    await hooks.dispose();
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('SmartQuestion lockfile - auto-reply SKIPPED when lockfile exists, lockfile removed afterwards, reply not called', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-composing-'));
-  const requestID = 'req-draft-skip-1';
-  const lockPath = path.join(tempDir, `.sq-draft-${requestID}`);
-  fs.writeFileSync(lockPath, 'composing draft answer');
-  assert.equal(fs.existsSync(lockPath), true);
-
-  const replies = [];
-  const mockClient = {
-    question: {
-      reply: async (payload) => {
-        replies.push(payload);
-      },
-    },
-  };
-
-  try {
-    const hooks = await SmartQuestion(
-      { client: mockClient },
-      {
-        config: {
-          enabled: true,
-          timeoutMs: 30,
-          recommendedMarker: '(Recommended)',
-          requireExactlyOneRecommendation: true,
-          configDir: tempDir,
-        },
-      }
-    );
-
-    await hooks.event({
-      event: {
-        type: 'question.asked',
-        data: {
-          id: requestID,
-          questions: [
-            {
-              question: 'Deploy now?',
-              header: 'Deploy',
-              options: [
-                { label: 'Yes (Recommended)', description: '' },
-                { label: 'No', description: '' },
-              ],
-            },
-          ],
-        },
-      },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 60));
-
-    assert.equal(replies.length, 0, 'Auto-reply must be skipped when lockfile exists');
-    assert.equal(fs.existsSync(lockPath), false, 'Lockfile must be deleted after skipping auto-reply');
-
-    await hooks.dispose();
-  } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-});
-
-test('SmartQuestion lockfile - auto-reply proceeds normally when lockfile does NOT exist', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-nolock-'));
-  const requestID = 'req-no-draft-1';
-  const lockPath = path.join(tempDir, `.sq-draft-${requestID}`);
-  assert.equal(fs.existsSync(lockPath), false);
-
-  const replies = [];
-  const mockClient = {
-    question: {
-      reply: async (payload) => {
-        replies.push(payload);
-      },
-    },
-  };
-
-  try {
-    const hooks = await SmartQuestion(
-      { client: mockClient },
-      {
-        config: {
-          enabled: true,
-          timeoutMs: 30,
-          recommendedMarker: '(Recommended)',
-          requireExactlyOneRecommendation: true,
-          configDir: tempDir,
-        },
-      }
-    );
-
-    await hooks.event({
-      event: {
-        type: 'question.asked',
-        data: {
-          id: requestID,
-          questions: [
-            {
-              question: 'Deploy now?',
-              header: 'Deploy',
-              options: [
-                { label: 'Yes (Recommended)', description: '' },
-                { label: 'No', description: '' },
-              ],
-            },
-          ],
-        },
-      },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 60));
-
-    assert.equal(replies.length, 1, 'Auto-reply must proceed when no lockfile exists');
-    assert.equal(replies[0].requestID, requestID);
-    assert.deepEqual(replies[0].answers, [['Yes (Recommended)']]);
-
-    await hooks.dispose();
-  } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-});
-
-test('SmartQuestion lockfile - lockfile for a DIFFERENT requestID does not block this request reply', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-diff-'));
-  const targetRequestID = 'req-target-1';
-  const otherRequestID = 'req-other-different-99';
-  const otherLockPath = path.join(tempDir, `.sq-draft-${otherRequestID}`);
-  fs.writeFileSync(otherLockPath, 'user composing on other question');
-
-  const replies = [];
-  const mockClient = {
-    question: {
-      reply: async (payload) => {
-        replies.push(payload);
-      },
-    },
-  };
-
-  try {
-    const hooks = await SmartQuestion(
-      { client: mockClient },
-      {
-        config: {
-          enabled: true,
-          timeoutMs: 30,
-          recommendedMarker: '(Recommended)',
-          requireExactlyOneRecommendation: true,
-          configDir: tempDir,
-        },
-      }
-    );
-
-    await hooks.event({
-      event: {
-        type: 'question.asked',
-        data: {
-          id: targetRequestID,
-          questions: [
-            {
-              question: 'Deploy now?',
-              header: 'Deploy',
-              options: [
-                { label: 'Yes (Recommended)', description: '' },
-                { label: 'No', description: '' },
-              ],
-            },
-          ],
-        },
-      },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 60));
-
-    assert.equal(replies.length, 1, 'Auto-reply for target question must proceed');
-    assert.equal(replies[0].requestID, targetRequestID);
-    assert.equal(fs.existsSync(otherLockPath), true, 'Lockfile for different request must remain untouched');
-
-    await hooks.dispose();
-  } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-});
-
-test('SmartQuestion lockfile - cleanup on question.replied removes the lockfile', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-cleanup-'));
-  const requestID = 'req-cleanup-replied-1';
-  const lockPath = path.join(tempDir, `.sq-draft-${requestID}`);
-  fs.writeFileSync(lockPath, 'draft content from user');
-  assert.equal(fs.existsSync(lockPath), true);
-
-  try {
-    const hooks = await SmartQuestion(
-      { client: { question: { reply: async () => {} } } },
-      {
-        config: {
-          enabled: true,
-          timeoutMs: 1000,
-          recommendedMarker: '(Recommended)',
-          requireExactlyOneRecommendation: true,
-          configDir: tempDir,
-        },
-      }
-    );
-
-    await hooks.event({
-      event: {
-        type: 'question.replied',
-        data: {
-          requestID,
-          answers: [['Manual answer']],
-        },
-      },
-    });
-
-    assert.equal(fs.existsSync(lockPath), false, 'question.replied must remove lockfile');
-
-    await hooks.dispose();
-  } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-});
-
-test('SmartQuestion lockfile - cleanup on question.rejected removes the lockfile', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-cleanup-rej-'));
-  const requestID = 'req-cleanup-rejected-1';
-  const lockPath = path.join(tempDir, `.sq-draft-${requestID}`);
-  fs.writeFileSync(lockPath, 'draft content from user');
-  assert.equal(fs.existsSync(lockPath), true);
-
-  try {
-    const hooks = await SmartQuestion(
-      { client: { question: { reply: async () => {} } } },
-      {
-        config: {
-          enabled: true,
-          timeoutMs: 1000,
-          recommendedMarker: '(Recommended)',
-          requireExactlyOneRecommendation: true,
-          configDir: tempDir,
-        },
-      }
-    );
-
-    await hooks.event({
-      event: {
-        type: 'question.rejected',
-        data: {
-          requestID,
-        },
-      },
-    });
-
-    assert.equal(fs.existsSync(lockPath), false, 'question.rejected must remove lockfile');
-
-    await hooks.dispose();
-  } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-});
-
-test('SmartQuestion lockfile - unreadable/inaccessible lockfile path still skips reply (fail safe)', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-inaccessible-'));
-  // Create a regular file so using it as configDir causes path.join(configDir, '.sq-draft-...') to throw ENOTDIR on stat
-  const fileAsDir = path.join(tempDir, 'regular-file-blocking-dir');
-  fs.writeFileSync(fileAsDir, 'not a directory');
-
-  const replies = [];
-  const mockClient = {
-    question: {
-      reply: async (payload) => {
-        replies.push(payload);
-      },
-    },
-  };
-
-  try {
-    const hooks = await SmartQuestion(
-      { client: mockClient },
-      {
-        config: {
-          enabled: true,
-          timeoutMs: 30,
-          recommendedMarker: '(Recommended)',
-          requireExactlyOneRecommendation: true,
-          configDir: fileAsDir,
-        },
-      }
-    );
-
-    await hooks.event({
-      event: {
-        type: 'question.asked',
-        data: {
-          id: 'req-inaccessible-1',
-          questions: [
-            {
-              question: 'Deploy now?',
-              header: 'Deploy',
-              options: [
-                { label: 'Yes (Recommended)', description: '' },
-                { label: 'No', description: '' },
-              ],
-            },
-          ],
-        },
-      },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 60));
-
-    assert.equal(replies.length, 0, 'Auto-reply must be skipped when lockfile path throws unexpected error on stat');
-
-    await hooks.dispose();
-  } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-});
-
 test('loadConfig - exposes configDir matching directory of smart-question.json', () => {
   const config = loadConfig(path.resolve(__dirname, '..'));
   assert.ok(config !== null);
@@ -1243,64 +289,12 @@ test('resolveLockPath - resolves configDir or falls back to process.cwd()/.openc
   );
 });
 
-test('backend plugin - default export is an object or function (primary plugin entry)', async () => {
+test('backend plugin - default export is a pure OpenCode V2 plugin definition', async () => {
   const backendMod = await import('../dist/index.js');
-  const type = typeof backendMod.default;
-  assert.ok(
-    type === 'object' || type === 'function',
-    "Expected backend module default export to be an object or function"
-  );
-  if (type === 'object') {
-    assert.equal(typeof backendMod.default.server, 'function');
-  }
-});
-
-test('backend plugin - every exported function called as plugin factory must not throw and must return undefined or an object, never null', async () => {
-  const backendMod = await import('../dist/index.js');
-
-  const realisticPluginInput = {
-    client: {},
-    directory: '/tmp/sq-test-project',
-    project: {},
-    worktree: '/tmp/sq-test-project',
-    serverUrl: new URL('http://127.0.0.1:4096'),
-    $: undefined,
-    experimental_workspace: {},
-  };
-
-  const functionExports = Object.entries(backendMod).filter(
-    ([, val]) => typeof val === 'function'
-  );
-
-  assert.ok(
-    functionExports.length > 0,
-    'Expected backend module to have at least one exported function'
-  );
-
-  for (const [name, fn] of functionExports) {
-    let result;
-    try {
-      result = await fn(realisticPluginInput);
-    } catch (err) {
-      assert.fail(
-        `Export '${name}' threw when invoked as a plugin factory with PluginInput: ${err.message}. ` +
-          `OpenCode calls every exported function as a factory; add a PluginInput guard to '${name}'.`
-      );
-    }
-
-    assert.notEqual(
-      result,
-      null,
-      `Export '${name}' returned null when invoked as a plugin factory. ` +
-        `OpenCode crashes on null plugin hooks ('null is not an object'). Must return undefined or an object, never null.`
-    );
-
-    assert.ok(
-      result === undefined || (typeof result === 'object' && !Array.isArray(result)),
-      `Export '${name}' returned primitive type '${typeof result}' (${String(result)}) when invoked as a plugin factory. ` +
-        `Must return undefined or an object, never null or primitive.`
-    );
-  }
+  assert.equal(typeof backendMod.default, 'object');
+  assert.equal(backendMod.default.id, 'opencode-smart-questions');
+  assert.equal(typeof backendMod.default.setup, 'function');
+  assert.equal('server' in backendMod.default, false);
 });
 
 test('TUI plugin module - transpile and verify exported functions (handles plain Node missing runtime deps)', async () => {
@@ -1318,130 +312,71 @@ test('TUI plugin module - transpile and verify exported functions (handles plain
     'esbuild transpile of smart-question-ui.tsx must produce code'
   );
 
-  // Attempt dynamic import in plain Node
-  let uiMod = null;
-  let importErr = null;
-  try {
-    uiMod = await import(
-      `data:text/javascript;base64,${Buffer.from(transpiledUiJs).toString('base64')}`
-    );
-  } catch (err) {
-    importErr = err;
+  const exportBlockMatch = transpiledUiJs.match(/export\s*\{([\s\S]*?)\};/);
+  assert.ok(
+    exportBlockMatch,
+    'Transpiled src/ui.tsx must contain an export block'
+  );
+
+  const exportEntries = exportBlockMatch[1]
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const exportedFunctions = [];
+  for (const entry of exportEntries) {
+    const exportName = entry.includes(' as ')
+      ? entry.split(' as ')[1].trim()
+      : entry.trim();
+    const internalName = entry.includes(' as ')
+      ? entry.split(' as ')[0].trim()
+      : entry.trim();
+
+    const isFunction =
+      new RegExp(`function\\s+${internalName}\\b`).test(transpiledUiJs) ||
+      new RegExp(`const\\s+${internalName}\\s*=\\s*(?:async\\s*)?\\(`).test(transpiledUiJs) ||
+      new RegExp(`var\\s+${internalName}\\s*=\\s*(?:async\\s*)?\\(`).test(transpiledUiJs) ||
+      new RegExp(`let\\s+${internalName}\\s*=\\s*(?:async\\s*)?\\(`).test(transpiledUiJs);
+
+    if (isFunction) {
+      exportedFunctions.push(exportName);
+    }
   }
 
-  if (uiMod) {
-    // If the module can be imported (runtime deps present in environment), assert behavioral invariants
-    const realisticPluginInput = {
-      client: {},
-      directory: '/tmp/sq-test-project',
-      project: {},
-      worktree: '/tmp/sq-test-project',
-      serverUrl: new URL('http://127.0.0.1:4096'),
-      $: undefined,
-      experimental_workspace: {},
-    };
-
-    const functionExports = Object.entries(uiMod).filter(
-      ([, val]) => typeof val === 'function'
-    );
-    for (const [name, fn] of functionExports) {
-      let result;
-      try {
-        result = await fn(realisticPluginInput);
-      } catch (err) {
-        assert.fail(
-          `TUI export '${name}' threw when invoked with PluginInput: ${err.message}. ` +
-            `Add a PluginInput guard to '${name}'.`
-        );
-      }
-      assert.notEqual(
-        result,
-        null,
-        `TUI export '${name}' returned null when invoked as a plugin factory. Must return undefined or an object, never null.`
-      );
-      assert.ok(
-        result === undefined || (typeof result === 'object' && !Array.isArray(result)),
-        `TUI export '${name}' returned primitive type '${typeof result}'. Must return undefined or an object, never null.`
-      );
-    }
-  } else {
-    // Module cannot be imported in plain Node due to missing external runtime deps (@opentui/solid, solid-js, @opencode-ai/plugin/tui).
-    // Do NOT silently skip: parse and iterate exported functions after transpile.
+  for (const expectedName of [
+    'loadConfig',
+    'detectRecommendations',
+    'SmartQuestionOverlay',
+    'setup',
+    'resolveAgentName',
+    'stripMarker',
+    'formatCountdown',
+  ]) {
     assert.ok(
-      importErr !== null,
-      'Expected importErr to be captured when module cannot be imported in plain Node'
-    );
-
-    const exportBlockMatch = transpiledUiJs.match(/export\s*\{([\s\S]*?)\};/);
-    assert.ok(
-      exportBlockMatch,
-      'Transpiled smart-question-ui.tsx must contain an export block'
-    );
-
-    const exportEntries = exportBlockMatch[1]
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-    const exportedFunctions = [];
-    for (const entry of exportEntries) {
-      const exportName = entry.includes(' as ')
-        ? entry.split(' as ')[1].trim()
-        : entry.trim();
-      const internalName = entry.includes(' as ')
-        ? entry.split(' as ')[0].trim()
-        : entry.trim();
-
-      const isFunction =
-        new RegExp(`function\\s+${internalName}\\b`).test(transpiledUiJs) ||
-        new RegExp(`const\\s+${internalName}\\s*=\\s*(?:async\\s*)?\\(`).test(transpiledUiJs) ||
-        new RegExp(`var\\s+${internalName}\\s*=\\s*(?:async\\s*)?\\(`).test(transpiledUiJs) ||
-        new RegExp(`let\\s+${internalName}\\s*=\\s*(?:async\\s*)?\\(`).test(transpiledUiJs);
-
-      if (isFunction) {
-        exportedFunctions.push(exportName);
-      }
-    }
-
-    // Verify key functions are exported and accounted for
-    assert.ok(
-      exportedFunctions.includes('loadConfig'),
-      "TUI module must export function 'loadConfig'"
-    );
-    assert.ok(
-      exportedFunctions.includes('detectRecommendations'),
-      "TUI module must export function 'detectRecommendations'"
-    );
-    assert.ok(
-      exportedFunctions.includes('tui'),
-      "TUI module must export function 'tui'"
-    );
-    assert.ok(
-      exportedFunctions.includes('SmartQuestionOverlay'),
-      "TUI module must export function 'SmartQuestionOverlay'"
-    );
-    assert.ok(
-      exportedFunctions.includes('setup'),
-      "TUI module must export function 'setup' for OpenCode v2"
-    );
-    assert.ok(
-      exportedFunctions.includes('resolveAgentName'),
-      "TUI module must export function 'resolveAgentName'"
-    );
-    assert.ok(
-      exportedFunctions.includes('stripMarker'),
-      "TUI module must export function 'stripMarker'"
-    );
-    assert.ok(
-      exportedFunctions.includes('formatCountdown'),
-      "TUI module must export function 'formatCountdown'"
-    );
-    assert.equal(
-      exportedFunctions.length,
-      8,
-      `Expected exactly 8 exported functions from smart-question-ui.tsx, found: ${exportedFunctions.join(', ')}`
+      exportedFunctions.includes(expectedName),
+      `TUI module must export function '${expectedName}'`
     );
   }
+  assert.equal(
+    exportedFunctions.length,
+    7,
+    `Expected exactly 7 exported functions from src/ui.tsx, found: ${exportedFunctions.join(', ')}`
+  );
+
+  const tuiMod = await import('../dist/tui.js');
+  assert.equal(tuiMod.default?.id, 'opencode-smart-questions.tui');
+  assert.equal(typeof tuiMod.default?.setup, 'function');
+
+  const runtimeCode = fs.readFileSync(path.resolve(__dirname, '../dist/tui-runtime.js'), 'utf8');
+  assert.ok(
+    runtimeCode.includes('opentui:runtime-module:%40opencode%2Fplugin%2Ftui'),
+    'dist/tui-runtime.js must rewrite @opencode/plugin/tui to host virtual runtime module'
+  );
+  assert.equal(
+    runtimeCode.includes('@opencode-ai/'),
+    false,
+    'dist/tui-runtime.js must not reference @opencode-ai/*'
+  );
 });
 
 test('cleanupStaleDrafts - deletes an old file, keeps a fresh one, and survives a nonexistent directory (no throw)', () => {
@@ -1472,15 +407,6 @@ test('cleanupStaleDrafts - deletes an old file, keeps a fresh one, and survives 
   assert.doesNotThrow(() => {
     cleanupStaleDrafts('/nonexistent/path/that/does/not/exist/for/sure');
   }, 'cleanupStaleDrafts must survive nonexistent directory without throwing');
-});
-
-test('cleanupStaleDrafts - loader simulation invariant: must not throw when called with { client: {}, directory: "x" }', () => {
-  let result;
-  assert.doesNotThrow(() => {
-    result = cleanupStaleDrafts({ client: {}, directory: 'x' });
-  }, 'cleanupStaleDrafts must not throw when called with PluginInput-shaped object');
-
-  assert.deepEqual(result, {}, 'cleanupStaleDrafts must return empty object {} when invoked as plugin factory');
 });
 
 test('detectRecommendations - Turkish marker (Önerilen) alone is detected', () => {
@@ -1606,107 +532,6 @@ test('detectRecommendations - suffix semantics hold for every accepted marker', 
   assert.match(result.reason, /no options ending with marker/i);
 });
 
-test('SmartQuestion plugin - valid question with Turkish marker (Önerilen) auto-replies after timeout', async () => {
-  const replies = [];
-  const mockClient = {
-    question: {
-      reply: async (payload) => {
-        replies.push(payload);
-      },
-    },
-  };
-
-  const hooks = await SmartQuestion(
-    { client: mockClient },
-    {
-      config: {
-        enabled: true,
-        timeoutMs: 30,
-        recommendedMarkers: ['(Recommended)', '(Önerilen)'],
-        requireExactlyOneRecommendation: true,
-      },
-    }
-  );
-
-  await hooks.event({
-    event: {
-      type: 'question.asked',
-      data: {
-        id: 'req-turkish-auto-1',
-        questions: [
-          {
-            question: 'Geçişi onayla?',
-            header: 'Onay',
-            options: [
-              { label: 'Onayla (Önerilen)', description: 'Geçişi çalıştır' },
-              { label: 'İptal', description: 'Durdur' },
-            ],
-          },
-        ],
-      },
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 60));
-
-  assert.equal(replies.length, 1);
-  assert.equal(replies[0].requestID, 'req-turkish-auto-1');
-  assert.deepEqual(replies[0].answers, [['Onayla (Önerilen)']]);
-
-  await hooks.dispose();
-});
-
-test('SmartQuestion plugin - does not expose global tool.definition guidance', async () => {
-  const hooks = await SmartQuestion(
-    { client: {} },
-    {
-      config: {
-        enabled: true,
-        timeoutMs: 30000,
-        recommendedMarkers: ['(Recommended)', '(Önerilen)'],
-        requireExactlyOneRecommendation: true,
-      },
-    }
-  );
-
-  assert.equal(
-    hooks['tool.definition'],
-    undefined,
-    'global tool guidance would leak Smart Questions instructions into subagents'
-  );
-
-  await hooks.dispose();
-});
-
-test('SmartQuestion plugin - experimental.chat.system.transform injects guidance into system prompt', async () => {
-  const hooks = await SmartQuestion(
-    { client: {} },
-    {
-      config: {
-        enabled: true,
-        timeoutMs: 30000,
-        recommendedMarkers: ['(Recommended)', '(Önerilen)'],
-        requireExactlyOneRecommendation: true,
-      },
-    }
-  );
-
-  assert.ok(typeof hooks['experimental.chat.system.transform'] === 'function');
-
-  const systemOutput = { system: ['Base system prompt for assistant.'] };
-  await hooks['experimental.chat.system.transform']({ sessionID: 'ses-1' }, systemOutput);
-
-  assert.equal(systemOutput.system.length, 2);
-  assert.match(systemOutput.system[1], /Smart Question Auto-Selection Guidance/);
-  assert.match(systemOutput.system[1], /native question\/form mechanism/i);
-  assert.match(systemOutput.system[1], /plain assistant (?:text|prose)/i);
-  assert.match(systemOutput.system[1], /\(Recommended\)/);
-
-  await hooks.dispose();
-});
-
-
-
 test('loadConfig - missing file uses enabled defaults instead of silently disabling plugin', (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-test-default-config-'));
   // A real user's global config is intentional in production, but cannot
@@ -1812,9 +637,8 @@ test('OpenCode v2 backend setup registers root-only context guidance', async () 
         return { id: sessionID };
       },
       hook(name, callback) {
-        assert.equal(name, 'context');
-        contextHook = callback;
-        return Promise.resolve({ dispose: async () => { disposed.push('context'); } });
+        if (name === 'context') contextHook = callback;
+        return Promise.resolve({ dispose: async () => { disposed.push(name); } });
       },
     },
   };
@@ -1840,9 +664,9 @@ test('OpenCode v2 backend setup registers root-only context guidance', async () 
   await contextHook(event);
   assert.equal(event.system.length, 2, 'guidance must not duplicate');
   await cleanup();
-  assert.deepEqual(disposed, ['context']);
+  assert.deepEqual(disposed, ['prompt', 'context']);
   await cleanup();
-  assert.deepEqual(disposed, ['context'], 'cleanup must be idempotent');
+  assert.deepEqual(disposed, ['prompt', 'context'], 'cleanup must be idempotent');
 });
 
 test('V2 backend surfaces a failed context registration', async () => {
@@ -2482,62 +1306,6 @@ test('invalid configuration file disables the plugin rather than enabling defaul
   }
 });
 
-test('V1 TUI ignores unrelated settlement and preserves a manual-answer lock on replacement', async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-ui-races-'));
-  t.mock.method(os, 'homedir', () => tempDir);
-  const events = new Map();
-  const input = new Map();
-  let dispose;
-  try {
-    const ui = await import('../dist/ui.js');
-    await ui.tui({
-      state: {
-        path: { directory: tempDir },
-        session: { get(sessionID) { return { id: sessionID }; } },
-      },
-      event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
-      renderer: {
-        keyInput: {
-          on(type, handler) { input.set(type, handler); },
-          off(type) { input.delete(type); },
-        },
-        requestRender() {},
-      },
-      slots: { register() {} },
-      lifecycle: { onDispose(handler) { dispose = handler; } },
-    });
-    const send = (id) => events.get('question.asked')({
-      properties: { id, sessionID: 'same-session', questions: [{
-        question: 'Select', options: [
-          { label: 'Yes [SQ:recommended]' },
-          { label: 'No' },
-        ],
-      }] },
-    });
-    send('first-question');
-    input.get('keypress')?.({ name: 'a' });
-    const { resolveLockPath: lock } = await import('../dist/draft-guard.js');
-    const oldLock = lock(path.join(tempDir, '.opencode'), 'first-question');
-    assert.equal(fs.existsSync(oldLock), true);
-
-    send('second-question');
-    assert.equal(fs.existsSync(oldLock), true, 'a new question must not erase an earlier manual lock');
-    events.get('question.replied')?.({ properties: { id: 'unrelated-question' } });
-    input.get('keypress')?.({ name: 'b' });
-    const newLock = lock(path.join(tempDir, '.opencode'), 'second-question');
-    assert.equal(fs.existsSync(newLock), true, 'unrelated settlement must not clear active question');
-    dispose?.();
-    assert.equal(
-      fs.existsSync(newLock),
-      true,
-      'TUI disposal must preserve a manual-control lock until the backend observes it'
-    );
-  } finally {
-    dispose?.();
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-});
-
 test('explicit malformed v2 backend and TUI config objects disable auto-selection', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v2-config-'));
   try {
@@ -2558,109 +1326,6 @@ test('explicit malformed v2 backend and TUI config objects disable auto-selectio
     assert.equal(mock.keyHandlerCount, 0);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-});
-
-test('native V1 reply transport error result is not reported as successful', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-transport-error-'));
-  const originalError = console.error;
-  const logs = [];
-  console.error = (...args) => logs.push(args.join(' '));
-  let dispose;
-  let replyAttempts = 0;
-  try {
-    const hooks = await SmartQuestion({
-      client: { question: { reply: async () => {
-        replyAttempts++;
-        return { error: 'transport rejected' };
-      } } },
-      directory: tempDir,
-    }, { config: {
-      enabled: true, timeoutMs: 10,
-      recommendedMarkers: ['[SQ:recommended]'],
-    } });
-    dispose = hooks.dispose;
-    await hooks.event({ event: {
-      type: 'question.asked',
-      data: { id: 'native-error', questions: [
-        { question: 'Choice', options: [{ label: 'Yes [SQ:recommended]' }] },
-      ] },
-    } });
-    await new Promise((resolve) => setTimeout(resolve, 35));
-    assert.equal(replyAttempts, 1);
-    assert.ok(logs.some((message) => message.includes('Auto-selection failed')));
-    assert.ok(logs.every((message) => !message.includes('transport rejected')));
-  } finally {
-    await dispose?.();
-    console.error = originalError;
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-});
-
-test('V1 auto-selection fails safe when draft coordination is not writable', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-coordination-'));
-  const coordDir = path.join(root, 'coord');
-  fs.mkdirSync(coordDir);
-  fs.writeFileSync(path.join(root, 'smart-question.json'), JSON.stringify({
-    enabled: true,
-    timeoutMs: 20,
-    configDir: coordDir,
-  }));
-
-  const replies = [];
-  const events = new Map();
-  const input = new Map();
-  let disposeTui;
-  let hooks;
-  try {
-    hooks = await SmartQuestion(
-      { directory: root, client: { question: { reply: async (payload) => { replies.push(payload); } } } },
-      { config: { enabled: true, timeoutMs: 20, configDir: coordDir } }
-    );
-
-    const ui = await import('../dist/ui.js');
-    await ui.tui({
-      state: {
-        path: { directory: root },
-        session: { get(sessionID) { return { id: sessionID }; } },
-      },
-      event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
-      renderer: {
-        keyInput: {
-          on(type, handler) { input.set(type, handler); },
-          off(type) { input.delete(type); },
-        },
-        requestRender() {},
-      },
-      slots: { register() {} },
-      lifecycle: { onDispose(handler) { disposeTui = handler; } },
-    });
-
-    fs.chmodSync(coordDir, 0o555);
-    const data = {
-      id: 'coordination-unwritable',
-      sessionID: 'ses-v1-coordination',
-      questions: [{
-        question: 'Choose',
-        options: [{ label: 'Go [SQ:recommended]' }, { label: 'Stop' }],
-      }],
-    };
-
-    await hooks.event({ event: { type: 'question.asked', properties: data } });
-    events.get('question.asked')?.({ properties: data });
-    input.get('keypress')?.({ name: 'a' });
-    await new Promise((resolve) => setTimeout(resolve, 60));
-
-    assert.equal(
-      replies.length,
-      0,
-      'auto-selection must stay disabled when manual-control coordination cannot be written'
-    );
-  } finally {
-    fs.chmodSync(coordDir, 0o755);
-    disposeTui?.();
-    await hooks?.dispose?.();
-    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -2742,44 +1407,51 @@ test('diagnostic logging does not expose option labels or raw transport errors',
   const originalError = console.error;
   const consoleMessages = [];
   console.error = (...args) => consoleMessages.push(args.join(' '));
-  let hooks;
+  let dispose;
   try {
-    hooks = await SmartQuestion(
-      {
-        directory: root,
-        client: {
-          question: {
-            reply: async () => {
-              throw new Error('SECRET_TRANSPORT_DETAIL');
-            },
+    const ui = await import('../dist/ui.js');
+    const handlers = new Map();
+    const form = {
+      id: 'diagnostic-redaction',
+      sessionID: 'ses-diag',
+      fields: [{
+        key: 'choice',
+        type: 'string',
+        options: [
+          { value: 'secret', label: 'CONFIDENTIAL_OPTION [SQ:recommended]' },
+          { value: 'other', label: 'Other' },
+        ],
+      }],
+    };
+    dispose = await ui.setup({
+      location: { directory: root },
+      options: {
+        enabled: true,
+        timeoutMs: 10,
+        debugLog,
+        configDir: root,
+        recommendedMarkers: ['[SQ:recommended]'],
+      },
+      data: {
+        on(type, handler) { handlers.set(type, handler); return () => handlers.delete(type); },
+        session: {
+          get: (id) => ({ id, location: { directory: root } }),
+          form: {
+            async sync() {},
+            list: () => [form],
+            async reply() { throw new Error('SECRET_TRANSPORT_DETAIL'); },
+            invalidate() {},
           },
         },
       },
-      {
-        config: {
-          enabled: true,
-          timeoutMs: 10,
-          debugLog,
-          configDir: root,
-          recommendedMarkers: ['[SQ:recommended]'],
-        },
-      }
-    );
-
-    await hooks.event({ event: {
-      type: 'question.asked',
-      data: {
-        id: 'diagnostic-redaction',
-        questions: [{
-          question: 'private',
-          options: [
-            { label: 'CONFIDENTIAL_OPTION [SQ:recommended]' },
-            { label: 'Other' },
-          ],
-        }],
+      renderer: { keyInput: { on() {}, off() {} } },
+      ui: {
+        router: { current: () => ({ type: 'session', sessionID: 'ses-diag' }) },
+        slot: () => () => {},
       },
-    } });
+    });
 
+    await handlers.get('form.created')?.({ data: { form } });
     await new Promise((resolve) => setTimeout(resolve, 40));
     const log = fs.readFileSync(debugLog, 'utf8');
     const consoleText = consoleMessages.join('\n');
@@ -2787,7 +1459,7 @@ test('diagnostic logging does not expose option labels or raw transport errors',
     assert.doesNotMatch(log, /SECRET_TRANSPORT_DETAIL/);
     assert.doesNotMatch(consoleText, /SECRET_TRANSPORT_DETAIL/);
   } finally {
-    await hooks?.dispose?.();
+    dispose?.();
     console.error = originalError;
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -2881,97 +1553,6 @@ test('V2 form adapter enforces multiselect minItems and maxItems before auto-rep
   assert.match(tooMany.reason, /maxItems|maximum/i);
 });
 
-test('V1 server honors direct tuple plugin options instead of falling back to disabled file config', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-inline-server-'));
-  fs.writeFileSync(path.join(root, 'smart-question.json'), JSON.stringify({ enabled: false }));
-  const replies = [];
-  let hooks;
-  try {
-    hooks = await SmartQuestion(
-      { directory: root, client: { question: { reply: async (payload) => { replies.push(payload); } } } },
-      {
-        enabled: true,
-        timeoutMs: 10,
-        recommendedMarkers: ['<REC>'],
-        configDir: path.join(root, '.opencode'),
-      }
-    );
-    assert.equal(typeof hooks.event, 'function', 'direct tuple options must enable the V1 server adapter');
-    await hooks.event({ event: {
-      type: 'question.asked',
-      data: {
-        id: 'inline-server',
-        questions: [{
-          question: 'Choose',
-          options: [{ label: 'Go <REC>' }, { label: 'Stop' }],
-        }],
-      },
-    } });
-    await new Promise((resolve) => setTimeout(resolve, 35));
-    assert.equal(replies.length, 1);
-  } finally {
-    await hooks?.dispose?.();
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('V1 TUI honors tuple plugin options and uses the same marker/config as the server', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-inline-tui-'));
-  fs.writeFileSync(path.join(root, 'smart-question.json'), JSON.stringify({ enabled: false }));
-  const events = new Map();
-  const input = new Map();
-  let dispose;
-  try {
-    const ui = await import('../dist/ui.js');
-    await ui.tui(
-      {
-        state: {
-          path: { directory: root },
-          session: { get(sessionID) { return { id: sessionID }; } },
-        },
-        event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
-        renderer: {
-          keyInput: {
-            on(type, handler) { input.set(type, handler); },
-            off(type) { input.delete(type); },
-          },
-          requestRender() {},
-        },
-        slots: { register() {} },
-        lifecycle: { onDispose(handler) { dispose = handler; } },
-      },
-      {
-        enabled: true,
-        timeoutMs: 100,
-        recommendedMarkers: ['<REC>'],
-        configDir: path.join(root, '.opencode'),
-      },
-      {}
-    );
-
-    assert.equal(typeof events.get('question.asked'), 'function', 'tuple options must enable the V1 TUI adapter');
-    events.get('question.asked')({
-      properties: {
-        id: 'inline-tui',
-        sessionID: 'session',
-        questions: [{
-          question: 'Choose',
-          options: [{ label: 'Go <REC>' }, { label: 'Stop' }],
-        }],
-      },
-    });
-    input.get('keypress')?.({ name: 'a' });
-    assert.equal(
-      fs.existsSync(resolveLockPath(path.join(root, '.opencode'), 'inline-tui')),
-      true,
-      'TUI must detect the same configured marker and protect manual input'
-    );
-  } finally {
-    dispose?.();
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
 test('recommendedMarkers list fully takes precedence over legacy recommendedMarker', async () => {
   const { normalizeSmartQuestionConfig } = await import('../dist/config.js');
   const config = normalizeSmartQuestionConfig({
@@ -2993,12 +1574,12 @@ test('V2 backend disposal releases the root-only context registration', async ()
       async get({ sessionID }) {
         return { id: sessionID };
       },
-      hook() {
+      hook(name) {
         return Promise.resolve({
           async dispose() {
-            order.push('context:start');
+            order.push(`${name}:start`);
             await new Promise((resolve) => setTimeout(resolve, 20));
-            order.push('context:end');
+            order.push(`${name}:end`);
           },
         });
       },
@@ -3007,6 +1588,8 @@ test('V2 backend disposal releases the root-only context registration', async ()
 
   await cleanup?.();
   assert.deepEqual(order, [
+    'prompt:start',
+    'prompt:end',
     'context:start',
     'context:end',
   ]);
@@ -3101,90 +1684,34 @@ test('diagnostic error classification never echoes arbitrary error code or name 
   assert.match(code, /^(error|object-error|unknown-error)$/);
 });
 
-test('V1 TUI rolls back raw key handlers when setup fails partway', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-partial-tui-'));
-  const events = new Map();
-  const inputs = new Map();
-  try {
-    const ui = await import('../dist/ui.js');
-    await assert.rejects(
-      () => ui.tui({
-        state: { path: { directory: root } },
-        event: {
-          on(type, handler) {
-            events.set(type, handler);
-            return () => events.delete(type);
-          },
-        },
-        renderer: {
-          keyInput: {
-            on(type, handler) {
-              if (type === 'paste') throw new Error('synthetic paste registration failure');
-              inputs.set(type, handler);
-            },
-            off(type) {
-              inputs.delete(type);
-            },
-          },
-          requestRender() {},
-        },
-        slots: { register() { return 'slot'; } },
-        keymap: { intercept() { return () => {}; } },
-        lifecycle: { onDispose() { return () => {}; } },
-      }, { configDir: root }),
-      /synthetic paste registration failure/
-    );
-    assert.equal(inputs.size, 0, 'failed setup must not leave raw key handlers registered');
-    assert.equal(events.size, 0, 'failed setup must release event subscriptions');
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-
 test('guidance avoids unnecessary questions when user direction is already sufficient', async () => {
-  const hooks = await SmartQuestion({ client: {} }, {
-    config: { enabled: true, recommendedMarkers: ['[SQ:recommended]'] },
+  let contextHook;
+  const cleanup = await OpencodeSmartQuestions.setup({
+    location: { directory: '/tmp/sq-guidance-necessity' },
+    options: { enabled: true, recommendedMarkers: ['[SQ:recommended]'] },
+    session: {
+      async get({ sessionID }) { return { id: sessionID }; },
+      hook(name, callback) {
+        if (name === 'context') contextHook = callback;
+        return Promise.resolve({ dispose: async () => {} });
+      },
+    },
   });
   try {
-    const systemOutput = { system: ['Base system prompt'] };
-    await hooks['experimental.chat.system.transform'](
-      { sessionID: 'ses-guidance-necessity' },
-      systemOutput
-    );
-
-    assert.match(systemOutput.system[1], /existing instructions.*determine|already .*direction/i);
-    assert.match(systemOutput.system[1], /do not .*question|do not create.*form/i);
-  } finally {
-    await hooks.dispose();
-  }
-});
-
-test('V1 dedup ignores generic headings and keys only on the SQ sentinel', async () => {
-  const hooks = await SmartQuestion({ client: {} }, {
-    config: { enabled: true, recommendedMarkers: ['[SQ:recommended]'] },
-  });
-  try {
-    const systemOutput = {
-      system: ['Third-party note: Smart Question Auto-Selection Guidance'],
+    const event = {
+      sessionID: 'ses-guidance-necessity',
+      system: [{ type: 'text', text: 'Base system prompt' }],
+      messages: [],
+      tools: {},
+      agent: 'main',
+      model: {},
     };
-    await hooks['experimental.chat.system.transform'](
-      { sessionID: 'ses-v1-sentinel' },
-      systemOutput
-    );
-    assert.equal(systemOutput.system.length, 2);
-    assert.match(systemOutput.system[1], /\[SQ_GUIDANCE:v1\]/);
+    await contextHook(event);
 
-    await hooks['experimental.chat.system.transform'](
-      { sessionID: 'ses-v1-sentinel' },
-      systemOutput
-    );
-    assert.equal(
-      systemOutput.system.filter((part) => part.includes('[SQ_GUIDANCE:v1]')).length,
-      1
-    );
+    assert.match(event.system[1].text, /existing instructions.*determine|already .*direction/i);
+    assert.match(event.system[1].text, /do not .*question|do not create.*form/i);
   } finally {
-    await hooks.dispose();
+    await cleanup?.();
   }
 });
 
@@ -3198,8 +1725,7 @@ test('V2 dedup ignores generic headings and keys only on the SQ sentinel', async
         return { id: sessionID };
       },
       hook(name, callback) {
-        assert.equal(name, 'context');
-        contextHook = callback;
+        if (name === 'context') contextHook = callback;
         return Promise.resolve({ dispose: async () => {} });
       },
     },

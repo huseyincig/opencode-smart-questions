@@ -1,15 +1,75 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
-import { SmartQuestion as SmartQuestionPlugin } from '../dist/index.js';
+import { setup as v2Setup } from '../dist/ui.js';
 import { classifyQuestions } from '../dist/detector.js';
 import { classifyV2Form, detectV2FormRecommendations } from '../dist/form-adapter.js';
 
+const TEST_ROOT_SESSION_ID = 'ses-multi-step-root';
+
+async function createV2TuiHarness(t, options = {}) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-multi-step-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+  const synthetics = [];
+  const replies = [];
+  const events = new Map();
+  const pendingForms = new Map();
+
+  const dispose = await v2Setup({
+    location: { directory },
+    options: { enabled: true, configDir: directory, ...options },
+    client: {
+      session: {
+        synthetic: async (params) => {
+          synthetics.push(params);
+          return { ok: true };
+        },
+      },
+    },
+    data: {
+      on(type, handler) {
+        events.set(type, handler);
+        return () => events.delete(type);
+      },
+      session: {
+        get: (id) => ({ id, location: { directory } }),
+        form: {
+          sync: async () => {},
+          list: (sessionID) => [...pendingForms.values()].filter((f) => f.sessionID === sessionID),
+          reply: async (params) => {
+            replies.push(params);
+            pendingForms.delete(params.formID);
+            return { ok: true };
+          },
+          invalidate: () => {},
+        },
+      },
+    },
+    renderer: { keyInput: { on() {}, off() {} } },
+    ui: {
+      router: { current: () => ({ type: 'session', sessionID: TEST_ROOT_SESSION_ID }) },
+      slot: () => () => {},
+    },
+  });
+  t.after(() => dispose?.());
+
+  return { events, synthetics, replies, pendingForms };
+}
+
 test('V2 form reserved field key preserves an own serialized answer', () => {
-  const form = { id: 'form-reserved', sessionID: 'root', fields: [{
-    key: '__proto__', type: 'multiselect',
-    options: [{ value: 'safe', label: 'Safe [SQ:recommended]' }],
-  }] };
+  const form = {
+    id: 'form-reserved',
+    sessionID: 'root',
+    fields: [{
+      key: '__proto__',
+      type: 'multiselect',
+      options: [{ value: 'safe', label: 'Safe [SQ:recommended]' }],
+    }],
+  };
   for (const result of [classifyV2Form(form), detectV2FormRecommendations(form)]) {
     const answer = result.answer;
     assert.equal(Object.hasOwn(answer, '__proto__'), true);
@@ -17,59 +77,7 @@ test('V2 form reserved field key preserves an own serialized answer', () => {
   }
 });
 
-const TEST_ROOT_SESSION_ID = 'ses-multi-step-root';
-
-function withSessionClient(client = {}) {
-  const existingSession =
-    client && typeof client.session === 'object' && client.session
-      ? client.session
-      : {};
-  return {
-    ...client,
-    session: {
-      ...existingSession,
-      async get({ path: p }) {
-        if (typeof existingSession.get === 'function') {
-          return existingSession.get({ path: p });
-        }
-        return {
-          data: {
-            id: p?.id ?? TEST_ROOT_SESSION_ID,
-          },
-        };
-      },
-    },
-  };
-}
-
-async function createPluginHarness(options = {}) {
-  const promptCalls = [];
-  const replies = [];
-  const mockClient = {
-    question: {
-      reply: async (params) => {
-        replies.push(params);
-        return { ok: true };
-      },
-    },
-    session: {
-      promptAsync: async (params) => {
-        promptCalls.push(params);
-        return { ok: true };
-      },
-    },
-  };
-
-  const client = withSessionClient(mockClient);
-  const hooks = await SmartQuestionPlugin({ client }, options);
-  return { hooks, promptCalls, replies, client };
-}
-
-// ---------------------------------------------------------------------------
-// 1. Flexible Recommendation Detection
-// ---------------------------------------------------------------------------
 test('classifyQuestions: detects recommendations flexibly (prefix, lowercase, description, Turkish)', () => {
-  // Prefix
   const q1 = classifyQuestions([
     {
       question: 'Select DB',
@@ -79,7 +87,6 @@ test('classifyQuestions: detects recommendations flexibly (prefix, lowercase, de
   assert.equal(q1.status, 'auto');
   assert.deepEqual(q1.answers, [['(Recommended) PostgreSQL']]);
 
-  // Lowercase suffix
   const q2 = classifyQuestions([
     {
       question: 'Run tests?',
@@ -89,7 +96,6 @@ test('classifyQuestions: detects recommendations flexibly (prefix, lowercase, de
   assert.equal(q2.status, 'auto');
   assert.deepEqual(q2.answers, [['Yes (recommended)']]);
 
-  // In description
   const q3 = classifyQuestions([
     {
       question: 'Select cache',
@@ -102,7 +108,6 @@ test('classifyQuestions: detects recommendations flexibly (prefix, lowercase, de
   assert.equal(q3.status, 'auto');
   assert.deepEqual(q3.answers, [['Redis']]);
 
-  // Turkish prefix
   const q4 = classifyQuestions([
     {
       question: 'Onaylıyor musunuz?',
@@ -113,9 +118,6 @@ test('classifyQuestions: detects recommendations flexibly (prefix, lowercase, de
   assert.deepEqual(q4.answers, [['(Önerilen) Evet']]);
 });
 
-// ---------------------------------------------------------------------------
-// 2. Multi-Step (1., 2., 3. Adımlı) Questions with Mixed Recommendations
-// ---------------------------------------------------------------------------
 test('classifyQuestions: 3-step question resolves all steps with allowFallback', () => {
   const threeStepQuestions = [
     {
@@ -128,11 +130,10 @@ test('classifyQuestions: 3-step question resolves all steps with allowFallback',
     },
     {
       question: 'Step 3: Run migration now?',
-      options: [{ label: 'Yes, run now' }, { label: 'No, later' }], // No explicit marker
+      options: [{ label: 'Yes, run now' }, { label: 'No, later' }],
     },
   ];
 
-  // With allowFallback: true -> resolves Step 1 (recommended), Step 2 (recommended), Step 3 (first option)
   const res = classifyQuestions(threeStepQuestions, undefined, undefined, null, {
     allowFallback: true,
   });
@@ -146,59 +147,61 @@ test('classifyQuestions: 3-step question resolves all steps with allowFallback',
   assert.equal(res.recommendedOptions.length, 3);
 });
 
-// ---------------------------------------------------------------------------
-// 3. Multi-Step (1., 2., 3. Adımlı) Questions in Backend with fallback-first
-// ---------------------------------------------------------------------------
-test('backend: 3-step question with fallback-first policy auto-replies all steps without stalling', async () => {
-  const { hooks, replies, promptCalls } = await createPluginHarness({
+test('V2 TUI: 3-step form with fallback-first policy auto-replies all steps without stalling', async (t) => {
+  const { events, replies, synthetics, pendingForms } = await createV2TuiHarness(t, {
     timeoutMs: 30,
     unclassifiedQuestionPolicy: 'fallback-first',
   });
 
-  await hooks.event({
-    event: {
-      type: 'question.asked',
-      sessionID: TEST_ROOT_SESSION_ID,
-      data: {
-        id: 'req-multi-step-123',
-        sessionID: TEST_ROOT_SESSION_ID,
-        questions: [
-          {
-            question: 'Adım 1: Mimari seçim',
-            options: [{ label: 'Clean Architecture [SQ:recommended]' }, { label: 'Monolith' }],
-          },
-          {
-            question: 'Adım 2: Veritabanı',
-            options: [{ label: 'PostgreSQL (Recommended)' }, { label: 'MySQL' }],
-          },
-          {
-            question: 'Adım 3: Docker ayağa kalksın mı?',
-            options: [{ label: 'Evet, ayağa kaldır' }, { label: 'Hayır, lokal çalış' }],
-          },
+  const form = {
+    id: 'form-multi-step-123',
+    sessionID: TEST_ROOT_SESSION_ID,
+    fields: [
+      {
+        key: 'step1',
+        type: 'string',
+        label: 'Adım 1: Mimari seçim',
+        options: [
+          { value: 'clean', label: 'Clean Architecture [SQ:recommended]' },
+          { value: 'monolith', label: 'Monolith' },
         ],
       },
-    },
-  });
+      {
+        key: 'step2',
+        type: 'string',
+        label: 'Adım 2: Veritabanı',
+        options: [
+          { value: 'pg', label: 'PostgreSQL (Recommended)' },
+          { value: 'mysql', label: 'MySQL' },
+        ],
+      },
+      {
+        key: 'step3',
+        type: 'string',
+        label: 'Adım 3: Docker ayağa kalksın mı?',
+        options: [
+          { value: 'yes', label: 'Evet, ayağa kaldır' },
+          { value: 'no', label: 'Hayır, lokal çalış' },
+        ],
+      },
+    ],
+  };
+  pendingForms.set(form.id, form);
 
-  // Zero remediation prompts dispatched: immediately scheduled for auto-reply
-  assert.equal(promptCalls.length, 0);
+  await events.get('form.created')({ data: { form } });
+  assert.equal(synthetics.length, 0);
 
-  // Wait for 30ms timer
-  await new Promise((resolve) => setTimeout(resolve, 60));
+  await new Promise((resolve) => setTimeout(resolve, 65));
 
-  // Exactly 1 reply received, answering all 3 steps!
   assert.equal(replies.length, 1);
-  assert.equal(replies[0]?.requestID, 'req-multi-step-123');
-  assert.deepEqual(replies[0]?.answers, [
-    ['Clean Architecture [SQ:recommended]'],
-    ['PostgreSQL (Recommended)'],
-    ['Evet, ayağa kaldır'],
-  ]);
+  assert.equal(replies[0]?.formID, 'form-multi-step-123');
+  assert.deepEqual(replies[0]?.answer, {
+    step1: 'clean',
+    step2: 'pg',
+    step3: 'yes',
+  });
 });
 
-// ---------------------------------------------------------------------------
-// 4. V2 Form 3-Field Sequential Form with fallback-first
-// ---------------------------------------------------------------------------
 test('V2 Form: 3-field form with allowFallback maps all fields to valid values', () => {
   const v2Form = {
     id: 'form-v2-steps',
@@ -243,35 +246,31 @@ test('V2 Form: 3-field form with allowFallback maps all fields to valid values',
   });
 });
 
-// ---------------------------------------------------------------------------
-// 5. fallbackOnManual: Even manual questions auto-reply after countdown
-// ---------------------------------------------------------------------------
-test('backend: fallbackOnManual auto-replies rather than stalling indefinitely', async () => {
-  const { hooks, replies } = await createPluginHarness({
+test('V2 TUI: fallbackOnManual auto-replies rather than stalling indefinitely', async (t) => {
+  const { events, replies, pendingForms } = await createV2TuiHarness(t, {
     timeoutMs: 30,
     fallbackOnManual: true,
     fallbackToFirstOption: true,
   });
 
-  await hooks.event({
-    event: {
-      type: 'question.asked',
-      sessionID: TEST_ROOT_SESSION_ID,
-      data: {
-        id: 'req-manual-no-stall',
-        sessionID: TEST_ROOT_SESSION_ID,
-        questions: [
-          {
-            question: 'Destructive action [SQ:manual]',
-            options: [{ label: 'Confirm and proceed' }, { label: 'Cancel' }],
-          },
-        ],
-      },
-    },
-  });
+  const form = {
+    id: 'form-manual-no-stall',
+    sessionID: TEST_ROOT_SESSION_ID,
+    fields: [{
+      key: 'action',
+      type: 'string',
+      label: 'Destructive action [SQ:manual]',
+      options: [
+        { value: 'confirm', label: 'Confirm and proceed' },
+        { value: 'cancel', label: 'Cancel' },
+      ],
+    }],
+  };
+  pendingForms.set(form.id, form);
 
-  await new Promise((resolve) => setTimeout(resolve, 60));
+  await events.get('form.created')({ data: { form } });
+  await new Promise((resolve) => setTimeout(resolve, 65));
 
   assert.equal(replies.length, 1);
-  assert.deepEqual(replies[0]?.answers, [['Confirm and proceed']]);
+  assert.deepEqual(replies[0]?.answer, { action: 'confirm' });
 });

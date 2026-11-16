@@ -3,12 +3,13 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_CONFIG } from './config.js';
 import { diagnosticErrorCode } from './diagnostics.js';
+/**
+ * Resolves the lockfile path for a question requestID.
+ * 1. opencodeDir = configDir (directory in which smart-question.json was found)
+ * 2. Fallback if not resolvable: `${process.cwd()}/.opencode`
+ * 3. lockPath = `${opencodeDir}/.sq-draft-${requestID}`
+ */
 export function resolveLockPath(configDir, requestID) {
-    if (configDir &&
-        typeof configDir === 'object' &&
-        ('client' in configDir || 'directory' in configDir)) {
-        return {};
-    }
     const opencodeDir = (typeof configDir === 'string' && configDir) || path.resolve(process.cwd(), '.opencode');
     const safeRequestID = encodeURIComponent(typeof requestID === 'string' ? requestID : 'unknown');
     return path.join(opencodeDir, `.sq-draft-${safeRequestID}`);
@@ -33,12 +34,10 @@ export function canUseDraftCoordination(configDir, dbg) {
         return false;
     }
 }
+/**
+ * Idempotently deletes a lockfile. Never throws if file is absent or inaccessible.
+ */
 export function deleteLockfile(lockPath, dbg) {
-    if (lockPath &&
-        typeof lockPath === 'object' &&
-        ('client' in lockPath || 'directory' in lockPath)) {
-        return {};
-    }
     try {
         if (typeof lockPath === 'string' && fs.existsSync(lockPath)) {
             fs.unlinkSync(lockPath);
@@ -52,13 +51,11 @@ export function deleteLockfile(lockPath, dbg) {
         }
     }
 }
+/**
+ * Scans `<opencodeDir>/.sq-draft-*` and deletes stale draft lockfiles older than `timeoutMs * 4`.
+ * Completely fail-safe: wraps operations in try/catch, never throws, logs via dbg if provided.
+ */
 export function cleanupStaleDrafts(configDir, timeoutMs, dbg) {
-    // If invoked directly by OpenCode's plugin engine as a plugin factory, return an empty hooks object
-    if (configDir &&
-        typeof configDir === 'object' &&
-        ('client' in configDir || 'directory' in configDir)) {
-        return {};
-    }
     try {
         const opencodeDir = (typeof configDir === 'string' && configDir) || path.resolve(process.cwd(), '.opencode');
         if (!fs.existsSync(opencodeDir)) {

@@ -5,14 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { computeOverlayViewModel } from '../dist/view-model.js';
-import {
-  tui as v1Tui,
-  setup as v2Setup,
-} from '../dist/ui.js';
+import { resolveAgentName, setup as v2Setup } from '../dist/ui.js';
 import { resolveLockPath } from '../dist/draft-guard.js';
 
 test('computeOverlayViewModel computes distinct visual metadata for AUTO, MANUAL, UNCLASSIFIED, and ERROR states', () => {
-  // 1. AUTO State
   const autoState = {
     requestID: 'req-auto',
     sessionID: 'ses-1',
@@ -44,7 +40,6 @@ test('computeOverlayViewModel computes distinct visual metadata for AUTO, MANUAL
   assert.equal(autoModel.recommendedChecklist, '✓ Production');
   assert.equal(autoModel.rationale, 'Recommended for release');
 
-  // 2. MANUAL State
   const manualState = {
     requestID: 'req-manual',
     sessionID: 'ses-1',
@@ -69,7 +64,6 @@ test('computeOverlayViewModel computes distinct visual metadata for AUTO, MANUAL
   assert.match(manualModel.title, /Manual Decision/);
   assert.equal(manualModel.statusMessage, 'Auto-selection disabled — human approval required.');
 
-  // 3. UNCLASSIFIED State
   const unclassifiedState = {
     requestID: 'req-unclass',
     sessionID: 'ses-1',
@@ -94,7 +88,6 @@ test('computeOverlayViewModel computes distinct visual metadata for AUTO, MANUAL
   assert.match(unclassifiedModel.title, /Intercepted/);
   assert.equal(unclassifiedModel.statusMessage, 'Agent was asked to classify the question.');
 
-  // 4. ERROR State (budget exhausted / remediation failed)
   const errorState = {
     requestID: 'req-err',
     sessionID: 'ses-1',
@@ -120,208 +113,15 @@ test('computeOverlayViewModel computes distinct visual metadata for AUTO, MANUAL
   assert.match(errorModel.errorMessage, /Automatic remediation stopped/);
 });
 
-test('V1 TUI: deleting owning session clears manual question lock and overlay', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-delete-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const events = new Map();
-  let renders = 0;
-  await v1Tui({
-    state: { path: { directory: dir }, session: { get(id) { return { id }; } } },
-    event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
-    renderer: { keyInput: { on() {}, off() {} }, requestRender() { renders++; } },
-    slots: { register() {} },
-    lifecycle: { onDispose() {} },
-  }, { configDir: path.join(dir, '.opencode') });
-  events.get('question.asked')({ properties: {
-    id: 'deleted-request', sessionID: 'deleted-session',
-    questions: [{ question: 'Delete?', options: [{ label: 'Yes [SQ:manual]' }, { label: 'No' }] }],
-  } });
-  const lock = resolveLockPath(path.join(dir, '.opencode'), 'deleted-request');
-  assert.equal(fs.existsSync(lock), true);
-  const before = renders;
-  events.get('session.deleted')({ properties: { id: 'deleted-session' } });
-  assert.equal(fs.existsSync(lock), false, 'deleted session must release question lock');
-  assert.ok(renders > before, 'deleted session must clear and rerender overlay');
-});
-
-test('V1 TUI: AUTO question activates overlay slot and lockfile', async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-auto-'));
-  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
-
-  const events = new Map();
-  let registeredSlot = null;
-
-  await v1Tui({
-    state: {
-      path: { directory: tempDir },
-      session: { get(id) { return { id }; } },
-    },
-    event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
-    renderer: { keyInput: { on() {}, off() {} }, requestRender() {} },
-    slots: {
-      register(def) {
-        registeredSlot = def;
-      },
-    },
-    lifecycle: { onDispose() {} },
-  }, { configDir: path.join(tempDir, '.opencode') });
-
-  events.get('question.asked')({
-    properties: {
-      id: 'req-v1-auto',
-      sessionID: 's1',
-      questions: [{
-        question: 'Proceed?',
-        options: [{ label: 'Yes [SQ:recommended]' }, { label: 'No' }],
-      }],
-    },
+test('resolveAgentName extracts V2 SessionInfo.agent and falls back to short sessionID', () => {
+  assert.deepEqual(resolveAgentName({ id: 'ses-1234567890', agent: 'architect' }, 'ses-1234567890'), {
+    name: 'architect',
+    found: true,
   });
-
-  assert.ok(registeredSlot, 'V1 TUI must register slot');
-  assert.equal(typeof registeredSlot.slots.app_bottom, 'function', 'app_bottom slot must be registered');
-});
-
-test('V1 TUI: MANUAL question [SQ:manual] activates visible MANUAL overlay and disables auto-reply', async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-manual-'));
-  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
-
-  const events = new Map();
-  let registeredSlot = null;
-  let renderRequested = false;
-
-  await v1Tui({
-    state: {
-      path: { directory: tempDir },
-      session: { get(id) { return { id }; } },
-    },
-    event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
-    renderer: {
-      keyInput: { on() {}, off() {} },
-      requestRender() { renderRequested = true; },
-    },
-    slots: {
-      register(def) {
-        registeredSlot = def;
-      },
-    },
-    lifecycle: { onDispose() {} },
-  }, { configDir: path.join(tempDir, '.opencode') });
-
-  events.get('question.asked')({
-    properties: {
-      id: 'req-v1-man',
-      sessionID: 's1',
-      questions: [{
-        question: 'Are you sure?',
-        options: [{ label: 'Confirm [SQ:manual]' }, { label: 'Cancel' }],
-      }],
-    },
+  assert.deepEqual(resolveAgentName({ id: 'ses-1234567890' }, 'ses-1234567890'), {
+    name: 'ses-1234',
+    found: false,
   });
-
-  assert.equal(renderRequested, true, 'Render must be requested for manual question');
-  assert.ok(registeredSlot, 'V1 TUI must register slot');
-  assert.equal(typeof registeredSlot.slots.app_bottom, 'function');
-
-  // Verify draft lock was written to prevent backend timer auto-selection
-  const lock = resolveLockPath(path.join(tempDir, '.opencode'), 'req-v1-man');
-  assert.equal(fs.existsSync(lock), true, 'Draft lock must be held for manual question');
-
-  // Settle question and verify overlay cleans up
-  events.get('question.replied')({ properties: { id: 'req-v1-man', sessionID: 's1' } });
-  assert.equal(fs.existsSync(lock), false, 'Draft lock must be cleaned up on reply');
-});
-
-test('V1 TUI: UNCLASSIFIED question activates visible UNCLASSIFIED overlay and draft lock', async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-unclass-'));
-  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
-
-  const events = new Map();
-  let registeredSlot = null;
-  let renderCount = 0;
-
-  await v1Tui({
-    state: {
-      path: { directory: tempDir },
-      session: { get(id) { return { id }; } },
-    },
-    event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
-    renderer: {
-      keyInput: { on() {}, off() {} },
-      requestRender() { renderCount++; },
-    },
-    slots: {
-      register(def) {
-        registeredSlot = def;
-      },
-    },
-    lifecycle: { onDispose() {} },
-  }, { configDir: path.join(tempDir, '.opencode') });
-
-  events.get('question.asked')({
-    properties: {
-      id: 'req-v1-unclass',
-      sessionID: 's1',
-      questions: [{
-        question: 'Pick database',
-        options: [{ label: 'Postgres' }, { label: 'MySQL' }],
-      }],
-    },
-  });
-
-  assert.ok(renderCount >= 1, 'Render must be requested for unclassified question');
-  assert.ok(registeredSlot, 'Slot must be registered');
-  assert.equal(typeof registeredSlot.slots.app_bottom, 'function');
-
-  const lock = resolveLockPath(path.join(tempDir, '.opencode'), 'req-v1-unclass');
-  assert.equal(fs.existsSync(lock), true, 'Draft lock must be created for unclassified question');
-});
-
-test('V1 TUI: Loop-exhausted unclassified question requests render with budget-exhausted lock', async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v1-loop-'));
-  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
-
-  const events = new Map();
-  let registeredSlot = null;
-  let renderCount = 0;
-
-  await v1Tui({
-    state: {
-      path: { directory: tempDir },
-      session: { get(id) { return { id }; } },
-    },
-    event: { on(type, handler) { events.set(type, handler); return () => events.delete(type); } },
-    renderer: {
-      keyInput: { on() {}, off() {} },
-      requestRender() { renderCount++; },
-    },
-    slots: {
-      register(def) {
-        registeredSlot = def;
-      },
-    },
-    lifecycle: { onDispose() {} },
-  }, { configDir: path.join(tempDir, '.opencode'), maxUnclassifiedRemediations: 2 });
-
-  const questionPayload = {
-    properties: {
-      id: 'req-v1-repeated',
-      sessionID: 's1',
-      questions: [{
-        question: 'Pick database',
-        options: [{ label: 'Postgres' }, { label: 'MySQL' }],
-      }],
-    },
-  };
-
-  // Turn 1: unclassified
-  events.get('question.asked')(questionPayload);
-  // Turn 2: unclassified
-  events.get('question.asked')(questionPayload);
-  // Turn 3: budget exhausted -> error state
-  events.get('question.asked')(questionPayload);
-
-  assert.ok(renderCount >= 3, 'Render must be requested for each turn');
-  assert.ok(registeredSlot, 'Slot must be registered');
 });
 
 test('V2 TUI: MANUAL form creates lock and cleans up on settlement', async (t) => {
@@ -337,7 +137,7 @@ test('V2 TUI: MANUAL form creates lock and cleans up on settlement', async (t) =
     data: {
       on(type, handler) { eventHandlers.set(type, handler); return () => eventHandlers.delete(type); },
       session: {
-        get(id) { return { id, location: { directory: tempDir } }; },
+        get(id) { return { id, agent: 'planner', location: { directory: tempDir } }; },
         form: {
           sync: async () => {},
           list: () => [],
@@ -356,9 +156,10 @@ test('V2 TUI: MANUAL form creates lock and cleans up on settlement', async (t) =
     },
   };
 
-  await v2Setup(mockContext);
+  const dispose = await v2Setup(mockContext);
+  t.after(() => dispose?.());
 
-  eventHandlers.get('form.created')({
+  await eventHandlers.get('form.created')({
     data: {
       form: {
         id: 'form-manual-1',
@@ -377,7 +178,6 @@ test('V2 TUI: MANUAL form creates lock and cleans up on settlement', async (t) =
   const lock = resolveLockPath(tempDir, 'form-manual-1');
   assert.equal(fs.existsSync(lock), true, 'Draft lock must be held for manual form');
 
-  // Settle form via form.replied
   eventHandlers.get('form.replied')({ data: { id: 'form-manual-1', sessionID: 'ses-v2' } });
   assert.equal(fs.existsSync(lock), false, 'Draft lock must be cleaned up on form settlement');
 });
@@ -401,7 +201,7 @@ test('V2 TUI: UNCLASSIFIED form sends remediation and creates draft lock', async
     data: {
       on(type, handler) { eventHandlers.set(type, handler); return () => eventHandlers.delete(type); },
       session: {
-        get(id) { return { id, location: { directory: tempDir } }; },
+        get(id) { return { id, agent: 'coder', location: { directory: tempDir } }; },
         form: {
           sync: async () => {},
           list: () => [],
@@ -420,9 +220,10 @@ test('V2 TUI: UNCLASSIFIED form sends remediation and creates draft lock', async
     },
   };
 
-  await v2Setup(mockContext);
+  const dispose = await v2Setup(mockContext);
+  t.after(() => dispose?.());
 
-  eventHandlers.get('form.created')({
+  await eventHandlers.get('form.created')({
     data: {
       form: {
         id: 'form-unclass-1',
@@ -442,4 +243,53 @@ test('V2 TUI: UNCLASSIFIED form sends remediation and creates draft lock', async
 
   const lock = resolveLockPath(tempDir, 'form-unclass-1');
   assert.equal(fs.existsSync(lock), true, 'Draft lock must be created for unclassified form');
+});
+
+test('V2 TUI: deleting owning session clears manual form lock and remediated form state', async (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sq-v2-delete-'));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  const eventHandlers = new Map();
+  const dispose = await v2Setup({
+    options: { enabled: true, timeoutMs: 30, configDir: tempDir },
+    location: { directory: tempDir },
+    data: {
+      on(type, handler) { eventHandlers.set(type, handler); return () => eventHandlers.delete(type); },
+      session: {
+        get(id) { return { id, location: { directory: tempDir } }; },
+        form: {
+          sync: async () => {},
+          list: () => [],
+          reply: async () => {},
+          invalidate: () => {},
+        },
+      },
+    },
+    renderer: { keyInput: { on() {}, off() {} } },
+    ui: {
+      router: { current: () => ({ type: 'session', sessionID: 'ses-del' }) },
+      slot: () => () => {},
+    },
+  });
+  t.after(() => dispose?.());
+
+  await eventHandlers.get('form.created')({
+    data: {
+      form: {
+        id: 'form-del-1',
+        sessionID: 'ses-del',
+        fields: [{
+          key: 'action',
+          type: 'string',
+          options: [{ value: 'yes', label: 'Yes [SQ:manual]' }, { value: 'no', label: 'No' }],
+        }],
+      },
+    },
+  });
+
+  const lock = resolveLockPath(tempDir, 'form-del-1');
+  assert.equal(fs.existsSync(lock), true);
+
+  eventHandlers.get('session.deleted')({ data: { sessionID: 'ses-del' } });
+  assert.equal(fs.existsSync(lock), false, 'deleted session must release form lock');
 });

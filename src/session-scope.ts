@@ -13,16 +13,20 @@ function unwrapSessionInfo(value: unknown): Record<string, unknown> | null {
   const data = asRecord(record.data);
   if (data) return data;
 
+  const info = asRecord(record.info);
+  if (info) return info;
+
   return record;
 }
 
 export function classifySessionScope(value: unknown): SessionScope {
   const session = unwrapSessionInfo(value);
-  if (!session || typeof session.id !== 'string' || !session.id) {
+  const id = session?.id ?? (session as Record<string, unknown> | null)?.sessionID;
+  if (!session || typeof id !== 'string' || !id) {
     return 'unknown';
   }
 
-  const parentID = session.parentID;
+  const parentID = session.parentID ?? (session as Record<string, unknown>).parentId;
   if (typeof parentID === 'string') {
     return parentID.trim() ? 'child' : 'root';
   }
@@ -50,29 +54,6 @@ export function isEligibleSessionInfo(
   includeSubagents = false
 ): boolean {
   return isEligibleSessionScope(classifySessionScope(value), includeSubagents);
-}
-
-export async function resolveV1SessionScope(
-  client: unknown,
-  sessionID: string,
-  directory?: string
-): Promise<SessionScope> {
-  if (!sessionID) return 'unknown';
-
-  const clientRecord = asRecord(client);
-  const sessionApi = asRecord(clientRecord?.session);
-  const get = sessionApi?.get;
-  if (typeof get !== 'function') return 'unknown';
-
-  try {
-    const response = await get.call(sessionApi, {
-      path: { id: sessionID },
-      ...(directory ? { query: { directory } } : {}),
-    });
-    return classifySessionScope(response);
-  } catch {
-    return 'unknown';
-  }
 }
 
 export async function resolveV2SessionScope(

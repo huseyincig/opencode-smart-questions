@@ -231,12 +231,12 @@ export function resolveSmartQuestionConfig(projectDir, pluginOptions) {
     }
     return loadConfig(projectDir);
 }
+/**
+ * Load smart-question configuration from project or global config.
+ * Missing configuration uses safe defaults; malformed configuration disables
+ * auto-selection instead of guessing.
+ */
 export function loadConfig(projectDir) {
-    if (projectDir &&
-        typeof projectDir === 'object' &&
-        ('client' in projectDir || 'directory' in projectDir)) {
-        return {};
-    }
     const dir = typeof projectDir === 'string' && projectDir ? projectDir : process.cwd();
     const candidatePaths = [
         path.resolve(dir, '.opencode/smart-question.json'),

@@ -1,52 +1,42 @@
-import { createSmartQuestionHooks } from './backend.js';
+import { Plugin as OpenCodeV2 } from '@opencode/plugin';
 import { hasSmartQuestionConfigOptions, resolveSmartQuestionConfig, } from './config.js';
 import { buildRecommendationGuidance, SQ_GUIDANCE_SENTINEL } from './guidance.js';
 import { isEligibleSessionInfo } from './session-scope.js';
+import { clearActiveHandoff, consumeActiveHandoff, extractCurrentTurnGuardianHandoff, extractTrustedGuardianHandoff, invalidateActiveHandoff, isInternalNonHumanMessage, registerSmartQuestionsCapability, setActiveHandoff, } from './handoff.js';
 export * from './types.js';
-export { loadConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_MANUAL_MARKERS, DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS, DEFAULT_CONFIG, } from './config.js';
+export { loadConfig, resolveSmartQuestionConfig, normalizeSmartQuestionConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_MANUAL_MARKERS, DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS, DEFAULT_CONFIG, } from './config.js';
 export * from './detector.js';
+export * from './guidance.js';
 export { classifyV2Form, detectV2FormRecommendations, } from './form-adapter.js';
-export { resolveLockPath, deleteLockfile, cleanupStaleDrafts, } from './draft-guard.js';
+export { resolveLockPath, deleteLockfile, cleanupStaleDrafts, canUseDraftCoordination, } from './draft-guard.js';
 export * from './backend.js';
 export * from './handoff.js';
-import { registerSmartQuestionsCapability, setActiveHandoff, extractCurrentTurnGuardianHandoff, } from './handoff.js';
-/**
- * OpenCode v1 plugin factory.
- */
-export const SmartQuestion = async (input, options) => {
-    const pluginOptions = options;
-    const config = resolveSmartQuestionConfig(input.directory, pluginOptions);
-    if (!config?.enabled)
-        return {};
-    const unregisterCapability = registerSmartQuestionsCapability();
-    try {
-        const hooks = await createSmartQuestionHooks(input, pluginOptions);
-        const originalDispose = hooks.dispose;
-        return {
-            ...hooks,
-            dispose: async () => {
-                try {
-                    await originalDispose?.();
-                }
-                finally {
-                    if (typeof unregisterCapability === 'function') {
-                        unregisterCapability();
-                    }
-                }
-            },
-        };
+function sessionDirectoryFromInfo(sessionInfo, fallbackDirectory) {
+    if (sessionInfo &&
+        typeof sessionInfo === 'object' &&
+        'location' in sessionInfo &&
+        sessionInfo.location &&
+        typeof sessionInfo.location === 'object' &&
+        'directory' in sessionInfo.location &&
+        typeof sessionInfo.location.directory === 'string') {
+        return sessionInfo.location.directory;
     }
-    catch (error) {
-        if (typeof unregisterCapability === 'function') {
-            unregisterCapability();
-        }
-        throw error;
+    return fallbackDirectory;
+}
+function eventSessionID(data) {
+    if (!data || typeof data !== 'object')
+        return '';
+    const record = data;
+    if (typeof record.sessionID === 'string')
+        return record.sessionID;
+    if (record.form &&
+        typeof record.form === 'object' &&
+        typeof record.form.sessionID === 'string') {
+        return record.form.sessionID;
     }
-};
+    return '';
+}
 const setupV2 = async (context) => {
-    // OpenCode v1/transition builds may discover this v2-shaped plugin object and
-    // call setup() with only a partial context. Missing capabilities mean "v2 is
-    // unavailable", not a startup error.
     if (!context ||
         typeof context !== 'object' ||
         typeof context.session?.hook !== 'function' ||
@@ -62,9 +52,6 @@ const setupV2 = async (context) => {
     const unregisterCapability = registerSmartQuestionsCapability();
     const registrations = [];
     const disposeRegistrations = async () => {
-        // Complete cleanup strictly in reverse registration order. Each disposer
-        // is isolated so one cleanup failure does not prevent older resources
-        // from being released. Splicing keeps repeated disposal idempotent.
         for (const registration of registrations.splice(0).reverse()) {
             try {
                 await registration.dispose();
@@ -73,6 +60,22 @@ const setupV2 = async (context) => {
                 // Teardown is best effort; continue releasing the remaining resources.
             }
         }
+    };
+    const isSessionEligible = async (sessionID) => {
+        if (!sessionID)
+            return false;
+        let sessionInfo;
+        try {
+            sessionInfo = await context.session.get({ sessionID });
+        }
+        catch {
+            return false;
+        }
+        const dir = sessionDirectoryFromInfo(sessionInfo, context.location?.directory);
+        const config = resolveSmartQuestionConfig(dir, pluginOptions);
+        if (!config?.enabled)
+            return false;
+        return isEligibleSessionInfo(sessionInfo, config.includeSubagents === true);
     };
     try {
         const contextRegistration = await context.session.hook('context', async (event) => {
@@ -86,21 +89,16 @@ const setupV2 = async (context) => {
             catch {
                 return;
             }
-            const sessionDirectory = sessionInfo &&
-                typeof sessionInfo === 'object' &&
-                'location' in sessionInfo &&
-                sessionInfo.location &&
-                typeof sessionInfo.location === 'object' &&
-                'directory' in sessionInfo.location &&
-                typeof sessionInfo.location.directory === 'string'
-                ? sessionInfo.location.directory
-                : context.location?.directory;
+            const sessionDirectory = sessionDirectoryFromInfo(sessionInfo, context.location?.directory);
             const config = resolveSmartQuestionConfig(sessionDirectory, pluginOptions);
             if (!config?.enabled)
                 return;
             if (!isEligibleSessionInfo(sessionInfo, config.includeSubagents === true))
                 return;
             const guidance = buildRecommendationGuidance(config);
+            if (!Array.isArray(event.system)) {
+                event.system = [];
+            }
             const alreadyInjected = event.system.some((part) => part.type === 'text' &&
                 typeof part.text === 'string' &&
                 part.text.includes(SQ_GUIDANCE_SENTINEL));
@@ -112,7 +110,7 @@ const setupV2 = async (context) => {
             }
             if (Array.isArray(event.messages)) {
                 const handoff = extractCurrentTurnGuardianHandoff(event.messages);
-                if (handoff && typeof handoff === 'object' && 'version' in handoff) {
+                if (handoff) {
                     setActiveHandoff(sessionID, handoff);
                 }
             }
@@ -121,33 +119,99 @@ const setupV2 = async (context) => {
             throw new Error('V2 context hook did not return a valid registration');
         }
         registrations.push(contextRegistration);
-    }
-    catch {
-        await disposeRegistrations();
-        if (typeof unregisterCapability === 'function') {
-            unregisterCapability();
+        const promptRegistration = await context.session.hook('prompt', async (event) => {
+            const sessionID = String(event.sessionID ?? '');
+            if (!sessionID)
+                return;
+            const meta = event.metadata && typeof event.metadata === 'object' && !Array.isArray(event.metadata)
+                ? event.metadata
+                : undefined;
+            if (meta?.['opencode-guardian'] === true || meta?.['opencode-smart-questions'] === true) {
+                return;
+            }
+            invalidateActiveHandoff(sessionID);
+        });
+        if (!promptRegistration || typeof promptRegistration.dispose !== 'function') {
+            throw new Error('V2 prompt hook did not return a valid registration');
         }
-        throw new Error('[smart-question] V2 backend registration failed');
+        registrations.push(promptRegistration);
+        if (typeof context.event?.subscribe === 'function') {
+            const eventController = new AbortController();
+            registrations.push({
+                dispose: async () => {
+                    eventController.abort();
+                },
+            });
+            const stream = context.event.subscribe({ signal: eventController.signal });
+            void (async () => {
+                try {
+                    for await (const evt of stream) {
+                        if (eventController.signal.aborted)
+                            break;
+                        if (!evt || typeof evt !== 'object')
+                            continue;
+                        const eventType = evt.type;
+                        const data = evt.data;
+                        const sessionID = eventSessionID(data);
+                        if (!sessionID)
+                            continue;
+                        if (eventType === 'session.synthetic') {
+                            const handoff = extractTrustedGuardianHandoff(data);
+                            if (handoff && (await isSessionEligible(sessionID))) {
+                                setActiveHandoff(sessionID, handoff);
+                            }
+                        }
+                        else if (eventType === 'session.inbox.enqueued') {
+                            const item = data && typeof data === 'object'
+                                ? data.item
+                                : undefined;
+                            const itemType = item && typeof item === 'object'
+                                ? item.type
+                                : undefined;
+                            if (itemType === 'synthetic') {
+                                const handoff = extractTrustedGuardianHandoff(item);
+                                if (handoff && (await isSessionEligible(sessionID))) {
+                                    setActiveHandoff(sessionID, handoff);
+                                }
+                            }
+                            else if (itemType === 'user' && !isInternalNonHumanMessage(item)) {
+                                invalidateActiveHandoff(sessionID);
+                            }
+                        }
+                        else if (eventType === 'form.replied' || eventType === 'form.cancelled') {
+                            consumeActiveHandoff(sessionID);
+                        }
+                        else if (eventType === 'session.deleted') {
+                            clearActiveHandoff(sessionID);
+                        }
+                    }
+                }
+                catch {
+                    // Stream ended or aborted during plugin teardown.
+                }
+            })();
+        }
+    }
+    catch (error) {
+        await disposeRegistrations();
+        unregisterCapability();
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`[smart-question] V2 backend registration failed: ${message}`);
     }
     return async () => {
         try {
             await disposeRegistrations();
         }
         finally {
-            if (typeof unregisterCapability === 'function') {
-                unregisterCapability();
-            }
+            unregisterCapability();
         }
     };
 };
 /**
- * OpenCode v2 backend plugin definition. The v2 backend injects recommendation
- * guidance; the v2 TUI adapter owns form countdown/reply because the server
- * plugin Context intentionally does not expose session.form.reply().
+ * OpenCode v2 server plugin definition.
  */
-export const OpencodeSmartQuestions = {
+export const OpencodeSmartQuestions = OpenCodeV2.define({
     id: 'opencode-smart-questions',
-    server: SmartQuestion,
     setup: setupV2,
-};
+});
 export default OpencodeSmartQuestions;

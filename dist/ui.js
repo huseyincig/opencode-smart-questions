@@ -10,6 +10,7 @@ import { createElement as _$createElement } from "@opentui/solid";
 import fs3 from "node:fs";
 import path3 from "node:path";
 import { Show, createMemo, createSignal } from "solid-js";
+import { Plugin as OpenCodeV2Tui } from "@opencode/plugin/tui";
 
 // src/config.ts
 import fs from "node:fs";
@@ -223,9 +224,6 @@ function resolveSmartQuestionConfig(projectDir, pluginOptions) {
   return loadConfig(projectDir);
 }
 function loadConfig(projectDir) {
-  if (projectDir && typeof projectDir === "object" && ("client" in projectDir || "directory" in projectDir)) {
-    return {};
-  }
   const dir = typeof projectDir === "string" && projectDir ? projectDir : process.cwd();
   const candidatePaths = [
     path.resolve(dir, ".opencode/smart-question.json"),
@@ -261,9 +259,6 @@ function loadConfig(projectDir) {
 // src/detector.ts
 import { createHash } from "node:crypto";
 function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMarkers, options = {}) {
-  if (questions && typeof questions === "object" && !Array.isArray(questions) && ("client" in questions || "directory" in questions)) {
-    return {};
-  }
   void options;
   if (!Array.isArray(questions) || questions.length === 0) {
     return { ok: false, reason: "No questions provided in request" };
@@ -502,9 +497,6 @@ function classifyQuestions(questions, recommendedMarker = DEFAULT_CONFIG.recomme
   };
 }
 function computeQuestionFingerprint(questions) {
-  if (questions && typeof questions === "object" && !Array.isArray(questions) && ("client" in questions || "directory" in questions)) {
-    return {};
-  }
   if (!Array.isArray(questions) || questions.length === 0) return "empty";
   const normalized = questions.map((q) => ({
     header: typeof q?.header === "string" ? q.header.trim().toLowerCase().normalize("NFC") : "",
@@ -524,9 +516,6 @@ import fs2 from "node:fs";
 import path2 from "node:path";
 import { randomUUID } from "node:crypto";
 function resolveLockPath(configDir, requestID) {
-  if (configDir && typeof configDir === "object" && ("client" in configDir || "directory" in configDir)) {
-    return {};
-  }
   const opencodeDir = typeof configDir === "string" && configDir || path2.resolve(process.cwd(), ".opencode");
   const safeRequestID = encodeURIComponent(typeof requestID === "string" ? requestID : "unknown");
   return path2.join(opencodeDir, `.sq-draft-${safeRequestID}`);
@@ -549,9 +538,6 @@ function canUseDraftCoordination(configDir, dbg) {
   }
 }
 function deleteLockfile(lockPath, dbg) {
-  if (lockPath && typeof lockPath === "object" && ("client" in lockPath || "directory" in lockPath)) {
-    return {};
-  }
   try {
     if (typeof lockPath === "string" && fs2.existsSync(lockPath)) {
       fs2.unlinkSync(lockPath);
@@ -562,6 +548,46 @@ function deleteLockfile(lockPath, dbg) {
     if (errCode !== "ENOENT") {
       dbg?.(`failed to delete lockfile file=${typeof lockPath === "string" ? path2.basename(lockPath) : "unknown"} code=${diagnosticErrorCode(err)}`);
     }
+  }
+}
+function cleanupStaleDrafts(configDir, timeoutMs, dbg) {
+  try {
+    const opencodeDir = typeof configDir === "string" && configDir || path2.resolve(process.cwd(), ".opencode");
+    if (!fs2.existsSync(opencodeDir)) {
+      return;
+    }
+    const effectiveTimeout = typeof timeoutMs === "number" && timeoutMs >= 0 ? timeoutMs : DEFAULT_CONFIG.timeoutMs;
+    const staleThresholdMs = Math.max(
+      effectiveTimeout * 4,
+      DEFAULT_CONFIG.timeoutMs * 4
+    );
+    const now = Date.now();
+    const entries = fs2.readdirSync(opencodeDir);
+    for (const entry of entries) {
+      if (!entry.startsWith(".sq-draft-")) {
+        continue;
+      }
+      const fullPath = path2.join(opencodeDir, entry);
+      try {
+        const stat = fs2.statSync(fullPath);
+        if (!stat.isFile()) {
+          continue;
+        }
+        const ageMs = now - stat.mtimeMs;
+        if (ageMs > staleThresholdMs) {
+          fs2.unlinkSync(fullPath);
+          dbg?.(
+            `cleanupStaleDrafts: deleted stale draft ${entry} (age=${Math.round(ageMs)}ms > threshold=${staleThresholdMs}ms)`
+          );
+        }
+      } catch (fileErr) {
+        dbg?.(
+          `cleanupStaleDrafts: error processing ${entry} code=${diagnosticErrorCode(fileErr)}`
+        );
+      }
+    }
+  } catch (err) {
+    dbg?.(`cleanupStaleDrafts: unexpected error code=${diagnosticErrorCode(err)}`);
   }
 }
 
@@ -748,6 +774,33 @@ function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers, manua
   };
 }
 
+// src/backend.ts
+var SQ_REMEDIATION_HEADER = "[Smart Questions protocol remediation]";
+function buildUnclassifiedRemediationPrompt(primaryMarker = "[SQ:recommended]", manualMarker = "[SQ:manual]") {
+  const recMarker = typeof primaryMarker === "string" && primaryMarker ? primaryMarker : "[SQ:recommended]";
+  return [
+    SQ_REMEDIATION_HEADER,
+    "",
+    "This selectable question is unclassified.",
+    "",
+    "Do not leave a root-agent selectable question waiting indefinitely.",
+    "",
+    "Either:",
+    "",
+    "1. mark the safest/recommended option with the canonical",
+    `   ${recMarker}`,
+    "   token so Smart Questions can continue automatically,",
+    "",
+    "or",
+    "",
+    "2. explicitly classify the question as manual approval using",
+    `   the Smart Questions manual-decision protocol (${manualMarker}) when human`,
+    "   approval is genuinely required.",
+    "",
+    "Do not ask the same unclassified question again."
+  ].join("\n");
+}
+
 // src/session-scope.ts
 function asRecord(value) {
   return value && typeof value === "object" ? value : null;
@@ -757,14 +810,17 @@ function unwrapSessionInfo(value) {
   if (!record) return null;
   const data = asRecord(record.data);
   if (data) return data;
+  const info = asRecord(record.info);
+  if (info) return info;
   return record;
 }
 function classifySessionScope(value) {
   const session = unwrapSessionInfo(value);
-  if (!session || typeof session.id !== "string" || !session.id) {
+  const id = session?.id ?? session?.sessionID;
+  if (!session || typeof id !== "string" || !id) {
     return "unknown";
   }
-  const parentID = session.parentID;
+  const parentID = session.parentID ?? session.parentId;
   if (typeof parentID === "string") {
     return parentID.trim() ? "child" : "root";
   }
@@ -796,14 +852,13 @@ var COORDINATION_SYMBOL = Symbol.for("opencode.coordination.v1");
 function isRecord(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
-function isPluginInput(arg) {
-  return Boolean(
-    arg && typeof arg === "object" && ("client" in arg || "directory" in arg || "project" in arg)
-  );
-}
 function guardianMetadata(value) {
   if (!isRecord(value)) return void 0;
-  return isRecord(value.metadata) ? value.metadata : void 0;
+  if (isRecord(value.metadata)) return value.metadata;
+  if (isRecord(value.payload) && isRecord(value.payload.metadata)) {
+    return value.payload.metadata;
+  }
+  return void 0;
 }
 function hasGuardianMetadata(value, expectedKind) {
   const metadata = guardianMetadata(value);
@@ -834,6 +889,24 @@ function isGuardianOwnedNonHumanMessage(value) {
   }
   return isRecord(value.message) ? isGuardianOwnedNonHumanMessage(value.message) : false;
 }
+function isInternalNonHumanPart(part) {
+  if (!isRecord(part)) return false;
+  const meta = guardianMetadata(part);
+  return part.type === "synthetic" || part.synthetic === true || part.ignored === true || meta?.["opencode-smart-questions"] === true || meta?.[GUARDIAN_PROVENANCE_KEY] === true;
+}
+function isInternalNonHumanMessage(value) {
+  if (!isRecord(value)) return false;
+  if (isGuardianOwnedNonHumanMessage(value)) return true;
+  const meta = guardianMetadata(value);
+  if (value.type === "synthetic" || value.synthetic === true || value.ignored === true || meta?.["opencode-smart-questions"] === true || meta?.[GUARDIAN_PROVENANCE_KEY] === true) {
+    return true;
+  }
+  const parts = messageParts(value);
+  if (parts?.some((part) => isInternalNonHumanPart(part))) {
+    return true;
+  }
+  return isRecord(value.message) ? isInternalNonHumanMessage(value.message) : false;
+}
 function messageRole(value) {
   if (!isRecord(value)) return void 0;
   if (typeof value.role === "string") return value.role;
@@ -858,6 +931,9 @@ function messageTextCandidates(value) {
   const out = [];
   if (typeof value.text === "string") out.push(value.text);
   if (typeof value.content === "string") out.push(value.content);
+  if (isRecord(value.payload) && typeof value.payload.text === "string") {
+    out.push(value.payload.text);
+  }
   const parts = messageParts(value);
   if (parts) {
     for (const part of parts) {
@@ -872,7 +948,6 @@ function messageTextCandidates(value) {
   return out;
 }
 function parseOpenCodeHandoff(text, options) {
-  if (isPluginInput(text)) return {};
   if (typeof text !== "string" || !text.includes(OPENCODE_HANDOFF_HEADER)) return null;
   const requireMarker = typeof options === "boolean" ? options : Boolean(options?.requireRemediationMarker);
   if (requireMarker && !text.includes(GUARDIAN_REMEDIATION_MARKER)) {
@@ -912,7 +987,6 @@ function parseOpenCodeHandoff(text, options) {
   };
 }
 function extractHandoffFromParts(parts, options) {
-  if (isPluginInput(parts)) return {};
   if (!Array.isArray(parts)) return null;
   const requireMarker = typeof options === "boolean" ? options : options?.requireRemediationMarker ?? true;
   const requireProvenance = typeof options === "boolean" ? true : options?.requireGuardianProvenance ?? true;
@@ -931,7 +1005,6 @@ function extractHandoffFromParts(parts, options) {
   return null;
 }
 function extractTrustedGuardianHandoff(source) {
-  if (isPluginInput(source)) return {};
   if (!isRecord(source)) return null;
   const message = isRecord(source.message) ? source.message : void 0;
   const directProvenance = hasGuardianMetadata(source, "remediation") || hasGuardianMetadata(source.info, "remediation") || hasGuardianMetadata(message, "remediation") || (message ? hasGuardianMetadata(message.info, "remediation") : false);
@@ -956,15 +1029,14 @@ function extractTrustedGuardianHandoff(source) {
   return null;
 }
 function extractCurrentTurnGuardianHandoff(messages) {
-  if (isPluginInput(messages)) return {};
   if (!Array.isArray(messages)) return null;
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     const handoff = extractTrustedGuardianHandoff(message);
-    if (handoff && typeof handoff === "object" && "version" in handoff) {
+    if (handoff) {
       return handoff;
     }
-    if (messageRole(message) === "user" && !isGuardianOwnedNonHumanMessage(message)) {
+    if (messageRole(message) === "user" && !isInternalNonHumanMessage(message)) {
       return null;
     }
   }
@@ -1026,7 +1098,6 @@ function boundActiveHandoffs(state, now = Date.now()) {
   }
 }
 function setActiveHandoff(sessionID, handoff, timestamp) {
-  if (isPluginInput(sessionID)) return {};
   const sID = String(sessionID ?? "");
   const h = handoff;
   if (!sID || !h?.handoffId) return false;
@@ -1044,7 +1115,6 @@ function setActiveHandoff(sessionID, handoff, timestamp) {
   return true;
 }
 function getActiveHandoff(sessionID, maxAgeMs = DEFAULT_HANDOFF_TTL_MS) {
-  if (isPluginInput(sessionID)) return {};
   const sID = String(sessionID ?? "");
   if (!sID) return void 0;
   const state = getHandoffState();
@@ -1060,7 +1130,6 @@ function getActiveHandoff(sessionID, maxAgeMs = DEFAULT_HANDOFF_TTL_MS) {
   return entry.handoff;
 }
 function consumeActiveHandoff(sessionID) {
-  if (isPluginInput(sessionID)) return {};
   const sID = String(sessionID ?? "");
   if (!sID) return void 0;
   const state = getHandoffState();
@@ -1071,7 +1140,6 @@ function consumeActiveHandoff(sessionID) {
   return entry.handoff;
 }
 function invalidateActiveHandoff(sessionID) {
-  if (isPluginInput(sessionID)) return {};
   const sID = String(sessionID ?? "");
   if (!sID) return void 0;
   const state = getHandoffState();
@@ -1082,40 +1150,9 @@ function invalidateActiveHandoff(sessionID) {
   return entry.handoff;
 }
 function clearActiveHandoff(sessionID) {
-  if (isPluginInput(sessionID)) return {};
   const sID = String(sessionID ?? "");
   if (!sID) return;
   getHandoffState().activeHandoffsBySession.delete(sID);
-}
-
-// src/backend.ts
-var SQ_REMEDIATION_HEADER = "[Smart Questions protocol remediation]";
-function buildUnclassifiedRemediationPrompt(primaryMarker, manualMarker = "[SQ:manual]") {
-  if (primaryMarker && typeof primaryMarker === "object" && ("client" in primaryMarker || "directory" in primaryMarker)) {
-    return {};
-  }
-  const recMarker = typeof primaryMarker === "string" ? primaryMarker : "[SQ:recommended]";
-  return [
-    SQ_REMEDIATION_HEADER,
-    "",
-    "This selectable question is unclassified.",
-    "",
-    "Do not leave a root-agent selectable question waiting indefinitely.",
-    "",
-    "Either:",
-    "",
-    "1. mark the safest/recommended option with the canonical",
-    `   ${recMarker}`,
-    "   token so Smart Questions can continue automatically,",
-    "",
-    "or",
-    "",
-    "2. explicitly classify the question as manual approval using",
-    `   the Smart Questions manual-decision protocol (${manualMarker}) when human`,
-    "   approval is genuinely required.",
-    "",
-    "Do not ask the same unclassified question again."
-  ].join("\n");
 }
 
 // src/ui.js
@@ -1139,22 +1176,6 @@ function createDiagnosticLogger(config, prefix) {
     }
   };
 }
-function hasInternalSyntheticPart(parts) {
-  if (!Array.isArray(parts)) return false;
-  return parts.some((part) => {
-    if (!part || typeof part !== "object" || Array.isArray(part)) return false;
-    const record = part;
-    const metadata = record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata) ? record.metadata : void 0;
-    return record.synthetic === true || record.ignored === true || metadata?.["opencode-guardian"] === true || metadata?.["opencode-smart-questions"] === true;
-  });
-}
-function v1EventPayload(event) {
-  const properties = event.properties && typeof event.properties === "object" && !Array.isArray(event.properties) ? event.properties : void 0;
-  const nestedData = properties?.data && typeof properties.data === "object" && !Array.isArray(properties.data) ? properties.data : void 0;
-  const info = properties?.info && typeof properties.info === "object" && !Array.isArray(properties.info) ? properties.info : void 0;
-  const directData = event.data && typeof event.data === "object" && !Array.isArray(event.data) ? event.data : void 0;
-  return nestedData ?? info ?? directData ?? properties ?? event;
-}
 function ensureDraftLock(lockPath, _payload) {
   try {
     fs3.mkdirSync(path3.dirname(lockPath), {
@@ -1172,28 +1193,16 @@ function ensureDraftLock(lockPath, _payload) {
 function resolveV2TuiConfig(context, directory = context.location?.directory) {
   return resolveSmartQuestionConfig(directory, context.options);
 }
-function resolveAgentName(api, sessionID, eventProps) {
-  if (typeof eventProps?.agent === "string" && eventProps.agent.trim().length > 0) {
-    return {
-      name: eventProps.agent.trim(),
-      found: true
-    };
-  }
-  if (typeof eventProps?.agentName === "string" && eventProps.agentName.trim().length > 0) {
-    return {
-      name: eventProps.agentName.trim(),
-      found: true
-    };
-  }
-  try {
-    const session = api?.state?.session?.get?.(sessionID);
-    if (session && typeof session.agent === "string" && session.agent.trim().length > 0) {
+function resolveAgentName(sessionInfo, sessionID) {
+  if (sessionInfo && typeof sessionInfo === "object") {
+    const record = sessionInfo;
+    const agent = record.agent;
+    if (typeof agent === "string" && agent.trim().length > 0) {
       return {
-        name: session.agent.trim(),
+        name: agent.trim(),
         found: true
       };
     }
-  } catch {
   }
   const shortId = sessionID && typeof sessionID === "string" ? sessionID.slice(0, 8) : "unknown";
   return {
@@ -1463,339 +1472,6 @@ function SmartQuestionOverlay(props) {
     }
   });
 }
-var tui = async (api, options) => {
-  const projectDir = api.state?.path?.directory ?? process.cwd();
-  const config = resolveSmartQuestionConfig(projectDir, options);
-  if (!config?.enabled) return;
-  const log = createDiagnosticLogger(config, "smart-question-ui");
-  if (!canUseDraftCoordination(config.configDir, log)) return;
-  const [activeQuestion, setActiveQuestion] = createSignal(null);
-  const [countdownSec, setCountdownSec] = createSignal(0);
-  const sessionChains = /* @__PURE__ */ new Map();
-  let countdownTimer = null;
-  let currentLockPath = null;
-  let triggerFocusGuard = null;
-  const clearTimer = () => {
-    if (!countdownTimer) return;
-    clearInterval(countdownTimer);
-    countdownTimer = null;
-  };
-  const clearActive = (removeLock = true) => {
-    clearTimer();
-    triggerFocusGuard = null;
-    if (removeLock && currentLockPath) {
-      deleteLockfile(currentLockPath, log);
-    }
-    currentLockPath = null;
-    setActiveQuestion(null);
-    api.renderer?.requestRender?.();
-  };
-  const onAsked = (event) => {
-    const data = v1EventPayload(event);
-    const requestID = data?.id ?? data?.requestID ?? event?.id;
-    const sessionID = String(data?.sessionID ?? event?.sessionID ?? "");
-    const questions = data?.questions ?? event?.questions ?? [];
-    if (typeof requestID !== "string" || !sessionID || !Array.isArray(questions) || questions.length === 0) {
-      return;
-    }
-    let sessionInfo;
-    try {
-      sessionInfo = api?.state?.session?.get?.(sessionID);
-    } catch {
-      return;
-    }
-    if (!isEligibleSessionInfo(sessionInfo, config.includeSubagents === true)) return;
-    let handoff = getActiveHandoff(sessionID);
-    if (!handoff) {
-      try {
-        const msgs = api?.state?.session?.messages?.(sessionID);
-        if (Array.isArray(msgs)) {
-          const extracted = extractCurrentTurnGuardianHandoff(msgs);
-          if (extracted && typeof extracted === "object" && "version" in extracted) {
-            if (setActiveHandoff(sessionID, extracted) === true) {
-              handoff = extracted;
-            }
-          }
-        }
-      } catch {
-      }
-    }
-    const fallbackActive = config.unclassifiedQuestionPolicy === "fallback-first" || config.fallbackToFirstOption === true;
-    let classification = classifyQuestions(questions, config.recommendedMarkers, config.manualMarkers, handoff, {
-      requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
-      allowFallback: fallbackActive,
-      allowFallbackOnManual: config.fallbackOnManual === true
-    });
-    const agent = resolveAgentName(api, sessionID, data);
-    const lockPath = resolveLockPath(config.configDir, requestID);
-    if (classification.status === "unclassified" && config.unclassifiedQuestionPolicy === "remediate-then-fallback") {
-      const fingerprint = computeQuestionFingerprint(questions);
-      const chain = sessionChains.get(sessionID);
-      const count = chain?.fingerprint === fingerprint ? chain.consecutiveFailures : 0;
-      if (count >= (config.maxUnclassifiedRemediations ?? DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS)) {
-        classification = classifyQuestions(questions, config.recommendedMarkers, config.manualMarkers, handoff, {
-          allowFallback: true,
-          allowFallbackOnManual: config.fallbackOnManual === true
-        });
-      }
-    }
-    if (classification.status === "manual") {
-      sessionChains.delete(sessionID);
-      clearActive(!activeQuestion()?.focusDisabled);
-      currentLockPath = lockPath;
-      ensureDraftLock(lockPath, {
-        requestID,
-        sessionID,
-        ts: Date.now(),
-        reason: "manual-classification"
-      });
-      setActiveQuestion({
-        requestID,
-        sessionID,
-        questions,
-        detection: {
-          ok: false,
-          reason: classification.reason
-        },
-        agentName: agent.name,
-        agentFound: agent.found,
-        focusDisabled: true,
-        status: "manual",
-        statusMessage: config.uiText.manualSubtitle,
-        markers: config.recommendedMarkers,
-        uiText: config.uiText
-      });
-      log(`manual request=${requestID} reason=${classification.reason}`);
-      api.renderer?.requestRender?.();
-      return;
-    }
-    if (classification.status === "unclassified") {
-      if (config.unclassifiedQuestionPolicy === "ignore") {
-        log(`unclassified request=${requestID} ignored per unclassifiedQuestionPolicy`);
-        return;
-      }
-      clearActive(!activeQuestion()?.focusDisabled);
-      currentLockPath = lockPath;
-      ensureDraftLock(lockPath, {
-        requestID,
-        sessionID,
-        ts: Date.now(),
-        reason: "unclassified"
-      });
-      const fingerprint = computeQuestionFingerprint(questions);
-      const maxRemediations = typeof config.maxUnclassifiedRemediations === "number" ? config.maxUnclassifiedRemediations : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
-      const existingChain = sessionChains.get(sessionID);
-      const isSameChain = existingChain !== void 0 && existingChain.fingerprint === fingerprint;
-      const currentCount = isSameChain ? existingChain.consecutiveFailures : 0;
-      if (currentCount >= maxRemediations) {
-        setActiveQuestion({
-          requestID,
-          sessionID,
-          questions,
-          detection: {
-            ok: false,
-            reason: "Remediation budget exhausted"
-          },
-          agentName: agent.name,
-          agentFound: agent.found,
-          focusDisabled: true,
-          status: "error",
-          errorMessage: config.uiText.budgetExhausted,
-          markers: config.recommendedMarkers,
-          uiText: config.uiText
-        });
-        log(`unclassified budget exhausted request=${requestID} count=${currentCount}/${maxRemediations}`);
-        api.renderer?.requestRender?.();
-        return;
-      }
-      sessionChains.set(sessionID, {
-        fingerprint,
-        consecutiveFailures: currentCount + 1
-      });
-      setActiveQuestion({
-        requestID,
-        sessionID,
-        questions,
-        detection: {
-          ok: false,
-          reason: classification.reason
-        },
-        agentName: agent.name,
-        agentFound: agent.found,
-        focusDisabled: true,
-        status: "unclassified",
-        statusMessage: config.uiText.unclassifiedSubtitle,
-        markers: config.recommendedMarkers,
-        uiText: config.uiText
-      });
-      log(`unclassified request=${requestID} reason=${classification.reason}`);
-      api.renderer?.requestRender?.();
-      return;
-    }
-    sessionChains.delete(sessionID);
-    clearActive(!activeQuestion()?.focusDisabled);
-    currentLockPath = lockPath;
-    const decision = {
-      ok: true,
-      answers: classification.answers,
-      recommendedOptions: classification.recommendedOptions,
-      matchedMarker: classification.matchedMarker
-    };
-    setActiveQuestion({
-      requestID,
-      sessionID,
-      questions,
-      detection: decision,
-      agentName: agent.name,
-      agentFound: agent.found,
-      focusDisabled: false,
-      status: "auto",
-      markers: config.recommendedMarkers,
-      uiText: config.uiText
-    });
-    let focusGuardTriggered = false;
-    triggerFocusGuard = (reason) => {
-      if (focusGuardTriggered) return;
-      focusGuardTriggered = true;
-      clearTimer();
-      ensureDraftLock(lockPath, {
-        requestID,
-        sessionID,
-        ts: Date.now(),
-        reason
-      });
-      setActiveQuestion((current) => current?.requestID === requestID ? {
-        ...current,
-        focusDisabled: true
-      } : current);
-      log(`manual interaction request=${requestID} reason=${reason}`);
-      api.renderer?.requestRender?.();
-    };
-    const startedAt = Date.now();
-    const updateCountdown = () => {
-      const remainingMs = Math.max(0, config.timeoutMs - (Date.now() - startedAt));
-      setCountdownSec(Math.ceil(remainingMs / 1e3));
-      if (remainingMs <= 0) {
-        clearTimer();
-        setActiveQuestion(null);
-        currentLockPath = null;
-      }
-      api.renderer?.requestRender?.();
-    };
-    updateCountdown();
-    if (config.timeoutMs > 0) {
-      countdownTimer = setInterval(updateCountdown, 250);
-    }
-  };
-  const onEnd = (event) => {
-    const data = v1EventPayload(event);
-    const requestID = data?.requestID ?? data?.id ?? event?.id;
-    const sessionID = String(data?.sessionID ?? event?.sessionID ?? "");
-    if (sessionID) {
-      consumeActiveHandoff(sessionID);
-      sessionChains.delete(sessionID);
-    }
-    const current = activeQuestion();
-    if (current && typeof requestID === "string" && requestID === current.requestID) {
-      clearActive();
-    }
-  };
-  const onMessageCreated = (event) => {
-    const data = v1EventPayload(event);
-    const sessionID = String(data?.sessionID ?? event?.sessionID ?? "");
-    if (!sessionID) return;
-    const handoff = extractTrustedGuardianHandoff(data);
-    if (handoff && typeof handoff === "object" && "version" in handoff) {
-      setActiveHandoff(sessionID, handoff);
-    } else {
-      const role = data?.role ?? data?.message?.role;
-      if (role === "user" && data?.metadata?.["opencode-guardian"] !== true && data?.message?.metadata?.["opencode-guardian"] !== true && !hasInternalSyntheticPart(data?.parts ?? data?.message?.parts)) {
-        invalidateActiveHandoff(sessionID);
-        sessionChains.delete(sessionID);
-      }
-    }
-  };
-  const onSessionDeleted = (event) => {
-    const data = v1EventPayload(event);
-    const sessionID = String(data?.id ?? data?.sessionID ?? event?.sessionID ?? "");
-    if (sessionID) {
-      clearActiveHandoff(sessionID);
-      sessionChains.delete(sessionID);
-      if (activeQuestion()?.sessionID === sessionID) {
-        clearActive();
-      }
-    }
-  };
-  const stopAsked = api.event?.on?.("question.asked", onAsked);
-  const stopReplied = api.event?.on?.("question.replied", onEnd);
-  const stopRejected = api.event?.on?.("question.rejected", onEnd);
-  const stopMsgUpdated = api.event?.on?.("message.updated", onMessageCreated);
-  const stopMsgCreated = api.event?.on?.("message.created", onMessageCreated);
-  const stopSessionDel = api.event?.on?.("session.deleted", onSessionDeleted);
-  api.slots?.register?.({
-    slots: {
-      app_bottom() {
-        return _$createComponent(SmartQuestionOverlay, {
-          state: activeQuestion,
-          countdown: countdownSec,
-          get markers() {
-            return config.recommendedMarkers;
-          },
-          get uiText() {
-            return config.uiText;
-          }
-        });
-      }
-    }
-  });
-  const onKey = () => {
-    if (activeQuestion() && triggerFocusGuard) {
-      triggerFocusGuard("user keyboard interaction");
-    }
-  };
-  const onPaste = () => {
-    if (activeQuestion() && triggerFocusGuard) {
-      triggerFocusGuard("user paste interaction");
-    }
-  };
-  let stopLegacyKey;
-  let keypressRegistered = false;
-  let pasteRegistered = false;
-  let cleaned = false;
-  const cleanupLocal = () => {
-    if (cleaned) return;
-    cleaned = true;
-    stopLegacyKey?.();
-    stopAsked?.();
-    stopReplied?.();
-    stopRejected?.();
-    stopMsgUpdated?.();
-    stopMsgCreated?.();
-    stopSessionDel?.();
-    if (keypressRegistered) {
-      api.renderer?.keyInput?.off?.("keypress", onKey);
-      keypressRegistered = false;
-    }
-    if (pasteRegistered) {
-      api.renderer?.keyInput?.off?.("paste", onPaste);
-      pasteRegistered = false;
-    }
-    clearActive(activeQuestion()?.focusDisabled !== true);
-  };
-  api.lifecycle?.onDispose?.(cleanupLocal);
-  try {
-    if (typeof api.renderer?.keyInput?.on === "function") {
-      api.renderer.keyInput.on("keypress", onKey);
-      keypressRegistered = true;
-      api.renderer.keyInput.on("paste", onPaste);
-      pasteRegistered = true;
-    }
-    stopLegacyKey = api.keymap?.intercept?.("key", onKey);
-  } catch (error) {
-    cleanupLocal();
-    throw error;
-  }
-};
 var setup = async (context) => {
   const formApi = context?.data?.session?.form;
   if (!context || typeof context !== "object" || typeof context.data?.on !== "function" || typeof formApi?.sync !== "function" || typeof formApi?.list !== "function" || typeof formApi?.reply !== "function" || typeof formApi?.invalidate !== "function" || typeof context.renderer?.keyInput?.on !== "function" || typeof context.renderer?.keyInput?.off !== "function" || typeof context.ui?.router?.current !== "function" || typeof context.ui?.slot !== "function") {
@@ -1809,8 +1485,23 @@ var setup = async (context) => {
   const lifecycleController = new AbortController();
   const [activeBySession, setActiveBySession] = createSignal({});
   const pending = /* @__PURE__ */ new Map();
+  const inFlightForms = /* @__PURE__ */ new Map();
   const remediatedForms = /* @__PURE__ */ new Map();
   const sessionChains = /* @__PURE__ */ new Map();
+  const cancelInFlightForSession = (sessionID) => {
+    for (const [fID, entry] of inFlightForms.entries()) {
+      if (entry.sessionID === sessionID) {
+        inFlightForms.delete(fID);
+      }
+    }
+  };
+  const cleanupSessionRemediations = (sessionID) => {
+    for (const [fID, sID] of remediatedForms.entries()) {
+      if (sID === sessionID) {
+        remediatedForms.delete(fID);
+      }
+    }
+  };
   const updateSessionState = (sessionID, updater) => {
     setActiveBySession((current) => {
       const next = {
@@ -1842,6 +1533,10 @@ var setup = async (context) => {
         clearPending(id);
       }
     }
+    const existingState = activeBySession()[sessionID];
+    if (existingState?.lockPath) {
+      deleteLockfile(existingState.lockPath);
+    }
     updateSessionState(sessionID, () => void 0);
   };
   const cancelSessionAutoSelection = (sessionID, reason) => {
@@ -1871,146 +1566,89 @@ var setup = async (context) => {
     if (disposed) return;
     const form = event?.data?.form;
     if (!form?.id || !form.sessionID || form.sessionID === "global") return;
-    let sessionInfo;
+    if (pending.has(form.id) || inFlightForms.has(form.id)) return;
+    const flightToken = Symbol(form.id);
+    inFlightForms.set(form.id, {
+      sessionID: form.sessionID,
+      token: flightToken
+    });
+    const isFlightCurrent = () => !disposed && inFlightForms.get(form.id)?.token === flightToken;
     try {
-      sessionInfo = context.data.session?.get?.(form.sessionID);
-    } catch {
-      return;
-    }
-    const sessionLocation = sessionInfo?.location;
-    const location = event?.location ?? sessionLocation ?? context.location;
-    const config = resolveV2TuiConfig(context, location?.directory);
-    if (!isEligibleSessionInfo(sessionInfo, config?.includeSubagents === true)) return;
-    if (pending.has(form.id)) return;
-    for (const [id, existing] of pending.entries()) {
-      if (existing.sessionID === form.sessionID) {
-        clearPending(id);
-      }
-    }
-    if (!config?.enabled) return;
-    const log = createDiagnosticLogger(config, "smart-question-v2-ui");
-    let handoff = getActiveHandoff(form.sessionID);
-    if (!handoff) {
+      let sessionInfo;
       try {
-        const msgs = context.data?.session?.messages?.(form.sessionID);
-        if (Array.isArray(msgs)) {
-          const extracted = extractCurrentTurnGuardianHandoff(msgs);
-          if (extracted && typeof extracted === "object" && "version" in extracted) {
-            if (setActiveHandoff(form.sessionID, extracted) === true) {
-              handoff = extracted;
-            }
-          }
+        sessionInfo = context.data.session?.get?.(form.sessionID);
+        if (!sessionInfo && typeof context.data.session?.sync === "function") {
+          await context.data.session.sync(form.sessionID);
+          if (!isFlightCurrent()) return;
+          sessionInfo = context.data.session?.get?.(form.sessionID);
         }
       } catch {
-      }
-    }
-    const fallbackActive = config.unclassifiedQuestionPolicy === "fallback-first" || config.fallbackToFirstOption === true;
-    let classification = classifyV2Form(form, config.recommendedMarkers, config.manualMarkers, handoff, {
-      requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
-      allowFallback: fallbackActive,
-      allowFallbackOnManual: config.fallbackOnManual === true
-    });
-    if (classification.status === "manual") {
-      sessionChains.delete(form.sessionID);
-      const lockPath2 = resolveLockPath(config.configDir, form.id);
-      ensureDraftLock(lockPath2, {
-        formID: form.id,
-        sessionID: form.sessionID,
-        ts: Date.now(),
-        reason: "manual"
-      });
-      const state2 = {
-        requestID: form.id,
-        formID: form.id,
-        sessionID: form.sessionID,
-        questions: classification.questions,
-        detection: {
-          ok: false,
-          reason: classification.reason
-        },
-        agentName: form.sessionID.slice(0, 8),
-        agentFound: false,
-        focusDisabled: true,
-        status: "manual",
-        statusMessage: config.uiText.manualSubtitle,
-        lockPath: lockPath2,
-        markers: config.recommendedMarkers,
-        uiText: config.uiText
-      };
-      updateSessionState(form.sessionID, () => state2);
-      log(`manual form=${form.id} reason=manual-classification matched=${classification.matchedMarker ?? "none"}`);
-      return;
-    }
-    if (classification.status === "unclassified") {
-      if (config.unclassifiedQuestionPolicy === "ignore") {
-        log(`unclassified form=${form.id} ignored per unclassifiedQuestionPolicy`);
         return;
       }
-      log(`unclassified form=${form.id} reason=${classification.reason}`);
-      if (remediatedForms.has(form.id)) {
-        log(`suppress duplicate remediation form=${form.id}`);
-        return;
-      }
-      const fingerprint = computeQuestionFingerprint(classification.questions);
-      const maxRemediations = typeof config.maxUnclassifiedRemediations === "number" ? config.maxUnclassifiedRemediations : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
-      const existingChain = sessionChains.get(form.sessionID);
-      const isSameChain = existingChain !== void 0 && existingChain.fingerprint === fingerprint;
-      const currentCount = isSameChain ? existingChain.consecutiveFailures : 0;
-      const lockPath2 = resolveLockPath(config.configDir, form.id);
-      if (currentCount >= maxRemediations) {
-        log(`unclassified remediation budget exhausted session=${form.sessionID} fingerprint=${fingerprint} count=${currentCount}/${maxRemediations}`);
-        if (config.unclassifiedQuestionPolicy === "remediate-then-fallback") {
-          const fallbackClassification = classifyV2Form(form, config.recommendedMarkers, config.manualMarkers, handoff, {
-            requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
-            allowFallback: true,
-            allowFallbackOnManual: config.fallbackOnManual === true
-          });
-          if (fallbackClassification.status === "auto") {
-            classification = fallbackClassification;
-            sessionChains.delete(form.sessionID);
-            log(`remediation budget exhausted, activating fallback form=${form.id}`);
+      if (!isFlightCurrent()) return;
+      if (!sessionInfo && typeof context.data.session?.root === "function") {
+        try {
+          const rootID = context.data.session.root(form.sessionID);
+          if (typeof rootID === "string" && rootID) {
+            sessionInfo = {
+              id: form.sessionID,
+              parentID: rootID === form.sessionID ? void 0 : rootID
+            };
           }
-        }
-        if (classification.status !== "auto") {
-          ensureDraftLock(lockPath2, {
-            formID: form.id,
-            sessionID: form.sessionID,
-            ts: Date.now(),
-            reason: "budget-exhausted"
-          });
-          const state2 = {
-            requestID: form.id,
-            formID: form.id,
-            sessionID: form.sessionID,
-            questions: classification.questions,
-            detection: {
-              ok: false,
-              reason: "Remediation budget exhausted"
-            },
-            agentName: form.sessionID.slice(0, 8),
-            agentFound: false,
-            focusDisabled: true,
-            status: "error",
-            errorMessage: config.uiText.budgetExhausted,
-            lockPath: lockPath2,
-            markers: config.recommendedMarkers,
-            uiText: config.uiText
-          };
-          updateSessionState(form.sessionID, () => state2);
-          return;
+        } catch {
         }
       }
-      if (classification.status === "unclassified") {
-        remediatedForms.set(form.id, form.sessionID);
-        sessionChains.set(form.sessionID, {
-          fingerprint,
-          consecutiveFailures: currentCount + 1
-        });
+      const sessionLocation = sessionInfo?.location;
+      const location = event?.location ?? sessionLocation ?? context.location;
+      const config = resolveV2TuiConfig(context, location?.directory);
+      if (!isEligibleSessionInfo(sessionInfo, config?.includeSubagents === true)) return;
+      if (pending.has(form.id)) return;
+      for (const [id, existing] of pending.entries()) {
+        if (existing.sessionID === form.sessionID) {
+          clearPending(id);
+        }
+      }
+      if (!config?.enabled) return;
+      const log = createDiagnosticLogger(config, "smart-question-v2-ui");
+      const effectiveConfigDir = config.configDir || path3.resolve(location?.directory || context.location?.directory || process.cwd(), ".opencode");
+      cleanupStaleDrafts(effectiveConfigDir, config.timeoutMs, log);
+      let handoff = getActiveHandoff(form.sessionID);
+      if (!handoff) {
+        try {
+          const msgApi = context.data?.session?.message;
+          let msgs = msgApi?.list?.(form.sessionID);
+          if ((!Array.isArray(msgs) || msgs.length === 0) && typeof msgApi?.sync === "function") {
+            await msgApi.sync(form.sessionID);
+            if (!isFlightCurrent()) return;
+            msgs = msgApi?.list?.(form.sessionID);
+          }
+          if (Array.isArray(msgs)) {
+            const extracted = extractCurrentTurnGuardianHandoff(msgs);
+            if (extracted) {
+              if (setActiveHandoff(form.sessionID, extracted) === true) {
+                handoff = extracted;
+              }
+            }
+          }
+        } catch {
+        }
+      }
+      if (!isFlightCurrent()) return;
+      const agent = resolveAgentName(sessionInfo, form.sessionID);
+      const fallbackActive = config.unclassifiedQuestionPolicy === "fallback-first" || config.fallbackToFirstOption === true;
+      let classification = classifyV2Form(form, config.recommendedMarkers, config.manualMarkers, handoff, {
+        requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
+        allowFallback: fallbackActive,
+        allowFallbackOnManual: config.fallbackOnManual === true
+      });
+      if (classification.status === "manual") {
+        sessionChains.delete(form.sessionID);
+        const lockPath2 = resolveLockPath(effectiveConfigDir, form.id);
         ensureDraftLock(lockPath2, {
           formID: form.id,
           sessionID: form.sessionID,
           ts: Date.now(),
-          reason: "unclassified"
+          reason: "manual"
         });
         const state2 = {
           requestID: form.id,
@@ -2021,174 +1659,296 @@ var setup = async (context) => {
             ok: false,
             reason: classification.reason
           },
-          agentName: form.sessionID.slice(0, 8),
-          agentFound: false,
+          agentName: agent.name,
+          agentFound: agent.found,
           focusDisabled: true,
-          status: "unclassified",
-          statusMessage: config.uiText.unclassifiedSubtitle,
+          status: "manual",
+          statusMessage: config.uiText.manualSubtitle,
           lockPath: lockPath2,
           markers: config.recommendedMarkers,
           uiText: config.uiText
         };
         updateSessionState(form.sessionID, () => state2);
-        const promptText = buildUnclassifiedRemediationPrompt(config.recommendedMarker, config.manualMarker);
-        let remediationSent = false;
-        try {
-          if (!disposed) {
-            const response = await context.client.session.synthetic({
-              sessionID: form.sessionID,
-              text: promptText,
-              description: "Smart Questions protocol remediation",
-              metadata: {
-                "opencode-smart-questions": true
-              },
-              delivery: "queue",
-              resume: true
-            }, {
-              signal: lifecycleController.signal
-            });
-            const rejected = response && typeof response === "object" && !Array.isArray(response) && (Boolean(response.error) || response.ok === false);
-            remediationSent = !disposed && !rejected;
-          }
-        } catch (err) {
-          log(`remediation send failed form=${form.id} code=${diagnosticErrorCode(err)}`);
-        }
-        if (!remediationSent) {
-          remediatedForms.delete(form.id);
-          if (currentCount === 0) {
-            sessionChains.delete(form.sessionID);
-          } else {
-            sessionChains.set(form.sessionID, {
-              fingerprint,
-              consecutiveFailures: currentCount
-            });
-          }
-          updateSessionState(form.sessionID, (current) => current?.formID === form.id ? {
-            ...current,
-            status: "error",
-            errorMessage: config.uiText.remediationFailed
-          } : current);
-          log(`remediation not sent form=${form.id}; retry remains allowed`);
-        }
+        log(`manual form=${form.id} reason=manual-classification matched=${classification.matchedMarker ?? "none"}`);
         return;
       }
-    }
-    if (classification.status !== "auto" || disposed) return;
-    sessionChains.delete(form.sessionID);
-    const detection = classification.detection;
-    const lockPath = resolveLockPath(config.configDir, form.id);
-    const expiresAt = Date.now() + config.timeoutMs;
-    const initialCountdown = Math.ceil(config.timeoutMs / 1e3);
-    const state = {
-      requestID: form.id,
-      formID: form.id,
-      sessionID: form.sessionID,
-      questions: classification.questions,
-      detection,
-      agentName: form.sessionID.slice(0, 8),
-      agentFound: false,
-      focusDisabled: false,
-      status: "auto",
-      lockPath,
-      countdown: initialCountdown,
-      markers: config.recommendedMarkers,
-      uiText: config.uiText
-    };
-    const item = {
-      formID: form.id,
-      sessionID: form.sessionID,
-      answer: classification.answer,
-      state,
-      expiresAt,
-      status: "pending",
-      lockPath,
-      location,
-      log,
-      timeout: void 0,
-      interval: null
-    };
-    const fire = async () => {
-      if (disposed || pending.get(form.id) !== item || item.status !== "pending") return;
-      item.status = "firing";
-      if (item.interval) {
-        clearInterval(item.interval);
-        item.interval = null;
+      if (classification.status === "unclassified") {
+        if (config.unclassifiedQuestionPolicy === "ignore") {
+          log(`unclassified form=${form.id} ignored per unclassifiedQuestionPolicy`);
+          return;
+        }
+        log(`unclassified form=${form.id} reason=${classification.reason}`);
+        if (remediatedForms.has(form.id)) {
+          log(`suppress duplicate remediation form=${form.id}`);
+          return;
+        }
+        const fingerprint = computeQuestionFingerprint(classification.questions);
+        const maxRemediations = typeof config.maxUnclassifiedRemediations === "number" ? config.maxUnclassifiedRemediations : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
+        const existingChain = sessionChains.get(form.sessionID);
+        const isSameChain = existingChain !== void 0 && existingChain.fingerprint === fingerprint;
+        const currentCount = isSameChain ? existingChain.consecutiveFailures : 0;
+        const lockPath2 = resolveLockPath(effectiveConfigDir, form.id);
+        if (currentCount >= maxRemediations) {
+          log(`unclassified remediation budget exhausted session=${form.sessionID} fingerprint=${fingerprint} count=${currentCount}/${maxRemediations}`);
+          if (config.unclassifiedQuestionPolicy === "remediate-then-fallback") {
+            const fallbackClassification = classifyV2Form(form, config.recommendedMarkers, config.manualMarkers, handoff, {
+              requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
+              allowFallback: true,
+              allowFallbackOnManual: config.fallbackOnManual === true
+            });
+            if (fallbackClassification.status === "auto") {
+              classification = fallbackClassification;
+              sessionChains.delete(form.sessionID);
+              log(`remediation budget exhausted, activating fallback form=${form.id}`);
+            }
+          }
+          if (classification.status !== "auto") {
+            ensureDraftLock(lockPath2, {
+              formID: form.id,
+              sessionID: form.sessionID,
+              ts: Date.now(),
+              reason: "budget-exhausted"
+            });
+            const state2 = {
+              requestID: form.id,
+              formID: form.id,
+              sessionID: form.sessionID,
+              questions: classification.questions,
+              detection: {
+                ok: false,
+                reason: "Remediation budget exhausted"
+              },
+              agentName: agent.name,
+              agentFound: agent.found,
+              focusDisabled: true,
+              status: "error",
+              errorMessage: config.uiText.budgetExhausted,
+              lockPath: lockPath2,
+              markers: config.recommendedMarkers,
+              uiText: config.uiText
+            };
+            updateSessionState(form.sessionID, () => state2);
+            return;
+          }
+        }
+        if (classification.status === "unclassified") {
+          remediatedForms.set(form.id, form.sessionID);
+          sessionChains.set(form.sessionID, {
+            fingerprint,
+            consecutiveFailures: currentCount + 1
+          });
+          ensureDraftLock(lockPath2, {
+            formID: form.id,
+            sessionID: form.sessionID,
+            ts: Date.now(),
+            reason: "unclassified"
+          });
+          const state2 = {
+            requestID: form.id,
+            formID: form.id,
+            sessionID: form.sessionID,
+            questions: classification.questions,
+            detection: {
+              ok: false,
+              reason: classification.reason
+            },
+            agentName: agent.name,
+            agentFound: agent.found,
+            focusDisabled: true,
+            status: "unclassified",
+            statusMessage: config.uiText.unclassifiedSubtitle,
+            lockPath: lockPath2,
+            markers: config.recommendedMarkers,
+            uiText: config.uiText
+          };
+          updateSessionState(form.sessionID, () => state2);
+          const promptText = buildUnclassifiedRemediationPrompt(config.recommendedMarker, config.manualMarker);
+          let remediationSent = false;
+          try {
+            if (isFlightCurrent()) {
+              const response = await context.client.session.synthetic({
+                sessionID: form.sessionID,
+                text: promptText,
+                description: "Smart Questions protocol remediation",
+                metadata: {
+                  "opencode-smart-questions": true
+                },
+                delivery: "queue",
+                resume: true
+              }, {
+                signal: lifecycleController.signal
+              });
+              const rejected = response && typeof response === "object" && !Array.isArray(response) && (Boolean(response.error) || response.ok === false);
+              remediationSent = isFlightCurrent() && !rejected;
+            }
+          } catch (err) {
+            log(`remediation send failed form=${form.id} code=${diagnosticErrorCode(err)}`);
+          }
+          if (!remediationSent) {
+            remediatedForms.delete(form.id);
+            if (currentCount === 0) {
+              sessionChains.delete(form.sessionID);
+            } else {
+              sessionChains.set(form.sessionID, {
+                fingerprint,
+                consecutiveFailures: currentCount
+              });
+            }
+            if (!disposed) {
+              updateSessionState(form.sessionID, (current) => current?.formID === form.id ? {
+                ...current,
+                status: "error",
+                errorMessage: config.uiText.remediationFailed
+              } : current);
+            }
+            log(`remediation not sent form=${form.id}; retry remains allowed`);
+          }
+          return;
+        }
       }
-      try {
-        await context.data.session.form.sync(form.sessionID, item.location);
-        if (pending.get(form.id) !== item) return;
-        if (disposed) {
-          clearPending(form.id);
-          return;
+      if (classification.status !== "auto" || !isFlightCurrent()) return;
+      if (!canUseDraftCoordination(effectiveConfigDir, log)) {
+        log(`skip auto-selection form=${form.id} reason=draft coordination unavailable`);
+        return;
+      }
+      sessionChains.delete(form.sessionID);
+      const detection = classification.detection;
+      const lockPath = resolveLockPath(effectiveConfigDir, form.id);
+      const expiresAt = Date.now() + config.timeoutMs;
+      const initialCountdown = Math.ceil(config.timeoutMs / 1e3);
+      const state = {
+        requestID: form.id,
+        formID: form.id,
+        sessionID: form.sessionID,
+        questions: classification.questions,
+        detection,
+        agentName: agent.name,
+        agentFound: agent.found,
+        focusDisabled: false,
+        status: "auto",
+        lockPath,
+        countdown: initialCountdown,
+        markers: config.recommendedMarkers,
+        uiText: config.uiText
+      };
+      const item = {
+        formID: form.id,
+        sessionID: form.sessionID,
+        answer: classification.answer,
+        state,
+        expiresAt,
+        status: "pending",
+        lockPath,
+        location,
+        log,
+        timeout: void 0,
+        interval: null
+      };
+      const fire = async () => {
+        if (disposed || pending.get(form.id) !== item || item.status !== "pending") return;
+        item.status = "firing";
+        if (item.interval) {
+          clearInterval(item.interval);
+          item.interval = null;
         }
-        const forms = context.data.session.form.list(form.sessionID, item.location);
-        const stillPending = Array.isArray(forms) && forms.some((candidate) => candidate.id === form.id);
-        if (!stillPending || pending.get(form.id) !== item || item.status !== "firing" || activeBySession()[form.sessionID]?.formID !== form.id || activeBySession()[form.sessionID]?.focusDisabled) {
-          log(`skip reply form=${form.id} reason=no longer pending or manual interaction`);
-          clearPending(form.id);
-          return;
-        }
-        if (pending.get(form.id) !== item || item.status !== "firing") {
-          clearPending(form.id);
-          return;
-        }
-        await context.data.session.form.reply({
-          sessionID: form.sessionID,
-          formID: form.id,
-          answer: item.answer
-        }, item.location);
-        if (disposed || pending.get(form.id) !== item) return;
-        item.status = "replied";
-        consumeActiveHandoff(form.sessionID);
         try {
-          context.data.session.form.invalidate(form.sessionID, item.location);
-        } catch (error) {
-          log(`form cache invalidation failed form=${form.id} code=${diagnosticErrorCode(error)}`);
-        }
-        deleteLockfile(lockPath, log);
-        pending.delete(form.id);
-        updateSessionState(form.sessionID, (current) => current?.formID === form.id ? void 0 : current);
-        log(`reply OK form=${form.id}`);
-      } catch (error) {
-        const code = diagnosticErrorCode(error);
-        log(`reply ERROR form=${form.id} code=${code}`);
-        console.error(`[smart-question] Auto-selection failed for form ${form.id} (${code})`);
-        if (pending.get(form.id) === item) {
-          pending.delete(form.id);
+          try {
+            fs3.statSync(lockPath);
+            log(`skip reply form=${form.id} reason=draft lockfile present`);
+            clearPending(form.id, {
+              removeLock: false
+            });
+            return;
+          } catch (lockErr) {
+            const lockCode = lockErr?.code;
+            if (lockCode !== "ENOENT" || !canUseDraftCoordination(effectiveConfigDir, log)) {
+              log(`skip reply form=${form.id} reason=draft coordination check failed`);
+              clearPending(form.id, {
+                removeLock: false
+              });
+              return;
+            }
+          }
+          await context.data.session.form.sync(form.sessionID, item.location);
+          if (pending.get(form.id) !== item) return;
+          if (disposed) {
+            clearPending(form.id);
+            return;
+          }
+          const forms = context.data.session.form.list(form.sessionID, item.location);
+          const stillPending = Array.isArray(forms) && forms.some((candidate) => candidate.id === form.id);
+          if (!stillPending || pending.get(form.id) !== item || item.status !== "firing" || activeBySession()[form.sessionID]?.formID !== form.id || activeBySession()[form.sessionID]?.focusDisabled) {
+            log(`skip reply form=${form.id} reason=no longer pending or manual interaction`);
+            clearPending(form.id);
+            return;
+          }
+          if (pending.get(form.id) !== item || item.status !== "firing") {
+            clearPending(form.id);
+            return;
+          }
+          await context.data.session.form.reply({
+            sessionID: form.sessionID,
+            formID: form.id,
+            answer: item.answer
+          }, item.location);
+          if (disposed || pending.get(form.id) !== item) return;
+          item.status = "replied";
+          consumeActiveHandoff(form.sessionID);
+          try {
+            context.data.session.form.invalidate(form.sessionID, item.location);
+          } catch (error) {
+            log(`form cache invalidation failed form=${form.id} code=${diagnosticErrorCode(error)}`);
+          }
           deleteLockfile(lockPath, log);
+          pending.delete(form.id);
+          updateSessionState(form.sessionID, (current) => current?.formID === form.id ? void 0 : current);
+          log(`reply OK form=${form.id}`);
+        } catch (error) {
+          const code = diagnosticErrorCode(error);
+          log(`reply ERROR form=${form.id} code=${code}`);
+          console.error(`[smart-question] Auto-selection failed for form ${form.id} (${code})`);
+          if (pending.get(form.id) === item) {
+            pending.delete(form.id);
+            deleteLockfile(lockPath, log);
+            updateSessionState(form.sessionID, (current) => current?.formID === form.id ? {
+              ...current,
+              focusDisabled: true,
+              errorMessage: config.uiText.autoReplyFailed
+            } : current);
+          }
+        }
+      };
+      item.timeout = setTimeout(() => {
+        void fire();
+      }, config.timeoutMs);
+      if (config.timeoutMs > 0) {
+        item.interval = setInterval(() => {
+          if (pending.get(form.id) !== item || item.status !== "pending") return;
+          const countdown = Math.ceil(Math.max(0, item.expiresAt - Date.now()) / 1e3);
           updateSessionState(form.sessionID, (current) => current?.formID === form.id ? {
             ...current,
-            focusDisabled: true,
-            errorMessage: config.uiText.autoReplyFailed
+            countdown
           } : current);
-        }
+        }, 250);
       }
-    };
-    item.timeout = setTimeout(() => {
-      void fire();
-    }, config.timeoutMs);
-    if (config.timeoutMs > 0) {
-      item.interval = setInterval(() => {
-        if (pending.get(form.id) !== item || item.status !== "pending") return;
-        const countdown = Math.ceil(Math.max(0, item.expiresAt - Date.now()) / 1e3);
-        updateSessionState(form.sessionID, (current) => current?.formID === form.id ? {
-          ...current,
-          countdown
-        } : current);
-      }, 250);
+      pending.set(form.id, item);
+      updateSessionState(form.sessionID, () => state);
+      log(`schedule form=${form.id} session=${form.sessionID} timeoutMs=${config.timeoutMs}`);
+    } finally {
+      if (inFlightForms.get(form.id)?.token === flightToken) {
+        inFlightForms.delete(form.id);
+      }
     }
-    pending.set(form.id, item);
-    updateSessionState(form.sessionID, () => state);
-    log(`schedule form=${form.id} session=${form.sessionID} timeoutMs=${config.timeoutMs}`);
   };
   const onFormSettled = (event) => {
-    const formID = event?.data?.id ?? event?.data?.form?.id ?? event?.properties?.id;
+    const formID = event?.data?.formID ?? event?.data?.id ?? event?.data?.form?.id ?? event?.properties?.id;
     const sessionID = event?.data?.sessionID ?? event?.data?.form?.sessionID ?? event?.properties?.sessionID;
     if (typeof sessionID === "string" && sessionID !== "global") {
       consumeActiveHandoff(sessionID);
       sessionChains.delete(sessionID);
     }
     if (typeof formID === "string") {
+      inFlightForms.delete(formID);
       remediatedForms.delete(formID);
       clearPending(formID);
       const targetSession = typeof sessionID === "string" && sessionID !== "global" ? sessionID : Object.keys(activeBySession()).find((sId) => activeBySession()[sId]?.formID === formID);
@@ -2229,34 +1989,40 @@ var setup = async (context) => {
     cleanups.push(context.data.on("form.created", onFormCreated));
     cleanups.push(context.data.on("form.replied", onFormSettled));
     cleanups.push(context.data.on("form.cancelled", onFormSettled));
-    try {
-      const msgDisposer = context.data?.on?.("message.created", (event) => {
-        const sessionID = String(event?.data?.sessionID ?? event?.sessionID ?? "");
-        if (!sessionID || sessionID === "global") return;
-        const handoff = extractTrustedGuardianHandoff(event?.data);
-        if (handoff && typeof handoff === "object" && "version" in handoff) {
+    cleanups.push(context.data.on("session.synthetic", (event) => {
+      const sessionID = String(event?.data?.sessionID ?? "");
+      if (!sessionID || sessionID === "global") return;
+      const handoff = extractTrustedGuardianHandoff(event?.data);
+      if (handoff) {
+        setActiveHandoff(sessionID, handoff);
+      }
+    }));
+    cleanups.push(context.data.on("session.inbox.enqueued", (event) => {
+      const sessionID = String(event?.data?.sessionID ?? "");
+      if (!sessionID || sessionID === "global") return;
+      const item = event?.data?.item;
+      if (item?.type === "synthetic") {
+        const handoff = extractTrustedGuardianHandoff(item);
+        if (handoff) {
           setActiveHandoff(sessionID, handoff);
-        } else {
-          const role = event?.data?.role ?? event?.data?.info?.role ?? event?.data?.message?.role;
-          if (role === "user" && event?.data?.metadata?.["opencode-guardian"] !== true && event?.data?.message?.metadata?.["opencode-guardian"] !== true && !hasInternalSyntheticPart(event?.data?.parts ?? event?.data?.message?.parts)) {
-            invalidateActiveHandoff(sessionID);
-            sessionChains.delete(sessionID);
-            clearSessionState(sessionID);
-          }
         }
-      });
-      if (typeof msgDisposer === "function") cleanups.push(msgDisposer);
-      const sessionDelDisposer = context.data?.on?.("session.deleted", (event) => {
-        const sessionID = String(event?.data?.id ?? event?.data?.sessionID ?? event?.sessionID ?? "");
-        if (sessionID && sessionID !== "global") {
-          clearActiveHandoff(sessionID);
-          sessionChains.delete(sessionID);
-          clearSessionState(sessionID);
-        }
-      });
-      if (typeof sessionDelDisposer === "function") cleanups.push(sessionDelDisposer);
-    } catch {
-    }
+      } else if (item?.type === "user" && !isInternalNonHumanMessage(item)) {
+        invalidateActiveHandoff(sessionID);
+        sessionChains.delete(sessionID);
+        cancelInFlightForSession(sessionID);
+        clearSessionState(sessionID);
+      }
+    }));
+    cleanups.push(context.data.on("session.deleted", (event) => {
+      const sessionID = String(event?.data?.sessionID ?? "");
+      if (sessionID && sessionID !== "global") {
+        clearActiveHandoff(sessionID);
+        sessionChains.delete(sessionID);
+        cancelInFlightForSession(sessionID);
+        cleanupSessionRemediations(sessionID);
+        clearSessionState(sessionID);
+      }
+    }));
     context.renderer.keyInput.on("keypress", onKey);
     cleanups.push(() => context.renderer.keyInput.off("keypress", onKey));
     context.renderer.keyInput.on("paste", onPaste);
@@ -2279,6 +2045,7 @@ var setup = async (context) => {
     }));
   } catch (error) {
     disposed = true;
+    inFlightForms.clear();
     lifecycleController.abort();
     disposeCleanups();
     for (const formID of pending.keys()) {
@@ -2291,6 +2058,7 @@ var setup = async (context) => {
   }
   return () => {
     disposed = true;
+    inFlightForms.clear();
     lifecycleController.abort();
     disposeCleanups();
     for (const formID of pending.keys()) {
@@ -2301,13 +2069,13 @@ var setup = async (context) => {
     setActiveBySession({});
   };
 };
-var pluginModule = {
-  id: "smart-question-ui",
-  tui,
+var OpencodeSmartQuestionsTui = OpenCodeV2Tui.define({
+  id: "opencode-smart-questions.tui",
   setup
-};
-var ui_default = pluginModule;
+});
+var ui_default = OpencodeSmartQuestionsTui;
 export {
+  OpencodeSmartQuestionsTui,
   SmartQuestionOverlay,
   ui_default as default,
   detectRecommendations2 as detectRecommendations,
@@ -2315,6 +2083,5 @@ export {
   loadConfig2 as loadConfig,
   resolveAgentName,
   setup,
-  stripMarker,
-  tui
+  stripMarker
 };

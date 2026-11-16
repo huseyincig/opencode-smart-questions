@@ -14,5 +14,4 @@ export declare function resolveSmartQuestionConfig(projectDir?: string, pluginOp
  * Missing configuration uses safe defaults; malformed configuration disables
  * auto-selection instead of guessing.
  */
-export declare function loadConfig(pluginInput: Record<string, unknown>): Record<string, unknown>;
 export declare function loadConfig(projectDir?: string): SmartQuestionConfig | null;

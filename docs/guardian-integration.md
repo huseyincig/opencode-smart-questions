@@ -1,6 +1,6 @@
 # Guardian + Smart Questions Coordination Protocol
 
-Current documentation: Smart Questions **0.8.2** and Guardian **0.11.2**. See each package's release notes and verification report for current automated results; historical live-host reports retain their original versions.
+Current documentation: Smart Questions **1.0.0** (OpenCode V2 `v2.3.0+`) and Guardian **0.11.2+**. See each package's release notes and verification report for current automated results.
 
 OpenCode Guardian and Smart Questions are **completely standalone, independent plugins** with zero package dependencies on each other.
 
@@ -80,21 +80,21 @@ sequenceDiagram
     G->>G: Preflight & Instruction Fidelity inspection
     alt High Risk / Approval Required
         G->>Host: Remediation with [OPENCODE_HANDOFF:v1 auto_select=forbidden]
-        Host->>SQ: message.created (Verified Guardian metadata)
+        Host->>SQ: session.synthetic (Verified Guardian metadata)
         SQ->>SQ: Register handoff: auto_select=forbidden
         Host->>User: Displays choice form (Countdown SUPPRESSED)
         User->>Host: Manual click / selection
     else Safe Choice / Clarification
         G->>Host: Remediation with [OPENCODE_HANDOFF:v1 auto_select=allowed]
-        Host->>SQ: message.created (Verified Guardian metadata)
+        Host->>SQ: session.synthetic (Verified Guardian metadata)
         SQ->>SQ: Register handoff: auto_select=allowed (TTL 120s)
-        Host->>SQ: question.asked / form.created with [SQ:recommended]
+        Host->>SQ: form.created with [SQ:recommended]
         SQ->>SQ: Start countdown timer (timeoutMs)
         alt User intervenes before timeout
             User->>Host: Keypress or manual choice
             Host->>SQ: User activity detected -> Cancel timer
         else Timeout expires
-            SQ->>Host: client.question.reply / session.form.reply
+            SQ->>Host: session.form.reply
             SQ->>SQ: Tombstone handoff_id
             Host->>Agent: Resume turn with selected decision
         end

@@ -286,19 +286,7 @@ export function resolveSmartQuestionConfig(
  * Missing configuration uses safe defaults; malformed configuration disables
  * auto-selection instead of guessing.
  */
-export function loadConfig(pluginInput: Record<string, unknown>): Record<string, unknown>;
-export function loadConfig(projectDir?: string): SmartQuestionConfig | null;
-export function loadConfig(
-  projectDir?: string | Record<string, unknown>
-): SmartQuestionConfig | null | Record<string, unknown> {
-  if (
-    projectDir &&
-    typeof projectDir === 'object' &&
-    ('client' in projectDir || 'directory' in projectDir)
-  ) {
-    return {};
-  }
-
+export function loadConfig(projectDir?: string): SmartQuestionConfig | null {
   const dir = typeof projectDir === 'string' && projectDir ? projectDir : process.cwd();
   const candidatePaths = [
     path.resolve(dir, '.opencode/smart-question.json'),

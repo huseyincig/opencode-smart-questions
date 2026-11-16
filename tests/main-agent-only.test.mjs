@@ -4,114 +4,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { SmartQuestion, OpencodeSmartQuestions } from "../dist/index.js";
+import { OpencodeSmartQuestions } from "../dist/index.js";
 
 const childSession = (id = "ses-child") => ({ id, parentID: "ses-root", directory: "/tmp" });
 const rootSession = (id = "ses-root") => ({ id, directory: "/tmp" });
 
-test("V1 backend ignores child-session questions and does not expose global tool guidance", async () => {
-  const replies = [];
-  const client = {
-    session: {
-      async get({ path }) {
-        return { data: childSession(path.id) };
-      },
-    },
-    question: {
-      async reply(payload) {
-        replies.push(payload);
-      },
-    },
-  };
-
-  const hooks = await SmartQuestion(
-    { client, directory: "/tmp" },
-    { config: { enabled: true, timeoutMs: 5, recommendedMarker: "(Recommended)", requireExactlyOneRecommendation: true } }
-  );
-
-  assert.equal(hooks["tool.definition"], undefined, "global tool guidance must not leak into child agents");
-
-  const system = [];
-  await hooks["experimental.chat.system.transform"]?.(
-    { sessionID: "ses-child", model: {} },
-    { system }
-  );
-  assert.deepEqual(system, [], "child session must not receive SQ system guidance");
-
-  await hooks.event?.({
-    event: {
-      type: "question.asked",
-      data: {
-        id: "req-child",
-        sessionID: "ses-child",
-        questions: [{
-          question: "Proceed?",
-          options: [
-            { label: "Yes (Recommended)" },
-            { label: "No" },
-          ],
-        }],
-      },
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 25));
-  assert.equal(replies.length, 0, "child session must never auto-reply");
-  await hooks.dispose?.();
-});
-
-test("V1 backend keeps root-session guidance and auto-reply active", async () => {
-  const replies = [];
-  const client = {
-    session: {
-      async get({ path }) {
-        return { data: rootSession(path.id) };
-      },
-    },
-    question: {
-      async reply(payload) {
-        replies.push(payload);
-      },
-    },
-  };
-
-  const hooks = await SmartQuestion(
-    { client, directory: "/tmp" },
-    { config: { enabled: true, timeoutMs: 5, recommendedMarker: "(Recommended)", requireExactlyOneRecommendation: true } }
-  );
-
-  const system = [];
-  await hooks["experimental.chat.system.transform"]?.(
-    { sessionID: "ses-root", model: {} },
-    { system }
-  );
-  assert.equal(system.length, 1);
-  assert.match(system[0], /Smart Question Auto-Selection Guidance/);
-
-  await hooks.event?.({
-    event: {
-      type: "question.asked",
-      data: {
-        id: "req-root",
-        sessionID: "ses-root",
-        questions: [{
-          question: "Proceed?",
-          options: [
-            { label: "Yes (Recommended)" },
-            { label: "No" },
-          ],
-        }],
-      },
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 25));
-  assert.equal(replies.length, 1);
-  await hooks.dispose?.();
-});
-
 test("V2 backend injects guidance only for root sessions and never registers global tool guidance", async () => {
-  let contextHook;
+  const hooks = new Map();
   let toolTransformCalls = 0;
   const context = {
     location: { directory: "/tmp" },
@@ -127,8 +26,7 @@ test("V2 backend injects guidance only for root sessions and never registers glo
         return sessionID === "ses-child" ? childSession(sessionID) : rootSession(sessionID);
       },
       hook(name, callback) {
-        assert.equal(name, "context");
-        contextHook = callback;
+        hooks.set(name, callback);
         return Promise.resolve({ dispose: async () => {} });
       },
     },
@@ -136,6 +34,8 @@ test("V2 backend injects guidance only for root sessions and never registers glo
 
   const cleanup = await OpencodeSmartQuestions.setup(context);
   assert.equal(toolTransformCalls, 0, "global V2 tool guidance must not be registered");
+  const contextHook = hooks.get("context");
+  assert.ok(contextHook, "context hook must be registered");
 
   const childEvent = {
     sessionID: "ses-child",
@@ -161,70 +61,6 @@ test("V2 backend injects guidance only for root sessions and never registers glo
   assert.match(rootEvent.system[1].text, /Smart Question Auto-Selection Guidance/);
 
   await cleanup?.();
-});
-
-test("V1 TUI ignores child-session question overlays", async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "sq-main-only-v1-"));
-  try {
-    const ui = await import("../dist/ui.js");
-    const events = new Map();
-    const keys = new Map();
-    const api = {
-      state: {
-        path: { directory: tempDir },
-        session: {
-          get(sessionID) {
-            return childSession(sessionID);
-          },
-        },
-      },
-      event: {
-        on(type, handler) {
-          events.set(type, handler);
-          return () => events.delete(type);
-        },
-      },
-      renderer: {
-        requestRender() {},
-        keyInput: {
-          on(type, handler) { keys.set(type, handler); },
-          off(type) { keys.delete(type); },
-        },
-      },
-      slots: { register() {} },
-    };
-
-    const cleanup = await ui.tui(api, {
-      config: {
-        enabled: true,
-        timeoutMs: 100,
-        recommendedMarker: "(Recommended)",
-        requireExactlyOneRecommendation: true,
-        configDir: tempDir,
-      },
-    });
-
-    events.get("question.asked")?.({
-      data: {
-        id: "req-child-ui",
-        sessionID: "ses-child",
-        questions: [{
-          question: "Proceed?",
-          options: [{ label: "Yes (Recommended)" }, { label: "No" }],
-        }],
-      },
-    });
-    keys.get("keypress")?.({ name: "down" });
-
-    assert.equal(
-      fs.readdirSync(tempDir).some((name) => name.includes("req-child-ui")),
-      false,
-      "child question must not arm the V1 focus/draft guard"
-    );
-    cleanup?.();
-  } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
 });
 
 test("V2 TUI ignores child-session forms", async () => {
@@ -279,25 +115,26 @@ test("V2 TUI ignores child-session forms", async () => {
 
     const cleanup = await ui.setup(context);
     const form = {
-      id: "form-child",
+      id: "form-child-v2",
       sessionID: "ses-child",
       fields: [{
         key: "choice",
         type: "string",
         options: [
-          { value: "yes", label: "Yes (Recommended)" },
-          { value: "no", label: "No" },
+          { value: "deploy", label: "Deploy (Recommended)" },
+          { value: "cancel", label: "Cancel" },
         ],
       }],
     };
     pendingForms.set(form.id, form);
-    handlers.get("form.created")?.({
+
+    await handlers.get("form.created")?.({
       type: "form.created",
       data: { form },
       location: { directory: tempDir },
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => setTimeout(resolve, 35));
     assert.equal(replies.length, 0, "child form must never auto-reply");
     cleanup?.();
   } finally {

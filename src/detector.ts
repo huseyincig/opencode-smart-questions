@@ -16,26 +16,11 @@ import type {
  * - More than 1 recommended options in ANY single-select question -> fail
  * - Exact suffix matching on marker
  */
-export function detectRecommendations(pluginInput: Record<string, unknown>): Record<string, unknown>;
 export function detectRecommendations(
   questions: QuestionInfo[],
-  marker?: string | string[],
-  options?: { requireExactlyOneRecommendation?: boolean }
-): DetectionResult;
-export function detectRecommendations(
-  questions: QuestionInfo[] | Record<string, unknown>,
   marker: string | string[] = DEFAULT_CONFIG.recommendedMarkers,
   options: { requireExactlyOneRecommendation?: boolean } = {}
-): DetectionResult | Record<string, unknown> {
-  // If invoked directly by OpenCode's plugin engine as a plugin factory, return an empty hooks object
-  if (
-    questions &&
-    typeof questions === 'object' &&
-    !Array.isArray(questions) &&
-    ('client' in questions || 'directory' in questions)
-  ) {
-    return {};
-  }
+): DetectionResult {
   // Retain the legacy options argument without relaxing single-choice ambiguity checks.
   void options;
 
@@ -388,14 +373,6 @@ export function classifyQuestions(
 export function computeQuestionFingerprint(
   questions: QuestionInfo[] | unknown
 ): string {
-  if (
-    questions &&
-    typeof questions === 'object' &&
-    !Array.isArray(questions) &&
-    ('client' in questions || 'directory' in questions)
-  ) {
-    return {} as unknown as string;
-  }
   if (!Array.isArray(questions) || questions.length === 0) return 'empty';
 
   const normalized = questions.map((q) => ({

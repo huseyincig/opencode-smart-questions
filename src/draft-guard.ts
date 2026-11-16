@@ -10,19 +10,7 @@ import { diagnosticErrorCode } from './diagnostics.js';
  * 2. Fallback if not resolvable: `${process.cwd()}/.opencode`
  * 3. lockPath = `${opencodeDir}/.sq-draft-${requestID}`
  */
-export function resolveLockPath(pluginInput: Record<string, unknown>): Record<string, unknown>;
-export function resolveLockPath(configDir: string | undefined, requestID: string): string;
-export function resolveLockPath(
-  configDir?: string | Record<string, unknown>,
-  requestID?: string
-): string | Record<string, unknown> {
-  if (
-    configDir &&
-    typeof configDir === 'object' &&
-    ('client' in configDir || 'directory' in configDir)
-  ) {
-    return {};
-  }
+export function resolveLockPath(configDir: string | undefined, requestID: string): string {
   const opencodeDir =
     (typeof configDir === 'string' && configDir) || path.resolve(process.cwd(), '.opencode');
   const safeRequestID = encodeURIComponent(typeof requestID === 'string' ? requestID : 'unknown');
@@ -55,19 +43,7 @@ export function canUseDraftCoordination(
 /**
  * Idempotently deletes a lockfile. Never throws if file is absent or inaccessible.
  */
-export function deleteLockfile(pluginInput: Record<string, unknown>): Record<string, unknown>;
-export function deleteLockfile(lockPath?: string, dbg?: (msg: string) => void): void;
-export function deleteLockfile(
-  lockPath?: string | Record<string, unknown>,
-  dbg?: (msg: string) => void
-): void | Record<string, unknown> {
-  if (
-    lockPath &&
-    typeof lockPath === 'object' &&
-    ('client' in lockPath || 'directory' in lockPath)
-  ) {
-    return {};
-  }
+export function deleteLockfile(lockPath?: string, dbg?: (msg: string) => void): void {
   try {
     if (typeof lockPath === 'string' && fs.existsSync(lockPath)) {
       fs.unlinkSync(lockPath);
@@ -85,26 +61,11 @@ export function deleteLockfile(
  * Scans `<opencodeDir>/.sq-draft-*` and deletes stale draft lockfiles older than `timeoutMs * 4`.
  * Completely fail-safe: wraps operations in try/catch, never throws, logs via dbg if provided.
  */
-export function cleanupStaleDrafts(pluginInput: Record<string, unknown>): Record<string, unknown>;
 export function cleanupStaleDrafts(
   configDir?: string,
   timeoutMs?: number,
   dbg?: (msg: string) => void
-): void;
-export function cleanupStaleDrafts(
-  configDir?: string | Record<string, unknown>,
-  timeoutMs?: number,
-  dbg?: (msg: string) => void
-): void | Record<string, unknown> {
-  // If invoked directly by OpenCode's plugin engine as a plugin factory, return an empty hooks object
-  if (
-    configDir &&
-    typeof configDir === 'object' &&
-    ('client' in configDir || 'directory' in configDir)
-  ) {
-    return {};
-  }
-
+): void {
   try {
     const opencodeDir =
       (typeof configDir === 'string' && configDir) || path.resolve(process.cwd(), '.opencode');

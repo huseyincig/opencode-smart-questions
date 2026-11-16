@@ -1,6 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui';
-import type { Plugin as OpenCodeV2Tui } from '@opencode/plugin/tui';
+import { Plugin as OpenCodeV2Tui } from '@opencode/plugin/tui';
 import type { ActiveQuestionState, DetectionResult, QuestionOverlayStatus, SmartQuestionConfig, SmartQuestionUIText } from './types.js';
 export declare function loadConfig(...args: any[]): SmartQuestionConfig | null;
 export declare function detectRecommendations(...args: any[]): DetectionResult;
@@ -14,9 +13,9 @@ export interface OverlayState extends ActiveQuestionState {
     uiText?: SmartQuestionUIText | undefined;
 }
 /**
- * Resolve a best-effort agent/session label for the v1 TUI.
+ * Resolve a best-effort agent/session label for the v2 TUI.
  */
-export declare function resolveAgentName(api: TuiPluginApi | Record<string, any>, sessionID?: string, eventProps?: Record<string, unknown>): {
+export declare function resolveAgentName(sessionInfo: unknown, sessionID?: string): {
     name: string;
     found: boolean;
 };
@@ -30,15 +29,8 @@ export declare function SmartQuestionOverlay(props: {
     uiText?: SmartQuestionUIText;
 }): any;
 /**
- * OpenCode v1 TUI adapter.
- */
-export declare const tui: TuiPlugin;
-/**
  * OpenCode v2 TUI adapter.
  */
 export declare const setup: OpenCodeV2Tui.Definition['setup'];
-declare const pluginModule: TuiPluginModule & {
-    id: string;
-    setup: typeof setup;
-};
-export default pluginModule;
+export declare const OpencodeSmartQuestionsTui: OpenCodeV2Tui.Definition;
+export default OpencodeSmartQuestionsTui;

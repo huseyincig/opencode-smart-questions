@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
 import { DEFAULT_CONFIG, DEFAULT_MANUAL_MARKERS, normalizeParamMarkers } from './config.js';
+/**
+ * Pure decision logic for detecting recommendations across questions.
+ * Enforces fail-safe conditions:
+ * - Empty questions list -> fail
+ * - Zero recommended options in ANY question -> fail
+ * - More than 1 recommended options in ANY single-select question -> fail
+ * - Exact suffix matching on marker
+ */
 export function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMarkers, options = {}) {
-    // If invoked directly by OpenCode's plugin engine as a plugin factory, return an empty hooks object
-    if (questions &&
-        typeof questions === 'object' &&
-        !Array.isArray(questions) &&
-        ('client' in questions || 'directory' in questions)) {
-        return {};
-    }
     // Retain the legacy options argument without relaxing single-choice ambiguity checks.
     void options;
     if (!Array.isArray(questions) || questions.length === 0) {
@@ -304,12 +305,6 @@ export function classifyQuestions(questions, recommendedMarker = DEFAULT_CONFIG.
  * permanently disabling Smart Questions across an entire session lifetime.
  */
 export function computeQuestionFingerprint(questions) {
-    if (questions &&
-        typeof questions === 'object' &&
-        !Array.isArray(questions) &&
-        ('client' in questions || 'directory' in questions)) {
-        return {};
-    }
     if (!Array.isArray(questions) || questions.length === 0)
         return 'empty';
     const normalized = questions.map((q) => ({
