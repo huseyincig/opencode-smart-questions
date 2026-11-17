@@ -223,6 +223,24 @@ export function normalizeSmartQuestionConfig(raw, configDir) {
 export function resolveSmartQuestionConfig(projectDir, pluginOptions) {
     const directory = typeof projectDir === 'string' && projectDir ? projectDir : process.cwd();
     const configDir = path.resolve(directory, '.opencode');
+    const resolver = pluginOptions &&
+        typeof pluginOptions === 'object' &&
+        !Array.isArray(pluginOptions) &&
+        typeof pluginOptions.resolveConfig === 'function'
+        ? pluginOptions.resolveConfig
+        : undefined;
+    if (resolver) {
+        let dynamic;
+        try {
+            dynamic = resolver(directory);
+        }
+        catch {
+            return null;
+        }
+        if (dynamic !== undefined) {
+            return normalizeSmartQuestionConfig(dynamic, configDir);
+        }
+    }
     if (pluginOptions && Object.prototype.hasOwnProperty.call(pluginOptions, 'config')) {
         return normalizeSmartQuestionConfig(pluginOptions.config, configDir);
     }

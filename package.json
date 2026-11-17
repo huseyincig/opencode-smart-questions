@@ -1,6 +1,6 @@
 {
   "name": "opencode-smart-questions",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Language-neutral auto-selection of recommended OpenCode V2 question options with user-interaction cancellation",
   "type": "module",
   "main": "./dist/index.js",

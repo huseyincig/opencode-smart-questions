@@ -531,8 +531,9 @@ try {
 
   const pkgDir = path.join(tempExtractDir, 'package');
   fs.symlinkSync(path.join(rootDir, 'node_modules'), path.join(pkgDir, 'node_modules'), 'dir');
+  const rootPkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
   const packedPkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
-  assert.equal(packedPkg.version, '1.0.0');
+  assert.equal(packedPkg.version, rootPkg.version);
   assert.equal(packedPkg.devDependencies?.['@opencode-ai/plugin'], undefined);
   const packedServer = await import(path.join(pkgDir, 'dist', 'index.js'));
   const packedTui = await import(path.join(pkgDir, 'dist', 'tui.js'));

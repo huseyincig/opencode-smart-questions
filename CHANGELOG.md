@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.0 — 2026-11-17
+
+- **Dynamic per-session directory config (`resolveConfig`)**: Added optional `options.resolveConfig?: (directory: string) => unknown` support in `resolveSmartQuestionConfig` (`src/config.ts`), `src/index.ts`, and `src/ui.tsx` so multi-directory hosts can resolve per-session configuration dynamically while preserving 100% standalone `.opencode/smart-question.json` behavior when omitted.
+- **Event stream reconnect resilience**: Updated `context.event.subscribe` in `src/index.ts` with an `AbortController`-aware exponential backoff reconnect loop (250 ms → 30 s cap) so transient `EventBusOverflowError` or stream interruptions recover automatically without silently stopping event handling.
+- **Bounded TUI remediation & chain caches**: Added 512-entry LRU eviction (`setBounded`) for `remediatedForms` and `sessionChains` in `src/ui.tsx` alongside `session.deleted` cleanup.
+- **Verification**: 135/135 unit & regression tests, 7/7 sandbox scenarios, and 8/8 live OpenCode `v2.3.0` host acceptance scenarios pass (`npm run test:all`).
+
 ## 1.0.0 — 2026-11-17
 
 **Breaking:** Dropped OpenCode V1 support and `@opencode-ai/plugin`; Smart Questions is now a pure OpenCode V2 plugin targeting `@opencode/plugin` `^2.3.0` (`opencode v2.3.0+`).

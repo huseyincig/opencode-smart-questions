@@ -75,6 +75,21 @@ function eventSessionID(data: unknown): string {
   return '';
 }
 
+function sleepWithAbort(ms: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise<boolean>((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(!signal.aborted);
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
   if (
     !context ||
@@ -86,7 +101,10 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
   }
 
   const pluginOptions = context.options as Record<string, unknown> | undefined;
-  if (hasSmartQuestionConfigOptions(pluginOptions)) {
+  if (
+    typeof pluginOptions?.resolveConfig !== 'function' &&
+    hasSmartQuestionConfigOptions(pluginOptions)
+  ) {
     const explicitConfig = resolveSmartQuestionConfig(
       context.location?.directory,
       pluginOptions
@@ -198,47 +216,57 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
         },
       });
 
-      const stream = context.event.subscribe({ signal: eventController.signal });
       void (async () => {
-        try {
-          for await (const evt of stream) {
-            if (eventController.signal.aborted) break;
-            if (!evt || typeof evt !== 'object') continue;
-            const eventType = (evt as { type?: unknown }).type;
-            const data = (evt as { data?: unknown }).data;
-            const sessionID = eventSessionID(data);
-            if (!sessionID) continue;
+        let attempt = 0;
+        while (!eventController.signal.aborted) {
+          try {
+            const stream = context.event.subscribe({ signal: eventController.signal });
+            for await (const evt of stream) {
+              if (eventController.signal.aborted) break;
+              attempt = 0;
+              if (!evt || typeof evt !== 'object') continue;
+              const eventType = (evt as { type?: unknown }).type;
+              const data = (evt as { data?: unknown }).data;
+              const sessionID = eventSessionID(data);
+              if (!sessionID) continue;
 
-            if (eventType === 'session.synthetic') {
-              const handoff = extractTrustedGuardianHandoff(data);
-              if (handoff && (await isSessionEligible(sessionID))) {
-                setActiveHandoff(sessionID, handoff);
-              }
-            } else if (eventType === 'session.inbox.enqueued') {
-              const item =
-                data && typeof data === 'object'
-                  ? (data as { item?: unknown }).item
-                  : undefined;
-              const itemType =
-                item && typeof item === 'object'
-                  ? (item as { type?: unknown }).type
-                  : undefined;
-              if (itemType === 'synthetic') {
-                const handoff = extractTrustedGuardianHandoff(item);
+              if (eventType === 'session.synthetic') {
+                const handoff = extractTrustedGuardianHandoff(data);
                 if (handoff && (await isSessionEligible(sessionID))) {
                   setActiveHandoff(sessionID, handoff);
                 }
-              } else if (itemType === 'user' && !isInternalNonHumanMessage(item)) {
-                invalidateActiveHandoff(sessionID);
+              } else if (eventType === 'session.inbox.enqueued') {
+                const item =
+                  data && typeof data === 'object'
+                    ? (data as { item?: unknown }).item
+                    : undefined;
+                const itemType =
+                  item && typeof item === 'object'
+                    ? (item as { type?: unknown }).type
+                    : undefined;
+                if (itemType === 'synthetic') {
+                  const handoff = extractTrustedGuardianHandoff(item);
+                  if (handoff && (await isSessionEligible(sessionID))) {
+                    setActiveHandoff(sessionID, handoff);
+                  }
+                } else if (itemType === 'user' && !isInternalNonHumanMessage(item)) {
+                  invalidateActiveHandoff(sessionID);
+                }
+              } else if (eventType === 'form.replied' || eventType === 'form.cancelled') {
+                consumeActiveHandoff(sessionID);
+              } else if (eventType === 'session.deleted') {
+                clearActiveHandoff(sessionID);
               }
-            } else if (eventType === 'form.replied' || eventType === 'form.cancelled') {
-              consumeActiveHandoff(sessionID);
-            } else if (eventType === 'session.deleted') {
-              clearActiveHandoff(sessionID);
             }
+          } catch {
+            if (eventController.signal.aborted) break;
           }
-        } catch {
-          // Stream ended or aborted during plugin teardown.
+
+          if (eventController.signal.aborted) break;
+          const backoffMs = Math.min(30_000, 250 * 2 ** Math.min(attempt, 10));
+          attempt += 1;
+          const shouldContinue = await sleepWithAbort(backoffMs, eventController.signal);
+          if (!shouldContinue) break;
         }
       })();
     }

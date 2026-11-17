@@ -272,6 +272,26 @@ export function resolveSmartQuestionConfig(
   const directory = typeof projectDir === 'string' && projectDir ? projectDir : process.cwd();
   const configDir = path.resolve(directory, '.opencode');
 
+  const resolver =
+    pluginOptions &&
+    typeof pluginOptions === 'object' &&
+    !Array.isArray(pluginOptions) &&
+    typeof pluginOptions.resolveConfig === 'function'
+      ? (pluginOptions.resolveConfig as (dir: string) => unknown)
+      : undefined;
+
+  if (resolver) {
+    let dynamic: unknown;
+    try {
+      dynamic = resolver(directory);
+    } catch {
+      return null;
+    }
+    if (dynamic !== undefined) {
+      return normalizeSmartQuestionConfig(dynamic, configDir);
+    }
+  }
+
   if (pluginOptions && Object.prototype.hasOwnProperty.call(pluginOptions, 'config')) {
     return normalizeSmartQuestionConfig(pluginOptions.config, configDir);
   }

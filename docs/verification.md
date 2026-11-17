@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v1.0.0** evaluation on **17 November 2026**.
+This document describes the **v1.1.0** evaluation on **17 November 2026**.
 
 ## Automated checks
 
@@ -24,13 +24,19 @@ CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.
 
 | Check | Observed result |
 | --- | --- |
-| Unit and regression tests (`npm test`) | **131/131 passed** |
+| Unit and regression tests (`npm test`) | **135/135 passed** |
 | Live OpenCode `v2.3.0` acceptance (`npm run test:acceptance`) | **8/8 scenarios passed** against live `opencode serve` |
 | Strict TypeScript and Oxlint | **Passed**, 0 warnings / 0 errors |
 | Simulated V2 comprehensive scenarios | **7/7 passed** |
 | Separate V2 smoke test | **Passed** |
 | Dependency audit (`npm audit`) | **0 vulnerabilities** |
 | Packaging dry run (`npm pack --dry-run`) | Expected server, UI, TUI, declaration, and documentation files included |
+
+## v1.1.0 regression & fix coverage
+
+- **Dynamic per-session directory config (`resolveConfig`)**: `resolveSmartQuestionConfig`, `src/index.ts`, and `src/ui.tsx` support an optional `options.resolveConfig(directory)` callback without short-circuiting startup when a host's initial directory disables auto-selection; standalone `.opencode/smart-question.json` resolution remains unchanged when omitted.
+- **Event stream reconnect**: `context.event.subscribe` in `src/index.ts` automatically reconnects with exponential backoff (`250 ms` to `30 s`) on transient stream errors and exits cleanly on `dispose()`.
+- **Bounded TUI caches**: `remediatedForms` and `sessionChains` in `src/ui.tsx` enforce a 512-entry LRU cap via `setBounded` alongside `session.deleted` cleanup.
 
 ## v1.0.0 regression & fix coverage
 

@@ -5,6 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { classifyV2Form } from '../dist/form-adapter.js';
+import OpencodeSmartQuestions, {
+  clearActiveHandoff,
+  getActiveHandoff,
+  resolveSmartQuestionConfig,
+} from '../dist/index.js';
 import { setup } from '../dist/ui.js';
 
 function tempDirectory(t) {
@@ -297,3 +302,251 @@ for (const phase of ['sync', 'reply', 'manual']) {
     assert.deepEqual(replies, phase === 'manual' ? [] : [expectedReply]);
   });
 }
+
+test('SQ-02: resolveConfig resolves per-session directory settings even when startup directory is disabled', async () => {
+  const startupDir = '/tmp/sq-startup-disabled';
+  const projectBDir = '/tmp/sq-project-b';
+  const pluginOptions = {
+    resolveConfig(directory) {
+      if (directory === startupDir) return { enabled: false };
+      if (directory === projectBDir) {
+        return { enabled: true, recommendedMarkers: ['[B:rec]'], timeoutMs: 25 };
+      }
+      return undefined;
+    },
+  };
+
+  assert.equal(resolveSmartQuestionConfig(startupDir, pluginOptions), null);
+  const resolvedB = resolveSmartQuestionConfig(projectBDir, pluginOptions);
+  assert.ok(resolvedB?.enabled);
+  assert.deepEqual(resolvedB.recommendedMarkers, ['[B:rec]']);
+  assert.equal(resolvedB.configDir, path.resolve(projectBDir, '.opencode'));
+
+  let contextHook = null;
+  const dispose = await OpencodeSmartQuestions.setup({
+    location: { directory: startupDir },
+    options: pluginOptions,
+    session: {
+      async get({ sessionID }) {
+        return {
+          id: sessionID,
+          location: { directory: sessionID === 'ses-disabled' ? startupDir : projectBDir },
+        };
+      },
+      async hook(name, fn) {
+        if (name === 'context') contextHook = fn;
+        return { async dispose() {} };
+      },
+    },
+  });
+
+  try {
+    assert.equal(typeof contextHook, 'function', 'setup must not short-circuit when resolveConfig is provided');
+    const sysDisabled = [];
+    await contextHook({ sessionID: 'ses-disabled', system: sysDisabled, messages: [] });
+    assert.equal(sysDisabled.length, 0);
+
+    const sysB = [];
+    await contextHook({ sessionID: 'ses-b', system: sysB, messages: [] });
+    assert.equal(sysB.length, 1);
+    assert.match(sysB[0].text, /\[B:rec\]/);
+  } finally {
+    await dispose?.();
+  }
+});
+
+test('SQ-02: V2 TUI resolves per-session directory config via resolveConfig even when startup dir is disabled', async (t) => {
+  const startupDir = tempDirectory(t);
+  const projectBDir = tempDirectory(t);
+  const events = new Map();
+  const replies = [];
+
+  const dispose = await setup({
+    location: { directory: startupDir },
+    options: {
+      resolveConfig(directory) {
+        if (directory === startupDir) return { enabled: false };
+        if (directory === projectBDir) return { enabled: true, timeoutMs: 15 };
+        return undefined;
+      },
+    },
+    data: {
+      on(type, handler) { events.set(type, handler); return () => events.delete(type); },
+      session: {
+        get(id) { return { id, location: { directory: projectBDir } }; },
+        form: {
+          async sync() {},
+          list() {
+            return [{
+              id: 'form-dyn-1',
+              sessionID: 'ses-dyn',
+              fields: [{
+                key: 'choice',
+                type: 'string',
+                options: [{ value: 'yes', label: 'Yes [SQ:recommended]' }, { value: 'no', label: 'No' }],
+              }],
+            }];
+          },
+          async reply(input) { replies.push(input); },
+          invalidate() {},
+        },
+      },
+    },
+    renderer: { keyInput: { on() {}, off() {} } },
+    ui: {
+      router: { current() { return { type: 'session', sessionID: 'ses-dyn' }; } },
+      slot() { return () => {}; },
+    },
+  });
+  t.after(dispose);
+
+  assert.equal(typeof events.get('form.created'), 'function');
+  await events.get('form.created')({
+    location: { directory: projectBDir },
+    data: {
+      form: {
+        id: 'form-dyn-1',
+        sessionID: 'ses-dyn',
+        fields: [{
+          key: 'choice',
+          type: 'string',
+          options: [{ value: 'yes', label: 'Yes [SQ:recommended]' }, { value: 'no', label: 'No' }],
+        }],
+      },
+    },
+  });
+  await delay(50);
+  assert.deepEqual(replies, [{ sessionID: 'ses-dyn', formID: 'form-dyn-1', answer: { choice: 'yes' } }]);
+});
+
+test('SQ-03: V2 backend event.subscribe reconnects after stream error and stops on dispose', async (t) => {
+  const sessionID = 'ses-reconnect-1';
+  t.after(() => clearActiveHandoff(sessionID));
+
+  let subscribeCalls = 0;
+  let lastSignal = null;
+
+  const dispose = await OpencodeSmartQuestions.setup({
+    location: { directory: tempDirectory(t) },
+    options: {},
+    session: {
+      async get({ sessionID: id }) {
+        return { id, location: { directory: '/tmp' } };
+      },
+      async hook() {
+        return { async dispose() {} };
+      },
+    },
+    event: {
+      subscribe({ signal }) {
+        subscribeCalls += 1;
+        lastSignal = signal;
+        const callIndex = subscribeCalls;
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (callIndex === 1) {
+              throw new Error('EventBusOverflowError');
+            }
+            yield {
+              type: 'session.synthetic',
+              data: {
+                sessionID,
+                text: [
+                  '[opencode-guardian remediation]',
+                  '[OPENCODE_HANDOFF:v1]',
+                  'source=guardian',
+                  'action=question_required',
+                  'kind=approval',
+                  'auto_select=forbidden',
+                  'handoff_id=gq_reconnect_1',
+                ].join('\n'),
+                metadata: {
+                  'opencode-guardian': true,
+                  'opencode-guardian-provenance': 'tok-reconnect',
+                  'opencode-guardian-kind': 'remediation',
+                },
+              },
+            };
+            await new Promise((resolve) => {
+              if (signal.aborted) resolve();
+              else signal.addEventListener('abort', resolve, { once: true });
+            });
+          },
+        };
+      },
+    },
+  });
+
+  // First attempt fails immediately; exponential backoff starts at 250ms.
+  await delay(350);
+  assert.ok(subscribeCalls >= 2, `expected reconnect attempt, got subscribeCalls=${subscribeCalls}`);
+  const active = getActiveHandoff(sessionID);
+  assert.equal(active?.handoffId, 'gq_reconnect_1');
+  assert.equal(active?.autoSelect, 'forbidden');
+
+  await dispose?.();
+  assert.equal(lastSignal?.aborted, true);
+});
+
+test('SQ-04: V2 TUI bounds remediatedForms and sessionChains to 512 entries via LRU eviction', async (t) => {
+  const directory = tempDirectory(t);
+  const events = new Map();
+  const sentPrompts = [];
+
+  const dispose = await setup({
+    location: { directory },
+    options: { timeoutMs: 20, configDir: directory, maxUnclassifiedRemediations: 1 },
+    client: {
+      session: {
+        async synthetic(payload) {
+          sentPrompts.push(payload.sessionID);
+          return { id: `syn-${sentPrompts.length}` };
+        },
+      },
+    },
+    data: {
+      on(type, handler) { events.set(type, handler); return () => events.delete(type); },
+      session: {
+        get(id) { return { id, location: { directory } }; },
+        message: { list() { return []; } },
+        form: {
+          async sync() {},
+          list() { return []; },
+          async reply() {},
+          invalidate() {},
+        },
+      },
+    },
+    renderer: { keyInput: { on() {}, off() {} } },
+    ui: {
+      router: { current() { return { type: 'home' }; } },
+      slot() { return () => {}; },
+    },
+  });
+  t.after(dispose);
+
+  const onCreated = events.get('form.created');
+  const makeForm = (i) => ({
+    id: `frm-lru-${i}`,
+    sessionID: `ses-lru-${i}`,
+    fields: [{
+      key: 'pick',
+      type: 'string',
+      options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }],
+    }],
+  });
+
+  // Emit 520 distinct unclassified forms across 520 distinct sessions (> 512 LRU cap).
+  for (let i = 1; i <= 520; i++) {
+    await onCreated({ data: { form: makeForm(i) } });
+  }
+  assert.equal(sentPrompts.length, 520);
+
+  // Entry #520 is still within the 512-entry LRU cap -> duplicate form & exhausted chain suppress new prompt.
+  await onCreated({ data: { form: makeForm(520) } });
+  assert.equal(sentPrompts.length, 520);
+
+  // Entry #1 was evicted when exceeding 512 -> re-sending form #1 triggers fresh remediation instead of stale state.
+  await onCreated({ data: { form: makeForm(1) } });
+  assert.equal(sentPrompts.length, 521);
+});

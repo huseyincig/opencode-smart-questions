@@ -360,6 +360,21 @@ export function SmartQuestionOverlay(props: {
   );
 }
 
+const MAX_REMEDIATED_FORMS = 512;
+const MAX_SESSION_CHAINS = 512;
+
+function setBounded<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+  if (map.has(key)) {
+    map.delete(key);
+  }
+  map.set(key, value);
+  while (map.size > max) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
+
 /**
  * OpenCode v2 TUI adapter.
  */
@@ -383,7 +398,11 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     return;
   }
 
-  if (hasSmartQuestionConfigOptions(context.options as Record<string, unknown> | undefined)) {
+  const pluginOptions = context.options as Record<string, unknown> | undefined;
+  if (
+    typeof pluginOptions?.resolveConfig !== 'function' &&
+    hasSmartQuestionConfigOptions(pluginOptions)
+  ) {
     const explicitConfig = resolveV2TuiConfig(context);
     if (!explicitConfig?.enabled) return;
   }
@@ -693,11 +712,16 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         }
 
         if (classification.status === 'unclassified') {
-          remediatedForms.set(form.id, form.sessionID);
-          sessionChains.set(form.sessionID, {
-            fingerprint,
-            consecutiveFailures: currentCount + 1,
-          });
+          setBounded(remediatedForms, form.id, form.sessionID, MAX_REMEDIATED_FORMS);
+          setBounded(
+            sessionChains,
+            form.sessionID,
+            {
+              fingerprint,
+              consecutiveFailures: currentCount + 1,
+            },
+            MAX_SESSION_CHAINS
+          );
 
           ensureDraftLock(lockPath, { formID: form.id, sessionID: form.sessionID, ts: Date.now(), reason: 'unclassified' });
           const state: OverlayState = {
@@ -748,10 +772,15 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
             if (currentCount === 0) {
               sessionChains.delete(form.sessionID);
             } else {
-              sessionChains.set(form.sessionID, {
-                fingerprint,
-                consecutiveFailures: currentCount,
-              });
+              setBounded(
+                sessionChains,
+                form.sessionID,
+                {
+                  fingerprint,
+                  consecutiveFailures: currentCount,
+                },
+                MAX_SESSION_CHAINS
+              );
             }
             if (!disposed) {
               updateSessionState(form.sessionID, (current) =>

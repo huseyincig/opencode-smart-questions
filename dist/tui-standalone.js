@@ -215,6 +215,18 @@ function normalizeSmartQuestionConfig(raw, configDir) {
 function resolveSmartQuestionConfig(projectDir, pluginOptions) {
   const directory = typeof projectDir === "string" && projectDir ? projectDir : process.cwd();
   const configDir = path.resolve(directory, ".opencode");
+  const resolver = pluginOptions && typeof pluginOptions === "object" && !Array.isArray(pluginOptions) && typeof pluginOptions.resolveConfig === "function" ? pluginOptions.resolveConfig : void 0;
+  if (resolver) {
+    let dynamic;
+    try {
+      dynamic = resolver(directory);
+    } catch {
+      return null;
+    }
+    if (dynamic !== void 0) {
+      return normalizeSmartQuestionConfig(dynamic, configDir);
+    }
+  }
   if (pluginOptions && Object.prototype.hasOwnProperty.call(pluginOptions, "config")) {
     return normalizeSmartQuestionConfig(pluginOptions.config, configDir);
   }
@@ -1472,12 +1484,26 @@ function SmartQuestionOverlay(props) {
     }
   });
 }
+var MAX_REMEDIATED_FORMS = 512;
+var MAX_SESSION_CHAINS = 512;
+function setBounded(map, key, value, max) {
+  if (map.has(key)) {
+    map.delete(key);
+  }
+  map.set(key, value);
+  while (map.size > max) {
+    const oldest = map.keys().next().value;
+    if (oldest === void 0) break;
+    map.delete(oldest);
+  }
+}
 var setup = async (context) => {
   const formApi = context?.data?.session?.form;
   if (!context || typeof context !== "object" || typeof context.data?.on !== "function" || typeof formApi?.sync !== "function" || typeof formApi?.list !== "function" || typeof formApi?.reply !== "function" || typeof formApi?.invalidate !== "function" || typeof context.renderer?.keyInput?.on !== "function" || typeof context.renderer?.keyInput?.off !== "function" || typeof context.ui?.router?.current !== "function" || typeof context.ui?.slot !== "function") {
     return;
   }
-  if (hasSmartQuestionConfigOptions(context.options)) {
+  const pluginOptions = context.options;
+  if (typeof pluginOptions?.resolveConfig !== "function" && hasSmartQuestionConfigOptions(pluginOptions)) {
     const explicitConfig = resolveV2TuiConfig(context);
     if (!explicitConfig?.enabled) return;
   }
@@ -1732,11 +1758,11 @@ var setup = async (context) => {
           }
         }
         if (classification.status === "unclassified") {
-          remediatedForms.set(form.id, form.sessionID);
-          sessionChains.set(form.sessionID, {
+          setBounded(remediatedForms, form.id, form.sessionID, MAX_REMEDIATED_FORMS);
+          setBounded(sessionChains, form.sessionID, {
             fingerprint,
             consecutiveFailures: currentCount + 1
-          });
+          }, MAX_SESSION_CHAINS);
           ensureDraftLock(lockPath2, {
             formID: form.id,
             sessionID: form.sessionID,
@@ -1789,10 +1815,10 @@ var setup = async (context) => {
             if (currentCount === 0) {
               sessionChains.delete(form.sessionID);
             } else {
-              sessionChains.set(form.sessionID, {
+              setBounded(sessionChains, form.sessionID, {
                 fingerprint,
                 consecutiveFailures: currentCount
-              });
+              }, MAX_SESSION_CHAINS);
             }
             if (!disposed) {
               updateSessionState(form.sessionID, (current) => current?.formID === form.id ? {

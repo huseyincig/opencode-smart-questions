@@ -36,6 +36,21 @@ function eventSessionID(data) {
     }
     return '';
 }
+function sleepWithAbort(ms, signal) {
+    if (signal.aborted)
+        return Promise.resolve(false);
+    return new Promise((resolve) => {
+        const onAbort = () => {
+            clearTimeout(timer);
+            resolve(false);
+        };
+        const timer = setTimeout(() => {
+            signal.removeEventListener('abort', onAbort);
+            resolve(!signal.aborted);
+        }, ms);
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
+}
 const setupV2 = async (context) => {
     if (!context ||
         typeof context !== 'object' ||
@@ -44,7 +59,8 @@ const setupV2 = async (context) => {
         return;
     }
     const pluginOptions = context.options;
-    if (hasSmartQuestionConfigOptions(pluginOptions)) {
+    if (typeof pluginOptions?.resolveConfig !== 'function' &&
+        hasSmartQuestionConfigOptions(pluginOptions)) {
         const explicitConfig = resolveSmartQuestionConfig(context.location?.directory, pluginOptions);
         if (!explicitConfig?.enabled)
             return;
@@ -142,52 +158,64 @@ const setupV2 = async (context) => {
                     eventController.abort();
                 },
             });
-            const stream = context.event.subscribe({ signal: eventController.signal });
             void (async () => {
-                try {
-                    for await (const evt of stream) {
-                        if (eventController.signal.aborted)
-                            break;
-                        if (!evt || typeof evt !== 'object')
-                            continue;
-                        const eventType = evt.type;
-                        const data = evt.data;
-                        const sessionID = eventSessionID(data);
-                        if (!sessionID)
-                            continue;
-                        if (eventType === 'session.synthetic') {
-                            const handoff = extractTrustedGuardianHandoff(data);
-                            if (handoff && (await isSessionEligible(sessionID))) {
-                                setActiveHandoff(sessionID, handoff);
-                            }
-                        }
-                        else if (eventType === 'session.inbox.enqueued') {
-                            const item = data && typeof data === 'object'
-                                ? data.item
-                                : undefined;
-                            const itemType = item && typeof item === 'object'
-                                ? item.type
-                                : undefined;
-                            if (itemType === 'synthetic') {
-                                const handoff = extractTrustedGuardianHandoff(item);
+                let attempt = 0;
+                while (!eventController.signal.aborted) {
+                    try {
+                        const stream = context.event.subscribe({ signal: eventController.signal });
+                        for await (const evt of stream) {
+                            if (eventController.signal.aborted)
+                                break;
+                            attempt = 0;
+                            if (!evt || typeof evt !== 'object')
+                                continue;
+                            const eventType = evt.type;
+                            const data = evt.data;
+                            const sessionID = eventSessionID(data);
+                            if (!sessionID)
+                                continue;
+                            if (eventType === 'session.synthetic') {
+                                const handoff = extractTrustedGuardianHandoff(data);
                                 if (handoff && (await isSessionEligible(sessionID))) {
                                     setActiveHandoff(sessionID, handoff);
                                 }
                             }
-                            else if (itemType === 'user' && !isInternalNonHumanMessage(item)) {
-                                invalidateActiveHandoff(sessionID);
+                            else if (eventType === 'session.inbox.enqueued') {
+                                const item = data && typeof data === 'object'
+                                    ? data.item
+                                    : undefined;
+                                const itemType = item && typeof item === 'object'
+                                    ? item.type
+                                    : undefined;
+                                if (itemType === 'synthetic') {
+                                    const handoff = extractTrustedGuardianHandoff(item);
+                                    if (handoff && (await isSessionEligible(sessionID))) {
+                                        setActiveHandoff(sessionID, handoff);
+                                    }
+                                }
+                                else if (itemType === 'user' && !isInternalNonHumanMessage(item)) {
+                                    invalidateActiveHandoff(sessionID);
+                                }
+                            }
+                            else if (eventType === 'form.replied' || eventType === 'form.cancelled') {
+                                consumeActiveHandoff(sessionID);
+                            }
+                            else if (eventType === 'session.deleted') {
+                                clearActiveHandoff(sessionID);
                             }
                         }
-                        else if (eventType === 'form.replied' || eventType === 'form.cancelled') {
-                            consumeActiveHandoff(sessionID);
-                        }
-                        else if (eventType === 'session.deleted') {
-                            clearActiveHandoff(sessionID);
-                        }
                     }
-                }
-                catch {
-                    // Stream ended or aborted during plugin teardown.
+                    catch {
+                        if (eventController.signal.aborted)
+                            break;
+                    }
+                    if (eventController.signal.aborted)
+                        break;
+                    const backoffMs = Math.min(30_000, 250 * 2 ** Math.min(attempt, 10));
+                    attempt += 1;
+                    const shouldContinue = await sleepWithAbort(backoffMs, eventController.signal);
+                    if (!shouldContinue)
+                        break;
                 }
             })();
         }
