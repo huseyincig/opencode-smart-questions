@@ -160,17 +160,18 @@ function messageTextCandidates(value) {
 /**
  * Register Smart Questions capability in the global OpenCode coordination registry.
  */
-let smartQuestionsRegistrationCount = 0;
-let previousSmartQuestionsCapability;
+const SQ_COUNT_SYMBOL = Symbol.for('opencode.coordination.sq.count.v1');
+const SQ_PREV_SYMBOL = Symbol.for('opencode.coordination.sq.prev.v1');
 export function registerSmartQuestionsCapability() {
     const globalObj = globalThis;
     const root = (globalObj[COORDINATION_SYMBOL] ??= {});
-    if (smartQuestionsRegistrationCount === 0) {
-        previousSmartQuestionsCapability = root.smartQuestions
+    const currentCount = globalObj[SQ_COUNT_SYMBOL] ?? 0;
+    if (currentCount === 0) {
+        globalObj[SQ_PREV_SYMBOL] = root.smartQuestions
             ? { ...root.smartQuestions }
             : undefined;
     }
-    smartQuestionsRegistrationCount += 1;
+    globalObj[SQ_COUNT_SYMBOL] = currentCount + 1;
     root.smartQuestions = {
         version: 1,
         mainAgentOnly: true,
@@ -181,21 +182,22 @@ export function registerSmartQuestionsCapability() {
         if (disposed)
             return;
         disposed = true;
-        smartQuestionsRegistrationCount = Math.max(0, smartQuestionsRegistrationCount - 1);
-        if (smartQuestionsRegistrationCount > 0)
+        const nextCount = Math.max(0, (globalObj[SQ_COUNT_SYMBOL] ?? 1) - 1);
+        globalObj[SQ_COUNT_SYMBOL] = nextCount;
+        if (nextCount > 0)
             return;
         const current = globalObj[COORDINATION_SYMBOL];
+        const previous = globalObj[SQ_PREV_SYMBOL];
+        globalObj[SQ_PREV_SYMBOL] = undefined;
         if (!current) {
-            previousSmartQuestionsCapability = undefined;
             return;
         }
-        if (previousSmartQuestionsCapability) {
-            current.smartQuestions = previousSmartQuestionsCapability;
+        if (previous) {
+            current.smartQuestions = previous;
         }
         else {
             delete current.smartQuestions;
         }
-        previousSmartQuestionsCapability = undefined;
         if (!current.guardian && !current.smartQuestions) {
             delete globalObj[COORDINATION_SYMBOL];
         }

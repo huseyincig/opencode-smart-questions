@@ -25,8 +25,8 @@ export declare function SmartQuestionOverlay(props: {
     state: () => OverlayState | null;
     countdown?: () => number;
     marker?: string | string[];
-    markers?: string | string[];
-    uiText?: SmartQuestionUIText;
+    markers?: string | string[] | (() => string | string[]);
+    uiText?: SmartQuestionUIText | (() => SmartQuestionUIText);
 }): any;
 /**
  * OpenCode v2 TUI adapter.

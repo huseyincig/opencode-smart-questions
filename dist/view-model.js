@@ -6,20 +6,22 @@ export function stripMarker(label, marker) {
         : typeof marker === 'string' && marker.length > 0
             ? [marker]
             : [];
+    const lowerLabel = strLabel.toLowerCase();
     let longestSuffix = '';
     for (const candidate of markers) {
         const normalized = candidate.normalize('NFC');
-        if (strLabel.endsWith(normalized) && normalized.length > longestSuffix.length) {
+        if (lowerLabel.endsWith(normalized.toLowerCase()) && normalized.length > longestSuffix.length) {
             longestSuffix = normalized;
         }
     }
     if (longestSuffix) {
         strLabel = strLabel.slice(0, -longestSuffix.length).trim();
     }
+    const lowerAfterSuffix = strLabel.toLowerCase();
     let longestPrefix = '';
     for (const candidate of markers) {
         const normalized = candidate.normalize('NFC');
-        if (strLabel.startsWith(normalized) && normalized.length > longestPrefix.length) {
+        if (lowerAfterSuffix.startsWith(normalized.toLowerCase()) && normalized.length > longestPrefix.length) {
             longestPrefix = normalized;
         }
     }

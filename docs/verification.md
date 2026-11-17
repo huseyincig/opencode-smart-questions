@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v1.1.0** evaluation on **17 November 2026**.
+This document describes the **v1.1.1** evaluation on **17 November 2026**.
 
 ## Automated checks
 
@@ -24,13 +24,20 @@ CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.
 
 | Check | Observed result |
 | --- | --- |
-| Unit and regression tests (`npm test`) | **135/135 passed** |
+| Unit and regression tests (`npm test`) | **145/145 passed** |
 | Live OpenCode `v2.3.0` acceptance (`npm run test:acceptance`) | **8/8 scenarios passed** against live `opencode serve` |
 | Strict TypeScript and Oxlint | **Passed**, 0 warnings / 0 errors |
 | Simulated V2 comprehensive scenarios | **7/7 passed** |
 | Separate V2 smoke test | **Passed** |
 | Dependency audit (`npm audit`) | **0 vulnerabilities** |
 | Packaging dry run (`npm pack --dry-run`) | Expected server, UI, TUI, declaration, and documentation files included |
+
+## v1.1.1 regression & fix coverage
+
+- **Config fallback with `resolveConfig`**: Stripped function `resolveConfig` prior to `SMART_QUESTION_CONFIG_KEYS` validation so fallback options apply when `resolveConfig(directory)` returns `undefined`.
+- **Reactive TUI slot & settlement tombstone**: `session.composer.top` uses reactive `getSessionID()`, `markers`, and `uiText` accessors; `settledForms` (512-entry LRU) blocks late duplicate `form.created` events after settlement.
+- **Session scope, symlink safety, & keyboard precision**: Enforced `isEligibleTuiSessionSync` on TUI synthetic/inbox events and `isSessionEligible` on server `prompt` hook; added `flag: 'wx'` to `ensureDraftLock`; ignored non-editing navigation keys (`pageup`/`pagedown`/etc.) while cancelling in-flight sync forms on typing/paste.
+- **Detector, marker stripping, & global handoff counter**: Scoped `commonMarkers` fallback to default markers, added case-insensitive `stripMarker`, moved `registerSmartQuestionsCapability` refcount to `globalThis`, and deduplicated `ui.tsx` / `form-adapter.ts`.
 
 ## v1.1.0 regression & fix coverage
 

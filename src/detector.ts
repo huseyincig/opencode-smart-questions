@@ -153,7 +153,8 @@ export function isQuestionExplicitlyManual(
  */
 function matchOptionRecommendation(
   opt: QuestionOption,
-  recMarkers: string[]
+  recMarkers: string[],
+  allowCommonFallback = true
 ): { opt: QuestionOption; marker: string } | undefined {
   if (!opt || typeof opt.label !== 'string') return undefined;
   const label = opt.label.trim();
@@ -193,11 +194,13 @@ function matchOptionRecommendation(
     }
   }
 
-  // 5. Common standard markers anywhere in label
-  const commonMarkers = ['(recommended)', '[recommended]', '(önerilen)', '[önerilen]', '[sq:recommended]'];
-  for (const cm of commonMarkers) {
-    if (lowerLabel.includes(cm) || desc.toLowerCase().includes(cm)) {
-      return { opt, marker: recMarkers[0] ?? '[SQ:recommended]' };
+  // 5. Common standard markers anywhere in label (only when using default markers)
+  if (allowCommonFallback) {
+    const commonMarkers = ['(recommended)', '[recommended]', '(önerilen)', '[önerilen]', '[sq:recommended]'];
+    for (const cm of commonMarkers) {
+      if (lowerLabel.includes(cm) || desc.toLowerCase().includes(cm)) {
+        return { opt, marker: recMarkers[0] ?? '[SQ:recommended]' };
+      }
     }
   }
 
@@ -242,6 +245,9 @@ export function classifyQuestions(
 
   const recMarkers = normalizeParamMarkers(recommendedMarker);
   const manMarkers = normalizeParamMarkers(manualMarker);
+  const allowCommonFallback =
+    recMarkers.length === DEFAULT_CONFIG.recommendedMarkers.length &&
+    recMarkers.every((m, idx) => m === DEFAULT_CONFIG.recommendedMarkers[idx]);
 
   const answers: string[][] = [];
   const recommendedOptions: QuestionOption[] = [];
@@ -279,7 +285,7 @@ export function classifyQuestions(
 
     // Check recommendation
     let matched = q.options
-      .map((opt) => matchOptionRecommendation(opt, recMarkers))
+      .map((opt) => matchOptionRecommendation(opt, recMarkers, allowCommonFallback))
       .filter((x): x is { opt: QuestionOption; marker: string } => Boolean(x));
 
     // Fallback: if no recommendation marker was found, but fallback is enabled, pick the logical first option

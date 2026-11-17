@@ -241,11 +241,20 @@ export function resolveSmartQuestionConfig(projectDir, pluginOptions) {
             return normalizeSmartQuestionConfig(dynamic, configDir);
         }
     }
-    if (pluginOptions && Object.prototype.hasOwnProperty.call(pluginOptions, 'config')) {
-        return normalizeSmartQuestionConfig(pluginOptions.config, configDir);
+    const staticOptions = pluginOptions &&
+        typeof pluginOptions === 'object' &&
+        !Array.isArray(pluginOptions) &&
+        typeof pluginOptions.resolveConfig === 'function'
+        ? (() => {
+            const { resolveConfig: _ignored, ...rest } = pluginOptions;
+            return rest;
+        })()
+        : pluginOptions;
+    if (staticOptions && Object.prototype.hasOwnProperty.call(staticOptions, 'config')) {
+        return normalizeSmartQuestionConfig(staticOptions.config, configDir);
     }
-    if (hasSmartQuestionConfigOptions(pluginOptions)) {
-        return normalizeSmartQuestionConfig(pluginOptions, configDir);
+    if (hasSmartQuestionConfigOptions(staticOptions)) {
+        return normalizeSmartQuestionConfig(staticOptions, configDir);
     }
     return loadConfig(projectDir);
 }

@@ -193,6 +193,7 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
     const promptRegistration = await context.session.hook('prompt', async (event) => {
       const sessionID = String(event.sessionID ?? '');
       if (!sessionID) return;
+      if (!(await isSessionEligible(sessionID))) return;
       const meta =
         event.metadata && typeof event.metadata === 'object' && !Array.isArray(event.metadata)
           ? (event.metadata as Record<string, unknown>)

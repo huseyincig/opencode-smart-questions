@@ -1,30 +1,20 @@
 import { classifyQuestions, detectRecommendations } from './detector.js';
 import { DEFAULT_CONFIG, DEFAULT_MANUAL_MARKERS, normalizeParamMarkers } from './config.js';
-/**
- * Converts OpenCode v2 selectable form fields into the legacy question shape
- * used by the shared detector, then maps recommended labels back to stable
- * option values required by session.form.reply().
- *
- * Forms containing free-text, numeric, boolean, external, hidden, or otherwise
- * unsupported fields are deliberately not auto-answered.
- */
-export function detectV2FormRecommendations(form, markers, options) {
-    if (!form || !Array.isArray(form.fields) || form.fields.length === 0) {
-        return { ok: false, reason: 'Form has no fields' };
-    }
+function prepareV2FormFields(fields) {
     const questions = [];
     const selectableFields = [];
     const seenKeys = new Set();
-    for (let i = 0; i < form.fields.length; i++) {
-        const field = form.fields[i];
+    for (let i = 0; i < fields.length; i++) {
+        const field = fields[i];
         if (!field) {
-            return { ok: false, reason: `Form field ${i + 1} is missing` };
+            return { ok: false, reason: `Form field ${i + 1} is missing`, questions };
         }
         if (field.hidden === true ||
             (field.when !== undefined && (!Array.isArray(field.when) || field.when.length > 0))) {
             return {
                 ok: false,
                 reason: `Form field ${i + 1} (${field.key ?? 'unknown'}) is hidden or conditional`,
+                questions,
             };
         }
         const isStringChoice = field.type === 'string' &&
@@ -37,10 +27,11 @@ export function detectV2FormRecommendations(form, markers, options) {
             return {
                 ok: false,
                 reason: `Form field ${i + 1} (${field.key ?? 'unknown'}) is not a supported selectable field`,
+                questions,
             };
         }
         if (typeof field.key !== 'string' || !field.key || seenKeys.has(field.key)) {
-            return { ok: false, reason: `Form field ${i + 1} has a missing or duplicate key` };
+            return { ok: false, reason: `Form field ${i + 1} has a missing or duplicate key`, questions };
         }
         seenKeys.add(field.key);
         if (isMultiChoice) {
@@ -52,6 +43,7 @@ export function detectV2FormRecommendations(form, markers, options) {
                 return {
                     ok: false,
                     reason: `Form field ${i + 1} has invalid multiselect item constraints`,
+                    questions,
                 };
             }
         }
@@ -62,6 +54,7 @@ export function detectV2FormRecommendations(form, markers, options) {
             return {
                 ok: false,
                 reason: `Form field ${i + 1} contains an invalid option`,
+                questions,
             };
         }
         const mappedOptions = fieldOptions.map((option) => ({
@@ -84,6 +77,25 @@ export function detectV2FormRecommendations(form, markers, options) {
             ...(isMultiChoice && field.maxItems !== undefined ? { maxItems: field.maxItems } : {}),
         });
     }
+    return { ok: true, questions, selectableFields };
+}
+/**
+ * Converts OpenCode v2 selectable form fields into the legacy question shape
+ * used by the shared detector, then maps recommended labels back to stable
+ * option values required by session.form.reply().
+ *
+ * Forms containing free-text, numeric, boolean, external, hidden, or otherwise
+ * unsupported fields are deliberately not auto-answered.
+ */
+export function detectV2FormRecommendations(form, markers, options) {
+    if (!form || !Array.isArray(form.fields) || form.fields.length === 0) {
+        return { ok: false, reason: 'Form has no fields' };
+    }
+    const prepared = prepareV2FormFields(form.fields);
+    if (!prepared.ok) {
+        return { ok: false, reason: prepared.reason };
+    }
+    const { questions, selectableFields } = prepared;
     const detection = detectRecommendations(questions, markers, options);
     if (!detection.ok)
         return detection;
@@ -168,86 +180,15 @@ export function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers
             break;
         }
     }
-    const questions = [];
-    const selectableFields = [];
-    const seenKeys = new Set();
-    for (let i = 0; i < form.fields.length; i++) {
-        const field = form.fields[i];
-        if (!field) {
-            return { status: 'unclassified', reason: `Form field ${i + 1} is missing`, questions };
-        }
-        if (field.hidden === true ||
-            (field.when !== undefined && (!Array.isArray(field.when) || field.when.length > 0))) {
-            return {
-                status: 'unclassified',
-                reason: `Form field ${i + 1} (${field.key ?? 'unknown'}) is hidden or conditional`,
-                questions,
-            };
-        }
-        const isStringChoice = field.type === 'string' &&
-            Array.isArray(field.options) &&
-            field.options.length > 0;
-        const isMultiChoice = field.type === 'multiselect' &&
-            Array.isArray(field.options) &&
-            field.options.length > 0;
-        if (!isStringChoice && !isMultiChoice) {
-            return {
-                status: 'unclassified',
-                reason: `Form field ${i + 1} (${field.key ?? 'unknown'}) is not a supported selectable field`,
-                questions,
-            };
-        }
-        if (typeof field.key !== 'string' || !field.key || seenKeys.has(field.key)) {
-            return {
-                status: 'unclassified',
-                reason: `Form field ${i + 1} has a missing or duplicate key`,
-                questions,
-            };
-        }
-        seenKeys.add(field.key);
-        if (isMultiChoice) {
-            const constraints = [field.minItems, field.maxItems].filter((value) => value !== undefined);
-            if (constraints.some((value) => !Number.isInteger(value) || value < 0) ||
-                (field.minItems !== undefined &&
-                    field.maxItems !== undefined &&
-                    field.minItems > field.maxItems)) {
-                return {
-                    status: 'unclassified',
-                    reason: `Form field ${i + 1} has invalid multiselect item constraints`,
-                    questions,
-                };
-            }
-        }
-        const fieldOptions = field.options;
-        if (fieldOptions.some((option) => !option ||
-            typeof option.value !== 'string' ||
-            typeof option.label !== 'string')) {
-            return {
-                status: 'unclassified',
-                reason: `Form field ${i + 1} contains an invalid option`,
-                questions,
-            };
-        }
-        const mappedOptions = fieldOptions.map((option) => ({
-            label: option.label,
-            value: option.value,
-            ...(typeof option.description === 'string' ? { description: option.description } : {}),
-        }));
-        questions.push({
-            question: field.description ?? field.title ?? field.key,
-            header: field.title ?? field.key,
-            key: field.key,
-            options: mappedOptions,
-            multiple: isMultiChoice,
-        });
-        selectableFields.push({
-            key: field.key,
-            multiple: isMultiChoice,
-            options: fieldOptions,
-            ...(isMultiChoice && field.minItems !== undefined ? { minItems: field.minItems } : {}),
-            ...(isMultiChoice && field.maxItems !== undefined ? { maxItems: field.maxItems } : {}),
-        });
+    const prepared = prepareV2FormFields(form.fields);
+    if (!prepared.ok) {
+        return {
+            status: 'unclassified',
+            reason: prepared.reason,
+            questions: prepared.questions,
+        };
     }
+    const { questions, selectableFields } = prepared;
     if (formExplicitlyManual && !options?.allowFallbackOnManual) {
         return {
             status: 'manual',

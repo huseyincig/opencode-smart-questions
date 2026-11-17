@@ -123,7 +123,7 @@ export function isQuestionExplicitlyManual(q, manualMarkers = DEFAULT_MANUAL_MAR
  * 4. In description: e.g. description: "(Recommended)"
  * 5. Standard markers anywhere in label
  */
-function matchOptionRecommendation(opt, recMarkers) {
+function matchOptionRecommendation(opt, recMarkers, allowCommonFallback = true) {
     if (!opt || typeof opt.label !== 'string')
         return undefined;
     const label = opt.label.trim();
@@ -158,11 +158,13 @@ function matchOptionRecommendation(opt, recMarkers) {
             return { opt, marker };
         }
     }
-    // 5. Common standard markers anywhere in label
-    const commonMarkers = ['(recommended)', '[recommended]', '(önerilen)', '[önerilen]', '[sq:recommended]'];
-    for (const cm of commonMarkers) {
-        if (lowerLabel.includes(cm) || desc.toLowerCase().includes(cm)) {
-            return { opt, marker: recMarkers[0] ?? '[SQ:recommended]' };
+    // 5. Common standard markers anywhere in label (only when using default markers)
+    if (allowCommonFallback) {
+        const commonMarkers = ['(recommended)', '[recommended]', '(önerilen)', '[önerilen]', '[sq:recommended]'];
+        for (const cm of commonMarkers) {
+            if (lowerLabel.includes(cm) || desc.toLowerCase().includes(cm)) {
+                return { opt, marker: recMarkers[0] ?? '[SQ:recommended]' };
+            }
         }
     }
     return undefined;
@@ -191,6 +193,8 @@ export function classifyQuestions(questions, recommendedMarker = DEFAULT_CONFIG.
     }
     const recMarkers = normalizeParamMarkers(recommendedMarker);
     const manMarkers = normalizeParamMarkers(manualMarker);
+    const allowCommonFallback = recMarkers.length === DEFAULT_CONFIG.recommendedMarkers.length &&
+        recMarkers.every((m, idx) => m === DEFAULT_CONFIG.recommendedMarkers[idx]);
     const answers = [];
     const recommendedOptions = [];
     let matchedMarker;
@@ -221,7 +225,7 @@ export function classifyQuestions(questions, recommendedMarker = DEFAULT_CONFIG.
         }
         // Check recommendation
         let matched = q.options
-            .map((opt) => matchOptionRecommendation(opt, recMarkers))
+            .map((opt) => matchOptionRecommendation(opt, recMarkers, allowCommonFallback))
             .filter((x) => Boolean(x));
         // Fallback: if no recommendation marker was found, but fallback is enabled, pick the logical first option
         if (matched.length === 0 && options.allowFallback && Array.isArray(q.options) && q.options.length > 0) {

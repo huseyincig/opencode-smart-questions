@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.1 — 2026-11-17
+
+- **Config fallback fix (`src/config.ts`)**: Strip function `resolveConfig` before validating static fallback keys so `{ resolveConfig, ...fallbackOptions }` applies fallback settings instead of failing closed when `resolveConfig(directory)` returns `undefined`.
+- **Reactive TUI slot (`src/ui.tsx`)**: Use a reactive `getSessionID()` accessor and reactive `markers`/`uiText` getters in `session.composer.top` slot `render`, reading live `active()` state config on route switches without remounting.
+- **Settlement & session scope hardening (`src/ui.tsx`, `src/index.ts`)**: Added a 512-entry LRU `settledForms` tombstone to reject late duplicate `form.created` events after `form.replied`/`form.cancelled`, enforced `isEligibleTuiSessionSync` in TUI `session.synthetic`/`session.inbox.enqueued` handlers, and enforced `isSessionEligible` in the server `prompt` hook.
+- **Draft lock & keyboard intervention (`src/ui.tsx`)**: Added exclusive `flag: 'wx'` on `ensureDraftLock` to refuse pre-existing symlinks, ignored non-editing navigation keys (`pageup`, `pagedown`, `home`, `end`, `scrollup`, `scrolldown`, `f1`–`f12`) in `keyInput`, and cancelled in-flight `sync` forms on user typing/paste.
+- **Detector, marker stripping & deduplication (`src/detector.ts`, `src/view-model.ts`, `src/handoff.ts`, `src/form-adapter.ts`)**: Restricted hardcoded `commonMarkers` fallback to default marker configs, made `stripMarker` case-insensitive, moved `registerSmartQuestionsCapability` reference counting to `globalThis` symbols, and eliminated duplication in `src/ui.tsx` (`view-model.js`) and `src/form-adapter.ts` (`prepareV2FormFields`).
+- **Verification**: 145/145 unit & regression tests, 7/7 sandbox scenarios, and 8/8 live OpenCode `v2.3.0` host acceptance scenarios pass (`npm run test:all`).
+
 ## 1.1.0 — 2026-11-17
 
 - **Dynamic per-session directory config (`resolveConfig`)**: Added optional `options.resolveConfig?: (directory: string) => unknown` support in `resolveSmartQuestionConfig` (`src/config.ts`), `src/index.ts`, and `src/ui.tsx` so multi-directory hosts can resolve per-session configuration dynamically while preserving 100% standalone `.opencode/smart-question.json` behavior when omitted.

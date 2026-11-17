@@ -99,7 +99,8 @@ function createDiagnosticLogger(config: SmartQuestionConfig, prefix: string) {
 function ensureDraftLock(lockPath: string, _payload: Record<string, unknown>): boolean {
   try {
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, '', { encoding: 'utf8', mode: 0o600 });
+    // Exclusive create ('wx') refuses to follow or overwrite pre-existing symlinks or files.
+    fs.writeFileSync(lockPath, '', { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     return true;
   } catch {
     return false;
@@ -138,48 +139,17 @@ export function resolveAgentName(
   return { name: shortId, found: false };
 }
 
+import {
+  formatCountdown as vmFormatCountdown,
+  stripMarker as vmStripMarker,
+} from './view-model.js';
+
 export function stripMarker(label: unknown, marker: unknown): string {
-  let strLabel = (typeof label === 'string' ? label : String(label ?? '')).trim().normalize('NFC');
-  const markers = Array.isArray(marker)
-    ? marker.filter((item): item is string => typeof item === 'string' && item.length > 0)
-    : typeof marker === 'string' && marker.length > 0
-      ? [marker]
-      : [];
-
-  let longestSuffix = '';
-  for (const candidate of markers) {
-    const normalized = candidate.normalize('NFC');
-    if (strLabel.endsWith(normalized) && normalized.length > longestSuffix.length) {
-      longestSuffix = normalized;
-    }
-  }
-  if (longestSuffix) {
-    strLabel = strLabel.slice(0, -longestSuffix.length).trim();
-  }
-
-  let longestPrefix = '';
-  for (const candidate of markers) {
-    const normalized = candidate.normalize('NFC');
-    if (strLabel.startsWith(normalized) && normalized.length > longestPrefix.length) {
-      longestPrefix = normalized;
-    }
-  }
-  if (longestPrefix) {
-    strLabel = strLabel.slice(longestPrefix.length).trim();
-  }
-
-  return strLabel;
+  return vmStripMarker(label, marker);
 }
 
 export function formatCountdown(totalSeconds: unknown): string {
-  const numeric =
-    typeof totalSeconds === 'number' && Number.isFinite(totalSeconds)
-      ? totalSeconds
-      : 0;
-  const clamped = Math.max(0, Math.floor(numeric));
-  const minutes = Math.floor(clamped / 60);
-  const seconds = clamped % 60;
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return vmFormatCountdown(totalSeconds);
 }
 
 
@@ -187,13 +157,24 @@ export function SmartQuestionOverlay(props: {
   state: () => OverlayState | null;
   countdown?: () => number;
   marker?: string | string[];
-  markers?: string | string[];
-  uiText?: SmartQuestionUIText;
+  markers?: string | string[] | (() => string | string[]);
+  uiText?: SmartQuestionUIText | (() => SmartQuestionUIText);
 }) {
   const active = () => props.state();
-  const markers = () =>
-    props.markers ?? props.marker ?? DEFAULT_CONFIG.recommendedMarkers ?? [];
-  const labels = () => props.uiText ?? DEFAULT_CONFIG.uiText;
+  const markers = () => {
+    const fromState = active()?.markers;
+    if (fromState !== undefined) return fromState;
+    const fromProp =
+      typeof props.markers === 'function' ? props.markers() : props.markers;
+    return fromProp ?? props.marker ?? DEFAULT_CONFIG.recommendedMarkers ?? [];
+  };
+  const labels = () => {
+    const fromState = active()?.uiText;
+    if (fromState !== undefined) return fromState;
+    const fromProp =
+      typeof props.uiText === 'function' ? props.uiText() : props.uiText;
+    return fromProp ?? DEFAULT_CONFIG.uiText;
+  };
 
   const status = createMemo(() => active()?.status ?? 'auto');
 
@@ -416,7 +397,10 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
   const pending = new Map<string, V2Pending>();
   const inFlightForms = new Map<string, { sessionID: string; token: symbol }>();
   const remediatedForms = new Map<string, string>();
+  const settledForms = new Map<string, true>();
   const sessionChains = new Map<string, { fingerprint: string; consecutiveFailures: number }>();
+
+  const MAX_SETTLED_FORMS = 512;
 
   const cancelInFlightForSession = (sessionID: string) => {
     for (const [fID, entry] of inFlightForms.entries()) {
@@ -481,6 +465,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
   };
 
   const cancelSessionAutoSelection = (sessionID: string, reason: string) => {
+    cancelInFlightForSession(sessionID);
     const state = activeBySession()[sessionID];
     if (!state?.formID || state.focusDisabled) return;
     const item = pending.get(state.formID);
@@ -513,7 +498,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
     // Re-delivery of the same form must preserve its reply owner and any
     // user-interaction cancellation instead of starting a new countdown.
-    if (pending.has(form.id) || inFlightForms.has(form.id)) return;
+    if (pending.has(form.id) || inFlightForms.has(form.id) || settledForms.has(form.id)) return;
 
     const flightToken = Symbol(form.id);
     inFlightForms.set(form.id, { sessionID: form.sessionID, token: flightToken });
@@ -967,6 +952,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       sessionChains.delete(sessionID);
     }
     if (typeof formID === 'string') {
+      setBounded(settledForms, formID, true, MAX_SETTLED_FORMS);
       inFlightForms.delete(formID);
       remediatedForms.delete(formID);
       clearPending(formID);
@@ -996,7 +982,56 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     }
   };
 
-  const onKey = () => {
+  const NON_INTERVENTION_KEYS = new Set([
+    'pageup',
+    'pagedown',
+    'home',
+    'end',
+    'scrollup',
+    'scrolldown',
+    'f1',
+    'f2',
+    'f3',
+    'f4',
+    'f5',
+    'f6',
+    'f7',
+    'f8',
+    'f9',
+    'f10',
+    'f11',
+    'f12',
+  ]);
+
+  const isEligibleTuiSessionSync = (
+    sessionID: string,
+    eventLocation?: { directory?: string }
+  ): boolean => {
+    let sessionInfo: unknown;
+    try {
+      sessionInfo = (context.data.session as any)?.get?.(sessionID);
+      if (!sessionInfo && typeof (context.data.session as any)?.root === 'function') {
+        const rootID = (context.data.session as any).root(sessionID);
+        if (typeof rootID === 'string' && rootID) {
+          sessionInfo = {
+            id: sessionID,
+            parentID: rootID === sessionID ? undefined : rootID,
+          };
+        }
+      }
+    } catch {
+      sessionInfo = undefined;
+    }
+    const sessionLocation = (sessionInfo as any)?.location;
+    const location = eventLocation ?? sessionLocation ?? context.location;
+    const config = resolveV2TuiConfig(context, location?.directory);
+    if (!config?.enabled) return false;
+    return isEligibleSessionInfo(sessionInfo, config.includeSubagents === true);
+  };
+
+  const onKey = (keyEvent?: { name?: string }) => {
+    const keyName = typeof keyEvent?.name === 'string' ? keyEvent.name.toLowerCase() : '';
+    if (keyName && NON_INTERVENTION_KEYS.has(keyName)) return;
     const route = context.ui.router.current();
     if (route.type === 'session') {
       cancelSessionAutoSelection(route.sessionID, 'user keyboard interaction');
@@ -1018,6 +1053,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       context.data.on('session.synthetic', (event) => {
         const sessionID = String(event?.data?.sessionID ?? '');
         if (!sessionID || sessionID === 'global') return;
+        if (!isEligibleTuiSessionSync(sessionID, event?.location)) return;
         const handoff = extractTrustedGuardianHandoff(event?.data);
         if (handoff) {
           setActiveHandoff(sessionID, handoff);
@@ -1031,6 +1067,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         if (!sessionID || sessionID === 'global') return;
         const item = event?.data?.item;
         if (item?.type === 'synthetic') {
+          if (!isEligibleTuiSessionSync(sessionID, event?.location)) return;
           const handoff = extractTrustedGuardianHandoff(item);
           if (handoff) {
             setActiveHandoff(sessionID, handoff);
@@ -1065,14 +1102,30 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     cleanups.push(context.ui.slot({
       append: 'session.composer.top',
       render: (slotProps?: { sessionID?: string }) => {
-        const sessionID =
+        const getSessionID = () =>
           slotProps?.sessionID ?? (context.ui.router.current() as any)?.sessionID;
         return (
           <SmartQuestionOverlay
-            state={() => (sessionID ? activeBySession()[sessionID] ?? null : null)}
-            countdown={() => (sessionID ? activeBySession()[sessionID]?.countdown ?? 0 : 0)}
-            markers={sessionID ? activeBySession()[sessionID]?.markers ?? DEFAULT_CONFIG.recommendedMarkers : DEFAULT_CONFIG.recommendedMarkers}
-            uiText={sessionID ? activeBySession()[sessionID]?.uiText ?? DEFAULT_CONFIG.uiText : DEFAULT_CONFIG.uiText}
+            state={() => {
+              const sid = getSessionID();
+              return sid ? activeBySession()[sid] ?? null : null;
+            }}
+            countdown={() => {
+              const sid = getSessionID();
+              return sid ? activeBySession()[sid]?.countdown ?? 0 : 0;
+            }}
+            markers={() => {
+              const sid = getSessionID();
+              return sid
+                ? activeBySession()[sid]?.markers ?? DEFAULT_CONFIG.recommendedMarkers
+                : DEFAULT_CONFIG.recommendedMarkers;
+            }}
+            uiText={() => {
+              const sid = getSessionID();
+              return sid
+                ? activeBySession()[sid]?.uiText ?? DEFAULT_CONFIG.uiText
+                : DEFAULT_CONFIG.uiText;
+            }}
           />
         );
       },
@@ -1086,6 +1139,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       clearPending(formID);
     }
     remediatedForms.clear();
+    settledForms.clear();
     sessionChains.clear();
     setActiveBySession({});
     throw error;
@@ -1100,6 +1154,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       clearPending(formID);
     }
     remediatedForms.clear();
+    settledForms.clear();
     sessionChains.clear();
     setActiveBySession({});
   };

@@ -227,11 +227,15 @@ function resolveSmartQuestionConfig(projectDir, pluginOptions) {
       return normalizeSmartQuestionConfig(dynamic, configDir);
     }
   }
-  if (pluginOptions && Object.prototype.hasOwnProperty.call(pluginOptions, "config")) {
-    return normalizeSmartQuestionConfig(pluginOptions.config, configDir);
+  const staticOptions = pluginOptions && typeof pluginOptions === "object" && !Array.isArray(pluginOptions) && typeof pluginOptions.resolveConfig === "function" ? (() => {
+    const { resolveConfig: _ignored, ...rest } = pluginOptions;
+    return rest;
+  })() : pluginOptions;
+  if (staticOptions && Object.prototype.hasOwnProperty.call(staticOptions, "config")) {
+    return normalizeSmartQuestionConfig(staticOptions.config, configDir);
   }
-  if (hasSmartQuestionConfigOptions(pluginOptions)) {
-    return normalizeSmartQuestionConfig(pluginOptions, configDir);
+  if (hasSmartQuestionConfigOptions(staticOptions)) {
+    return normalizeSmartQuestionConfig(staticOptions, configDir);
   }
   return loadConfig(projectDir);
 }
@@ -359,7 +363,7 @@ function isQuestionExplicitlyManual(q, manualMarkers = DEFAULT_MANUAL_MARKERS) {
   }
   return { isManual: false };
 }
-function matchOptionRecommendation(opt, recMarkers) {
+function matchOptionRecommendation(opt, recMarkers, allowCommonFallback = true) {
   if (!opt || typeof opt.label !== "string") return void 0;
   const label = opt.label.trim();
   const normalizedLabel = label.normalize("NFC");
@@ -389,10 +393,12 @@ function matchOptionRecommendation(opt, recMarkers) {
       return { opt, marker };
     }
   }
-  const commonMarkers = ["(recommended)", "[recommended]", "(\xF6nerilen)", "[\xF6nerilen]", "[sq:recommended]"];
-  for (const cm of commonMarkers) {
-    if (lowerLabel.includes(cm) || desc.toLowerCase().includes(cm)) {
-      return { opt, marker: recMarkers[0] ?? "[SQ:recommended]" };
+  if (allowCommonFallback) {
+    const commonMarkers = ["(recommended)", "[recommended]", "(\xF6nerilen)", "[\xF6nerilen]", "[sq:recommended]"];
+    for (const cm of commonMarkers) {
+      if (lowerLabel.includes(cm) || desc.toLowerCase().includes(cm)) {
+        return { opt, marker: recMarkers[0] ?? "[SQ:recommended]" };
+      }
     }
   }
   return void 0;
@@ -411,6 +417,7 @@ function classifyQuestions(questions, recommendedMarker = DEFAULT_CONFIG.recomme
   }
   const recMarkers = normalizeParamMarkers(recommendedMarker);
   const manMarkers = normalizeParamMarkers(manualMarker);
+  const allowCommonFallback = recMarkers.length === DEFAULT_CONFIG.recommendedMarkers.length && recMarkers.every((m, idx) => m === DEFAULT_CONFIG.recommendedMarkers[idx]);
   const answers = [];
   const recommendedOptions = [];
   let matchedMarker;
@@ -438,7 +445,7 @@ function classifyQuestions(questions, recommendedMarker = DEFAULT_CONFIG.recomme
       }
       continue;
     }
-    let matched = q.options.map((opt) => matchOptionRecommendation(opt, recMarkers)).filter((x) => Boolean(x));
+    let matched = q.options.map((opt) => matchOptionRecommendation(opt, recMarkers, allowCommonFallback)).filter((x) => Boolean(x));
     if (matched.length === 0 && options.allowFallback && Array.isArray(q.options) && q.options.length > 0) {
       const defaultOpt = q.options[0];
       if (defaultOpt && typeof defaultOpt.label === "string") {
@@ -604,6 +611,79 @@ function cleanupStaleDrafts(configDir, timeoutMs, dbg) {
 }
 
 // src/form-adapter.ts
+function prepareV2FormFields(fields) {
+  const questions = [];
+  const selectableFields = [];
+  const seenKeys = /* @__PURE__ */ new Set();
+  for (let i = 0; i < fields.length; i++) {
+    const field = fields[i];
+    if (!field) {
+      return { ok: false, reason: `Form field ${i + 1} is missing`, questions };
+    }
+    if (field.hidden === true || field.when !== void 0 && (!Array.isArray(field.when) || field.when.length > 0)) {
+      return {
+        ok: false,
+        reason: `Form field ${i + 1} (${field.key ?? "unknown"}) is hidden or conditional`,
+        questions
+      };
+    }
+    const isStringChoice = field.type === "string" && Array.isArray(field.options) && field.options.length > 0;
+    const isMultiChoice = field.type === "multiselect" && Array.isArray(field.options) && field.options.length > 0;
+    if (!isStringChoice && !isMultiChoice) {
+      return {
+        ok: false,
+        reason: `Form field ${i + 1} (${field.key ?? "unknown"}) is not a supported selectable field`,
+        questions
+      };
+    }
+    if (typeof field.key !== "string" || !field.key || seenKeys.has(field.key)) {
+      return { ok: false, reason: `Form field ${i + 1} has a missing or duplicate key`, questions };
+    }
+    seenKeys.add(field.key);
+    if (isMultiChoice) {
+      const constraints = [field.minItems, field.maxItems].filter(
+        (value) => value !== void 0
+      );
+      if (constraints.some((value) => !Number.isInteger(value) || value < 0) || field.minItems !== void 0 && field.maxItems !== void 0 && field.minItems > field.maxItems) {
+        return {
+          ok: false,
+          reason: `Form field ${i + 1} has invalid multiselect item constraints`,
+          questions
+        };
+      }
+    }
+    const fieldOptions = field.options;
+    if (fieldOptions.some(
+      (option) => !option || typeof option.value !== "string" || typeof option.label !== "string"
+    )) {
+      return {
+        ok: false,
+        reason: `Form field ${i + 1} contains an invalid option`,
+        questions
+      };
+    }
+    const mappedOptions = fieldOptions.map((option) => ({
+      label: option.label,
+      value: option.value,
+      ...typeof option.description === "string" ? { description: option.description } : {}
+    }));
+    questions.push({
+      question: field.description ?? field.title ?? field.key,
+      header: field.title ?? field.key,
+      key: field.key,
+      options: mappedOptions,
+      multiple: isMultiChoice
+    });
+    selectableFields.push({
+      key: field.key,
+      multiple: isMultiChoice,
+      options: fieldOptions,
+      ...isMultiChoice && field.minItems !== void 0 ? { minItems: field.minItems } : {},
+      ...isMultiChoice && field.maxItems !== void 0 ? { maxItems: field.maxItems } : {}
+    });
+  }
+  return { ok: true, questions, selectableFields };
+}
 function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers, manualMarkers = DEFAULT_MANUAL_MARKERS, handoff, options) {
   if (!form || !Array.isArray(form.fields) || form.fields.length === 0) {
     return { status: "unclassified", reason: "Form has no fields", questions: [] };
@@ -629,80 +709,15 @@ function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers, manua
       break;
     }
   }
-  const questions = [];
-  const selectableFields = [];
-  const seenKeys = /* @__PURE__ */ new Set();
-  for (let i = 0; i < form.fields.length; i++) {
-    const field = form.fields[i];
-    if (!field) {
-      return { status: "unclassified", reason: `Form field ${i + 1} is missing`, questions };
-    }
-    if (field.hidden === true || field.when !== void 0 && (!Array.isArray(field.when) || field.when.length > 0)) {
-      return {
-        status: "unclassified",
-        reason: `Form field ${i + 1} (${field.key ?? "unknown"}) is hidden or conditional`,
-        questions
-      };
-    }
-    const isStringChoice = field.type === "string" && Array.isArray(field.options) && field.options.length > 0;
-    const isMultiChoice = field.type === "multiselect" && Array.isArray(field.options) && field.options.length > 0;
-    if (!isStringChoice && !isMultiChoice) {
-      return {
-        status: "unclassified",
-        reason: `Form field ${i + 1} (${field.key ?? "unknown"}) is not a supported selectable field`,
-        questions
-      };
-    }
-    if (typeof field.key !== "string" || !field.key || seenKeys.has(field.key)) {
-      return {
-        status: "unclassified",
-        reason: `Form field ${i + 1} has a missing or duplicate key`,
-        questions
-      };
-    }
-    seenKeys.add(field.key);
-    if (isMultiChoice) {
-      const constraints = [field.minItems, field.maxItems].filter(
-        (value) => value !== void 0
-      );
-      if (constraints.some((value) => !Number.isInteger(value) || value < 0) || field.minItems !== void 0 && field.maxItems !== void 0 && field.minItems > field.maxItems) {
-        return {
-          status: "unclassified",
-          reason: `Form field ${i + 1} has invalid multiselect item constraints`,
-          questions
-        };
-      }
-    }
-    const fieldOptions = field.options;
-    if (fieldOptions.some(
-      (option) => !option || typeof option.value !== "string" || typeof option.label !== "string"
-    )) {
-      return {
-        status: "unclassified",
-        reason: `Form field ${i + 1} contains an invalid option`,
-        questions
-      };
-    }
-    const mappedOptions = fieldOptions.map((option) => ({
-      label: option.label,
-      value: option.value,
-      ...typeof option.description === "string" ? { description: option.description } : {}
-    }));
-    questions.push({
-      question: field.description ?? field.title ?? field.key,
-      header: field.title ?? field.key,
-      key: field.key,
-      options: mappedOptions,
-      multiple: isMultiChoice
-    });
-    selectableFields.push({
-      key: field.key,
-      multiple: isMultiChoice,
-      options: fieldOptions,
-      ...isMultiChoice && field.minItems !== void 0 ? { minItems: field.minItems } : {},
-      ...isMultiChoice && field.maxItems !== void 0 ? { maxItems: field.maxItems } : {}
-    });
+  const prepared = prepareV2FormFields(form.fields);
+  if (!prepared.ok) {
+    return {
+      status: "unclassified",
+      reason: prepared.reason,
+      questions: prepared.questions
+    };
   }
+  const { questions, selectableFields } = prepared;
   if (formExplicitlyManual && !options?.allowFallbackOnManual) {
     return {
       status: "manual",
@@ -959,6 +974,8 @@ function messageTextCandidates(value) {
   }
   return out;
 }
+var SQ_COUNT_SYMBOL = Symbol.for("opencode.coordination.sq.count.v1");
+var SQ_PREV_SYMBOL = Symbol.for("opencode.coordination.sq.prev.v1");
 function parseOpenCodeHandoff(text, options) {
   if (typeof text !== "string" || !text.includes(OPENCODE_HANDOFF_HEADER)) return null;
   const requireMarker = typeof options === "boolean" ? options : Boolean(options?.requireRemediationMarker);
@@ -1167,6 +1184,42 @@ function clearActiveHandoff(sessionID) {
   getHandoffState().activeHandoffsBySession.delete(sID);
 }
 
+// src/view-model.ts
+function stripMarker(label, marker) {
+  let strLabel = (typeof label === "string" ? label : String(label ?? "")).trim().normalize("NFC");
+  const markers = Array.isArray(marker) ? marker.filter((item) => typeof item === "string" && item.length > 0) : typeof marker === "string" && marker.length > 0 ? [marker] : [];
+  const lowerLabel = strLabel.toLowerCase();
+  let longestSuffix = "";
+  for (const candidate of markers) {
+    const normalized = candidate.normalize("NFC");
+    if (lowerLabel.endsWith(normalized.toLowerCase()) && normalized.length > longestSuffix.length) {
+      longestSuffix = normalized;
+    }
+  }
+  if (longestSuffix) {
+    strLabel = strLabel.slice(0, -longestSuffix.length).trim();
+  }
+  const lowerAfterSuffix = strLabel.toLowerCase();
+  let longestPrefix = "";
+  for (const candidate of markers) {
+    const normalized = candidate.normalize("NFC");
+    if (lowerAfterSuffix.startsWith(normalized.toLowerCase()) && normalized.length > longestPrefix.length) {
+      longestPrefix = normalized;
+    }
+  }
+  if (longestPrefix) {
+    strLabel = strLabel.slice(longestPrefix.length).trim();
+  }
+  return strLabel;
+}
+function formatCountdown(totalSeconds) {
+  const numeric = typeof totalSeconds === "number" && Number.isFinite(totalSeconds) ? totalSeconds : 0;
+  const clamped = Math.max(0, Math.floor(numeric));
+  const minutes = Math.floor(clamped / 60);
+  const seconds = clamped % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 // src/ui.js
 function loadConfig2(...args) {
   return loadConfig(...args);
@@ -1195,7 +1248,8 @@ function ensureDraftLock(lockPath, _payload) {
     });
     fs3.writeFileSync(lockPath, "", {
       encoding: "utf8",
-      mode: 384
+      mode: 384,
+      flag: "wx"
     });
     return true;
   } catch {
@@ -1222,42 +1276,26 @@ function resolveAgentName(sessionInfo, sessionID) {
     found: false
   };
 }
-function stripMarker(label, marker) {
-  let strLabel = (typeof label === "string" ? label : String(label ?? "")).trim().normalize("NFC");
-  const markers = Array.isArray(marker) ? marker.filter((item) => typeof item === "string" && item.length > 0) : typeof marker === "string" && marker.length > 0 ? [marker] : [];
-  let longestSuffix = "";
-  for (const candidate of markers) {
-    const normalized = candidate.normalize("NFC");
-    if (strLabel.endsWith(normalized) && normalized.length > longestSuffix.length) {
-      longestSuffix = normalized;
-    }
-  }
-  if (longestSuffix) {
-    strLabel = strLabel.slice(0, -longestSuffix.length).trim();
-  }
-  let longestPrefix = "";
-  for (const candidate of markers) {
-    const normalized = candidate.normalize("NFC");
-    if (strLabel.startsWith(normalized) && normalized.length > longestPrefix.length) {
-      longestPrefix = normalized;
-    }
-  }
-  if (longestPrefix) {
-    strLabel = strLabel.slice(longestPrefix.length).trim();
-  }
-  return strLabel;
+function stripMarker2(label, marker) {
+  return stripMarker(label, marker);
 }
-function formatCountdown(totalSeconds) {
-  const numeric = typeof totalSeconds === "number" && Number.isFinite(totalSeconds) ? totalSeconds : 0;
-  const clamped = Math.max(0, Math.floor(numeric));
-  const minutes = Math.floor(clamped / 60);
-  const seconds = clamped % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+function formatCountdown2(totalSeconds) {
+  return formatCountdown(totalSeconds);
 }
 function SmartQuestionOverlay(props) {
   const active = () => props.state();
-  const markers = () => props.markers ?? props.marker ?? DEFAULT_CONFIG.recommendedMarkers ?? [];
-  const labels = () => props.uiText ?? DEFAULT_CONFIG.uiText;
+  const markers = () => {
+    const fromState = active()?.markers;
+    if (fromState !== void 0) return fromState;
+    const fromProp = typeof props.markers === "function" ? props.markers() : props.markers;
+    return fromProp ?? props.marker ?? DEFAULT_CONFIG.recommendedMarkers ?? [];
+  };
+  const labels = () => {
+    const fromState = active()?.uiText;
+    if (fromState !== void 0) return fromState;
+    const fromProp = typeof props.uiText === "function" ? props.uiText() : props.uiText;
+    return fromProp ?? DEFAULT_CONFIG.uiText;
+  };
   const status = createMemo(() => active()?.status ?? "auto");
   const title = createMemo(() => {
     switch (status()) {
@@ -1288,7 +1326,7 @@ function SmartQuestionOverlay(props) {
   const recommendedChecklist = createMemo(() => {
     const state = active();
     if (!state?.detection?.ok) return "";
-    return (state.detection.recommendedOptions ?? []).filter((option) => option && typeof option.label === "string").map((option) => stripMarker(option.label, markers())).filter(Boolean).map((label) => `\u2713 ${label}`).join("   ");
+    return (state.detection.recommendedOptions ?? []).filter((option) => option && typeof option.label === "string").map((option) => stripMarker2(option.label, markers())).filter(Boolean).map((label) => `\u2713 ${label}`).join("   ");
   });
   const rationale = createMemo(() => {
     const state = active();
@@ -1299,7 +1337,7 @@ function SmartQuestionOverlay(props) {
   const countdownText = createMemo(() => {
     const state = active();
     const seconds = typeof props.countdown === "function" ? props.countdown() : state?.countdown ?? 0;
-    return formatCountdown(seconds);
+    return formatCountdown2(seconds);
   });
   const badge = createMemo(() => {
     const state = active();
@@ -1513,7 +1551,9 @@ var setup = async (context) => {
   const pending = /* @__PURE__ */ new Map();
   const inFlightForms = /* @__PURE__ */ new Map();
   const remediatedForms = /* @__PURE__ */ new Map();
+  const settledForms = /* @__PURE__ */ new Map();
   const sessionChains = /* @__PURE__ */ new Map();
+  const MAX_SETTLED_FORMS = 512;
   const cancelInFlightForSession = (sessionID) => {
     for (const [fID, entry] of inFlightForms.entries()) {
       if (entry.sessionID === sessionID) {
@@ -1566,6 +1606,7 @@ var setup = async (context) => {
     updateSessionState(sessionID, () => void 0);
   };
   const cancelSessionAutoSelection = (sessionID, reason) => {
+    cancelInFlightForSession(sessionID);
     const state = activeBySession()[sessionID];
     if (!state?.formID || state.focusDisabled) return;
     const item = pending.get(state.formID);
@@ -1592,7 +1633,7 @@ var setup = async (context) => {
     if (disposed) return;
     const form = event?.data?.form;
     if (!form?.id || !form.sessionID || form.sessionID === "global") return;
-    if (pending.has(form.id) || inFlightForms.has(form.id)) return;
+    if (pending.has(form.id) || inFlightForms.has(form.id) || settledForms.has(form.id)) return;
     const flightToken = Symbol(form.id);
     inFlightForms.set(form.id, {
       sessionID: form.sessionID,
@@ -1974,6 +2015,7 @@ var setup = async (context) => {
       sessionChains.delete(sessionID);
     }
     if (typeof formID === "string") {
+      setBounded(settledForms, formID, true, MAX_SETTLED_FORMS);
       inFlightForms.delete(formID);
       remediatedForms.delete(formID);
       clearPending(formID);
@@ -1999,7 +2041,32 @@ var setup = async (context) => {
       }
     }
   };
-  const onKey = () => {
+  const NON_INTERVENTION_KEYS = /* @__PURE__ */ new Set(["pageup", "pagedown", "home", "end", "scrollup", "scrolldown", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"]);
+  const isEligibleTuiSessionSync = (sessionID, eventLocation) => {
+    let sessionInfo;
+    try {
+      sessionInfo = context.data.session?.get?.(sessionID);
+      if (!sessionInfo && typeof context.data.session?.root === "function") {
+        const rootID = context.data.session.root(sessionID);
+        if (typeof rootID === "string" && rootID) {
+          sessionInfo = {
+            id: sessionID,
+            parentID: rootID === sessionID ? void 0 : rootID
+          };
+        }
+      }
+    } catch {
+      sessionInfo = void 0;
+    }
+    const sessionLocation = sessionInfo?.location;
+    const location = eventLocation ?? sessionLocation ?? context.location;
+    const config = resolveV2TuiConfig(context, location?.directory);
+    if (!config?.enabled) return false;
+    return isEligibleSessionInfo(sessionInfo, config.includeSubagents === true);
+  };
+  const onKey = (keyEvent) => {
+    const keyName = typeof keyEvent?.name === "string" ? keyEvent.name.toLowerCase() : "";
+    if (keyName && NON_INTERVENTION_KEYS.has(keyName)) return;
     const route = context.ui.router.current();
     if (route.type === "session") {
       cancelSessionAutoSelection(route.sessionID, "user keyboard interaction");
@@ -2018,6 +2085,7 @@ var setup = async (context) => {
     cleanups.push(context.data.on("session.synthetic", (event) => {
       const sessionID = String(event?.data?.sessionID ?? "");
       if (!sessionID || sessionID === "global") return;
+      if (!isEligibleTuiSessionSync(sessionID, event?.location)) return;
       const handoff = extractTrustedGuardianHandoff(event?.data);
       if (handoff) {
         setActiveHandoff(sessionID, handoff);
@@ -2028,6 +2096,7 @@ var setup = async (context) => {
       if (!sessionID || sessionID === "global") return;
       const item = event?.data?.item;
       if (item?.type === "synthetic") {
+        if (!isEligibleTuiSessionSync(sessionID, event?.location)) return;
         const handoff = extractTrustedGuardianHandoff(item);
         if (handoff) {
           setActiveHandoff(sessionID, handoff);
@@ -2056,15 +2125,23 @@ var setup = async (context) => {
     cleanups.push(context.ui.slot({
       append: "session.composer.top",
       render: (slotProps) => {
-        const sessionID = slotProps?.sessionID ?? context.ui.router.current()?.sessionID;
+        const getSessionID = () => slotProps?.sessionID ?? context.ui.router.current()?.sessionID;
         return _$createComponent(SmartQuestionOverlay, {
-          state: () => sessionID ? activeBySession()[sessionID] ?? null : null,
-          countdown: () => sessionID ? activeBySession()[sessionID]?.countdown ?? 0 : 0,
-          get markers() {
-            return sessionID ? activeBySession()[sessionID]?.markers ?? DEFAULT_CONFIG.recommendedMarkers : DEFAULT_CONFIG.recommendedMarkers;
+          state: () => {
+            const sid = getSessionID();
+            return sid ? activeBySession()[sid] ?? null : null;
           },
-          get uiText() {
-            return sessionID ? activeBySession()[sessionID]?.uiText ?? DEFAULT_CONFIG.uiText : DEFAULT_CONFIG.uiText;
+          countdown: () => {
+            const sid = getSessionID();
+            return sid ? activeBySession()[sid]?.countdown ?? 0 : 0;
+          },
+          markers: () => {
+            const sid = getSessionID();
+            return sid ? activeBySession()[sid]?.markers ?? DEFAULT_CONFIG.recommendedMarkers : DEFAULT_CONFIG.recommendedMarkers;
+          },
+          uiText: () => {
+            const sid = getSessionID();
+            return sid ? activeBySession()[sid]?.uiText ?? DEFAULT_CONFIG.uiText : DEFAULT_CONFIG.uiText;
           }
         });
       }
@@ -2078,6 +2155,7 @@ var setup = async (context) => {
       clearPending(formID);
     }
     remediatedForms.clear();
+    settledForms.clear();
     sessionChains.clear();
     setActiveBySession({});
     throw error;
@@ -2091,6 +2169,7 @@ var setup = async (context) => {
       clearPending(formID);
     }
     remediatedForms.clear();
+    settledForms.clear();
     sessionChains.clear();
     setActiveBySession({});
   };
@@ -2105,9 +2184,9 @@ export {
   SmartQuestionOverlay,
   ui_default as default,
   detectRecommendations2 as detectRecommendations,
-  formatCountdown,
+  formatCountdown2 as formatCountdown,
   loadConfig2 as loadConfig,
   resolveAgentName,
   setup,
-  stripMarker
+  stripMarker2 as stripMarker
 };

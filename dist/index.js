@@ -139,6 +139,8 @@ const setupV2 = async (context) => {
             const sessionID = String(event.sessionID ?? '');
             if (!sessionID)
                 return;
+            if (!(await isSessionEligible(sessionID)))
+                return;
             const meta = event.metadata && typeof event.metadata === 'object' && !Array.isArray(event.metadata)
                 ? event.metadata
                 : undefined;
