@@ -533,9 +533,12 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         }
       }
 
-      const sessionLocation = (sessionInfo as any)?.location;
-      const location = event?.location ?? sessionLocation ?? context.location;
-      const config = resolveV2TuiConfig(context, location?.directory);
+      const sessionLocation =
+        (sessionInfo as any)?.location?.directory ??
+        (sessionInfo as any)?.directory;
+      const locationDir = event?.location?.directory ?? sessionLocation ?? context.location?.directory;
+      const location = event?.location ?? (sessionLocation ? { directory: sessionLocation } : context.location);
+      const config = resolveV2TuiConfig(context, locationDir);
       if (!isEligibleSessionInfo(sessionInfo, config?.includeSubagents === true)) return;
       if (pending.has(form.id)) return;
 
@@ -746,7 +749,8 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
               );
               const rejected = response && typeof response === 'object' && !Array.isArray(response) &&
                 (Boolean((response as { error?: unknown }).error) ||
-                  (response as { ok?: unknown }).ok === false);
+                  (response as { ok?: unknown }).ok === false ||
+                  (response as { name?: unknown }).name === 'UnknownError');
               remediationSent = isFlightCurrent() && !rejected;
             }
           } catch (err) {
@@ -1001,15 +1005,20 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     'f10',
     'f11',
     'f12',
+    'shift',
+    'ctrl',
+    'control',
+    'alt',
+    'meta',
+    'super',
+    'capslock',
+    'numlock',
+    'scrolllock',
   ]);
 
-  const isEligibleTuiSessionSync = (
-    sessionID: string,
-    eventLocation?: { directory?: string }
-  ): boolean => {
-    let sessionInfo: unknown;
+  const getCachedSessionInfo = (sessionID: string): unknown => {
     try {
-      sessionInfo = (context.data.session as any)?.get?.(sessionID);
+      let sessionInfo = (context.data.session as any)?.get?.(sessionID);
       if (!sessionInfo && typeof (context.data.session as any)?.root === 'function') {
         const rootID = (context.data.session as any).root(sessionID);
         if (typeof rootID === 'string' && rootID) {
@@ -1019,17 +1028,62 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
           };
         }
       }
+      return sessionInfo;
     } catch {
-      sessionInfo = undefined;
+      return undefined;
     }
-    const sessionLocation = (sessionInfo as any)?.location;
-    const location = eventLocation ?? sessionLocation ?? context.location;
-    const config = resolveV2TuiConfig(context, location?.directory);
+  };
+
+  const checkSessionEligibility = (
+    sessionInfo: unknown,
+    eventLocation?: { directory?: string }
+  ): boolean => {
+    const sessionDirectory =
+      (sessionInfo as any)?.location?.directory ??
+      (sessionInfo as any)?.directory;
+    const directory =
+      eventLocation?.directory ?? sessionDirectory ?? context.location?.directory;
+    const config = resolveV2TuiConfig(context, directory);
     if (!config?.enabled) return false;
     return isEligibleSessionInfo(sessionInfo, config.includeSubagents === true);
   };
 
-  const onKey = (keyEvent?: { name?: string }) => {
+  const setHandoffIfEligible = (
+    sessionID: string,
+    payload: unknown,
+    eventLocation?: { directory?: string }
+  ) => {
+    const handoff = extractTrustedGuardianHandoff(payload);
+    if (!handoff) return;
+    const cachedInfo = getCachedSessionInfo(sessionID);
+    if (cachedInfo !== undefined || typeof (context.data.session as any)?.sync !== 'function') {
+      if (checkSessionEligibility(cachedInfo, eventLocation)) {
+        setActiveHandoff(sessionID, handoff);
+      }
+      return;
+    }
+    void (async () => {
+      try {
+        await (context.data.session as any).sync(sessionID);
+      } catch {
+        return;
+      }
+      if (disposed) return;
+      const syncedInfo = getCachedSessionInfo(sessionID);
+      if (checkSessionEligibility(syncedInfo, eventLocation)) {
+        setActiveHandoff(sessionID, handoff);
+      }
+    })();
+  };
+
+  const onKey = (keyEvent?: {
+    name?: string;
+    ctrl?: boolean;
+    meta?: boolean;
+    alt?: boolean;
+    super?: boolean;
+  }) => {
+    if (keyEvent?.ctrl || keyEvent?.meta || keyEvent?.alt || keyEvent?.super) return;
     const keyName = typeof keyEvent?.name === 'string' ? keyEvent.name.toLowerCase() : '';
     if (keyName && NON_INTERVENTION_KEYS.has(keyName)) return;
     const route = context.ui.router.current();
@@ -1053,11 +1107,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       context.data.on('session.synthetic', (event) => {
         const sessionID = String(event?.data?.sessionID ?? '');
         if (!sessionID || sessionID === 'global') return;
-        if (!isEligibleTuiSessionSync(sessionID, event?.location)) return;
-        const handoff = extractTrustedGuardianHandoff(event?.data);
-        if (handoff) {
-          setActiveHandoff(sessionID, handoff);
-        }
+        setHandoffIfEligible(sessionID, event?.data, event?.location);
       })
     );
 
@@ -1067,11 +1117,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         if (!sessionID || sessionID === 'global') return;
         const item = event?.data?.item;
         if (item?.type === 'synthetic') {
-          if (!isEligibleTuiSessionSync(sessionID, event?.location)) return;
-          const handoff = extractTrustedGuardianHandoff(item);
-          if (handoff) {
-            setActiveHandoff(sessionID, handoff);
-          }
+          setHandoffIfEligible(sessionID, item, event?.location);
         } else if (item?.type === 'user' && !isInternalNonHumanMessage(item)) {
           invalidateActiveHandoff(sessionID);
           sessionChains.delete(sessionID);

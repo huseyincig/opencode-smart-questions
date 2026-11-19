@@ -12,14 +12,16 @@ export { resolveLockPath, deleteLockfile, cleanupStaleDrafts, canUseDraftCoordin
 export * from './backend.js';
 export * from './handoff.js';
 function sessionDirectoryFromInfo(sessionInfo, fallbackDirectory) {
-    if (sessionInfo &&
-        typeof sessionInfo === 'object' &&
-        'location' in sessionInfo &&
-        sessionInfo.location &&
-        typeof sessionInfo.location === 'object' &&
-        'directory' in sessionInfo.location &&
-        typeof sessionInfo.location.directory === 'string') {
-        return sessionInfo.location.directory;
+    if (sessionInfo && typeof sessionInfo === 'object') {
+        const record = sessionInfo;
+        if (record.location &&
+            typeof record.location === 'object' &&
+            typeof record.location.directory === 'string') {
+            return record.location.directory;
+        }
+        if (typeof record.directory === 'string' && record.directory) {
+            return record.directory;
+        }
     }
     return fallbackDirectory;
 }
@@ -77,7 +79,7 @@ const setupV2 = async (context) => {
             }
         }
     };
-    const isSessionEligible = async (sessionID) => {
+    const isSessionEligible = async (sessionID, eventDirectory) => {
         if (!sessionID)
             return false;
         let sessionInfo;
@@ -87,7 +89,7 @@ const setupV2 = async (context) => {
         catch {
             return false;
         }
-        const dir = sessionDirectoryFromInfo(sessionInfo, context.location?.directory);
+        const dir = sessionDirectoryFromInfo(sessionInfo, eventDirectory ?? context.location?.directory);
         const config = resolveSmartQuestionConfig(dir, pluginOptions);
         if (!config?.enabled)
             return false;
@@ -172,13 +174,15 @@ const setupV2 = async (context) => {
                             if (!evt || typeof evt !== 'object')
                                 continue;
                             const eventType = evt.type;
+                            const eventLocationDir = evt.location?.directory;
+                            const eventDir = typeof eventLocationDir === 'string' ? eventLocationDir : undefined;
                             const data = evt.data;
                             const sessionID = eventSessionID(data);
                             if (!sessionID)
                                 continue;
                             if (eventType === 'session.synthetic') {
                                 const handoff = extractTrustedGuardianHandoff(data);
-                                if (handoff && (await isSessionEligible(sessionID))) {
+                                if (handoff && (await isSessionEligible(sessionID, eventDir))) {
                                     setActiveHandoff(sessionID, handoff);
                                 }
                             }
@@ -191,7 +195,7 @@ const setupV2 = async (context) => {
                                     : undefined;
                                 if (itemType === 'synthetic') {
                                     const handoff = extractTrustedGuardianHandoff(item);
-                                    if (handoff && (await isSessionEligible(sessionID))) {
+                                    if (handoff && (await isSessionEligible(sessionID, eventDir))) {
                                         setActiveHandoff(sessionID, handoff);
                                     }
                                 }

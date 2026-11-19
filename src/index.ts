@@ -47,16 +47,18 @@ function sessionDirectoryFromInfo(
   sessionInfo: unknown,
   fallbackDirectory?: string
 ): string | undefined {
-  if (
-    sessionInfo &&
-    typeof sessionInfo === 'object' &&
-    'location' in sessionInfo &&
-    sessionInfo.location &&
-    typeof sessionInfo.location === 'object' &&
-    'directory' in sessionInfo.location &&
-    typeof sessionInfo.location.directory === 'string'
-  ) {
-    return sessionInfo.location.directory;
+  if (sessionInfo && typeof sessionInfo === 'object') {
+    const record = sessionInfo as Record<string, unknown>;
+    if (
+      record.location &&
+      typeof record.location === 'object' &&
+      typeof (record.location as Record<string, unknown>).directory === 'string'
+    ) {
+      return (record.location as Record<string, unknown>).directory as string;
+    }
+    if (typeof record.directory === 'string' && record.directory) {
+      return record.directory;
+    }
   }
   return fallbackDirectory;
 }
@@ -124,7 +126,10 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
     }
   };
 
-  const isSessionEligible = async (sessionID: string): Promise<boolean> => {
+  const isSessionEligible = async (
+    sessionID: string,
+    eventDirectory?: string
+  ): Promise<boolean> => {
     if (!sessionID) return false;
     let sessionInfo: unknown;
     try {
@@ -132,7 +137,10 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
     } catch {
       return false;
     }
-    const dir = sessionDirectoryFromInfo(sessionInfo, context.location?.directory);
+    const dir = sessionDirectoryFromInfo(
+      sessionInfo,
+      eventDirectory ?? context.location?.directory
+    );
     const config = resolveSmartQuestionConfig(dir, pluginOptions);
     if (!config?.enabled) return false;
     return isEligibleSessionInfo(sessionInfo, config.includeSubagents === true);
@@ -227,13 +235,16 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
               attempt = 0;
               if (!evt || typeof evt !== 'object') continue;
               const eventType = (evt as { type?: unknown }).type;
+              const eventLocationDir =
+                (evt as { location?: { directory?: unknown } }).location?.directory;
+              const eventDir = typeof eventLocationDir === 'string' ? eventLocationDir : undefined;
               const data = (evt as { data?: unknown }).data;
               const sessionID = eventSessionID(data);
               if (!sessionID) continue;
 
               if (eventType === 'session.synthetic') {
                 const handoff = extractTrustedGuardianHandoff(data);
-                if (handoff && (await isSessionEligible(sessionID))) {
+                if (handoff && (await isSessionEligible(sessionID, eventDir))) {
                   setActiveHandoff(sessionID, handoff);
                 }
               } else if (eventType === 'session.inbox.enqueued') {
@@ -247,7 +258,7 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
                     : undefined;
                 if (itemType === 'synthetic') {
                   const handoff = extractTrustedGuardianHandoff(item);
-                  if (handoff && (await isSessionEligible(sessionID))) {
+                  if (handoff && (await isSessionEligible(sessionID, eventDir))) {
                     setActiveHandoff(sessionID, handoff);
                   }
                 } else if (itemType === 'user' && !isInternalNonHumanMessage(item)) {

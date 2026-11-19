@@ -14,7 +14,7 @@ import OpencodeSmartQuestions, {
 import OpencodeSmartQuestionsTui from '../dist/tui.js';
 
 console.log('========================================================================');
-console.log('   OPENCODE V2 LIVE ACCEPTANCE TEST SUITE (OpenCode v2.3.0 Host)');
+console.log('   OPENCODE V2 LIVE ACCEPTANCE TEST SUITE');
 console.log('========================================================================');
 
 const rootDir = path.resolve(import.meta.dirname, '..');
@@ -525,7 +525,9 @@ try {
     encoding: 'utf8',
   });
   const packInfo = JSON.parse(packJson);
-  const tgzName = packInfo[0]?.filename;
+  const tgzName = Array.isArray(packInfo)
+    ? packInfo[0]?.filename
+    : (packInfo?.['opencode-smart-questions']?.filename ?? Object.values(packInfo ?? {})[0]?.filename);
   assert.ok(tgzName, 'npm pack must produce a tarball');
   execSync(`tar -xzf "${path.join(tempPackDir, tgzName)}" -C "${tempExtractDir}"`);
 
@@ -547,7 +549,7 @@ try {
   await ssePump;
 
   console.log('\n========================================================================');
-  console.log('   ALL 8 LIVE OPENCODE v2.3.0 ACCEPTANCE SCENARIOS PASSED');
+  console.log(`   ALL 8 LIVE OPENCODE (${opencodeVersionOutput}) ACCEPTANCE SCENARIOS PASSED`);
   console.log('========================================================================');
 } finally {
   sseAbort.abort();

@@ -1665,9 +1665,12 @@ var setup = async (context) => {
         } catch {
         }
       }
-      const sessionLocation = sessionInfo?.location;
-      const location = event?.location ?? sessionLocation ?? context.location;
-      const config = resolveV2TuiConfig(context, location?.directory);
+      const sessionLocation = sessionInfo?.location?.directory ?? sessionInfo?.directory;
+      const locationDir = event?.location?.directory ?? sessionLocation ?? context.location?.directory;
+      const location = event?.location ?? (sessionLocation ? {
+        directory: sessionLocation
+      } : context.location);
+      const config = resolveV2TuiConfig(context, locationDir);
       if (!isEligibleSessionInfo(sessionInfo, config?.includeSubagents === true)) return;
       if (pending.has(form.id)) return;
       for (const [id, existing] of pending.entries()) {
@@ -1845,7 +1848,7 @@ var setup = async (context) => {
               }, {
                 signal: lifecycleController.signal
               });
-              const rejected = response && typeof response === "object" && !Array.isArray(response) && (Boolean(response.error) || response.ok === false);
+              const rejected = response && typeof response === "object" && !Array.isArray(response) && (Boolean(response.error) || response.ok === false || response.name === "UnknownError");
               remediationSent = isFlightCurrent() && !rejected;
             }
           } catch (err) {
@@ -2041,11 +2044,10 @@ var setup = async (context) => {
       }
     }
   };
-  const NON_INTERVENTION_KEYS = /* @__PURE__ */ new Set(["pageup", "pagedown", "home", "end", "scrollup", "scrolldown", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"]);
-  const isEligibleTuiSessionSync = (sessionID, eventLocation) => {
-    let sessionInfo;
+  const NON_INTERVENTION_KEYS = /* @__PURE__ */ new Set(["pageup", "pagedown", "home", "end", "scrollup", "scrolldown", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "shift", "ctrl", "control", "alt", "meta", "super", "capslock", "numlock", "scrolllock"]);
+  const getCachedSessionInfo = (sessionID) => {
     try {
-      sessionInfo = context.data.session?.get?.(sessionID);
+      let sessionInfo = context.data.session?.get?.(sessionID);
       if (!sessionInfo && typeof context.data.session?.root === "function") {
         const rootID = context.data.session.root(sessionID);
         if (typeof rootID === "string" && rootID) {
@@ -2055,16 +2057,43 @@ var setup = async (context) => {
           };
         }
       }
+      return sessionInfo;
     } catch {
-      sessionInfo = void 0;
+      return void 0;
     }
-    const sessionLocation = sessionInfo?.location;
-    const location = eventLocation ?? sessionLocation ?? context.location;
-    const config = resolveV2TuiConfig(context, location?.directory);
+  };
+  const checkSessionEligibility = (sessionInfo, eventLocation) => {
+    const sessionDirectory = sessionInfo?.location?.directory ?? sessionInfo?.directory;
+    const directory = eventLocation?.directory ?? sessionDirectory ?? context.location?.directory;
+    const config = resolveV2TuiConfig(context, directory);
     if (!config?.enabled) return false;
     return isEligibleSessionInfo(sessionInfo, config.includeSubagents === true);
   };
+  const setHandoffIfEligible = (sessionID, payload, eventLocation) => {
+    const handoff = extractTrustedGuardianHandoff(payload);
+    if (!handoff) return;
+    const cachedInfo = getCachedSessionInfo(sessionID);
+    if (cachedInfo !== void 0 || typeof context.data.session?.sync !== "function") {
+      if (checkSessionEligibility(cachedInfo, eventLocation)) {
+        setActiveHandoff(sessionID, handoff);
+      }
+      return;
+    }
+    void (async () => {
+      try {
+        await context.data.session.sync(sessionID);
+      } catch {
+        return;
+      }
+      if (disposed) return;
+      const syncedInfo = getCachedSessionInfo(sessionID);
+      if (checkSessionEligibility(syncedInfo, eventLocation)) {
+        setActiveHandoff(sessionID, handoff);
+      }
+    })();
+  };
   const onKey = (keyEvent) => {
+    if (keyEvent?.ctrl || keyEvent?.meta || keyEvent?.alt || keyEvent?.super) return;
     const keyName = typeof keyEvent?.name === "string" ? keyEvent.name.toLowerCase() : "";
     if (keyName && NON_INTERVENTION_KEYS.has(keyName)) return;
     const route = context.ui.router.current();
@@ -2085,22 +2114,14 @@ var setup = async (context) => {
     cleanups.push(context.data.on("session.synthetic", (event) => {
       const sessionID = String(event?.data?.sessionID ?? "");
       if (!sessionID || sessionID === "global") return;
-      if (!isEligibleTuiSessionSync(sessionID, event?.location)) return;
-      const handoff = extractTrustedGuardianHandoff(event?.data);
-      if (handoff) {
-        setActiveHandoff(sessionID, handoff);
-      }
+      setHandoffIfEligible(sessionID, event?.data, event?.location);
     }));
     cleanups.push(context.data.on("session.inbox.enqueued", (event) => {
       const sessionID = String(event?.data?.sessionID ?? "");
       if (!sessionID || sessionID === "global") return;
       const item = event?.data?.item;
       if (item?.type === "synthetic") {
-        if (!isEligibleTuiSessionSync(sessionID, event?.location)) return;
-        const handoff = extractTrustedGuardianHandoff(item);
-        if (handoff) {
-          setActiveHandoff(sessionID, handoff);
-        }
+        setHandoffIfEligible(sessionID, item, event?.location);
       } else if (item?.type === "user" && !isInternalNonHumanMessage(item)) {
         invalidateActiveHandoff(sessionID);
         sessionChains.delete(sessionID);

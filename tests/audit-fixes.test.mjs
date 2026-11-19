@@ -344,3 +344,174 @@ test('3.4: ui.tsx reuses stripMarker and formatCountdown from view-model.ts with
   const uiMod = await import('../dist/ui.js');
   assert.equal(uiMod.stripMarker('PostgreSQL (recommended)', ['(Recommended)']), 'PostgreSQL');
 });
+
+test('2.1b: keypress ignores modifier shortcuts (ctrl/meta/alt) and modifier-only keys', async (t) => {
+  const form = {
+    id: 'frm-mod-key',
+    sessionID: 'ses-1',
+    fields: [{
+      key: 'pick',
+      type: 'string',
+      options: [{ value: 'a', label: 'Alpha [SQ:recommended]' }, { value: 'b', label: 'Beta' }],
+    }],
+  };
+  const h = makeTuiHarness(t, {
+    options: { timeoutMs: 30 },
+    formList: () => [form],
+  });
+  const dispose = await setup(h.context);
+  t.after(dispose);
+
+  await h.events.get('form.created')({ data: { form } });
+  h.emitKey({ name: 'f', ctrl: true });
+  h.emitKey({ name: 'c', meta: true });
+  h.emitKey({ name: 'tab', alt: true });
+  h.emitKey({ name: 'shift' });
+  await delay(60);
+  assert.equal(h.replies.length, 1, 'shortcut/modifier keypresses must not cancel auto-reply');
+});
+
+test('2.2b: TUI session.synthetic syncs uncached root session before eligibility check', async (t) => {
+  const dir = tempDirectory(t);
+  const syncedCache = new Map();
+  const h = makeTuiHarness(t, {
+    dir,
+    sessionGet: (id) => syncedCache.get(id),
+    sessionSync: async (id) => {
+      syncedCache.set(id, { id, location: { directory: dir } });
+    },
+  });
+  const dispose = await setup(h.context);
+  t.after(dispose);
+
+  clearActiveHandoff('ses-uncached-root');
+  await h.events.get('session.synthetic')({
+    data: {
+      sessionID: 'ses-uncached-root',
+      synthetic: true,
+      metadata: { 'opencode-guardian': true },
+      parts: [{
+        type: 'text',
+        synthetic: true,
+        metadata: { 'opencode-guardian': true },
+        text: `[opencode-guardian remediation]\n${formatOpenCodeHandoff({
+          action: 'question_required',
+          kind: 'choice',
+          autoSelect: 'forbidden',
+          handoffId: 'h-uncached-1',
+        })}`,
+      }],
+    },
+  });
+  const active = getActiveHandoff('ses-uncached-root');
+  assert.equal(active?.handoffId, 'h-uncached-1', 'uncached root session must be synced and receive handoff');
+  clearActiveHandoff('ses-uncached-root');
+});
+
+test('2.3b: server event.subscribe resolves sessionInfo.directory and event.location.directory', async () => {
+  const { default: OpencodeSmartQuestions } = await import('../dist/index.js');
+  const startupDir = '/tmp/sq-23b-disabled';
+  const enabledDir = '/tmp/sq-23b-enabled';
+
+  const eventsQueue = [
+    {
+      type: 'session.synthetic',
+      location: { directory: enabledDir },
+      data: {
+        sessionID: 'ses-dir-flat',
+        synthetic: true,
+        metadata: { 'opencode-guardian': true },
+        parts: [{
+          type: 'text',
+          synthetic: true,
+          metadata: { 'opencode-guardian': true },
+          text: `[opencode-guardian remediation]\n${formatOpenCodeHandoff({
+            action: 'question_required',
+            kind: 'choice',
+            autoSelect: 'forbidden',
+            handoffId: 'h-dir-flat-1',
+          })}`,
+        }],
+      },
+    },
+  ];
+
+  clearActiveHandoff('ses-dir-flat');
+  const dispose = await OpencodeSmartQuestions.setup({
+    location: { directory: startupDir },
+    options: {
+      resolveConfig(dir) {
+        if (dir === startupDir) return { enabled: false };
+        if (dir === enabledDir) return { enabled: true };
+        return undefined;
+      },
+    },
+    session: {
+      async get({ sessionID }) {
+        // Note: flat `directory` field (no `.location`)
+        return { id: sessionID, directory: enabledDir };
+      },
+      async hook() {
+        return { async dispose() {} };
+      },
+    },
+    event: {
+      subscribe({ signal }) {
+        return (async function* () {
+          for (const ev of eventsQueue) {
+            if (signal?.aborted) return;
+            yield ev;
+          }
+          await new Promise((resolve) => {
+            if (signal?.aborted) return resolve();
+            signal?.addEventListener('abort', resolve, { once: true });
+          });
+        })();
+      },
+    },
+  });
+
+  try {
+    await delay(30);
+    const active = getActiveHandoff('ses-dir-flat');
+    assert.equal(active?.handoffId, 'h-dir-flat-1', 'sessionInfo.directory must be resolved by server event.subscribe');
+  } finally {
+    clearActiveHandoff('ses-dir-flat');
+    await dispose?.();
+  }
+});
+
+test('2.5b: TUI treats OpenCode UnknownError synthetic response as rejected without consuming budget', async (t) => {
+  const dir = tempDirectory(t);
+  let syntheticCalls = 0;
+  const form = {
+    id: 'frm-unknown-err',
+    sessionID: 'ses-1',
+    fields: [{
+      key: 'pick',
+      type: 'string',
+      options: [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }],
+    }],
+  };
+  const h = makeTuiHarness(t, {
+    dir,
+    options: { timeoutMs: 25, maxUnclassifiedRemediations: 1 },
+    formList: () => [form],
+  });
+  h.context.client = {
+    session: {
+      async synthetic() {
+        syntheticCalls += 1;
+        return { name: 'UnknownError', message: 'Internal server error', ref: 'ref-123' };
+      },
+    },
+  };
+
+  const dispose = await setup(h.context);
+  t.after(dispose);
+
+  await h.events.get('form.created')({ data: { form } });
+  // Because UnknownError rolled back remediatedForms, a second delivery of the same form must still retry
+  await h.events.get('form.created')({ data: { form } });
+  assert.equal(syntheticCalls, 2, 'UnknownError response must roll back remediatedForms so retry remains allowed');
+});

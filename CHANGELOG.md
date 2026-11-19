@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.2 — 2026-11-19
+
+- **Shortcut & modifier key filtering (`src/ui.tsx`)**: Ignore modifier-only keys (`shift`, `ctrl`, `control`, `alt`, `meta`, `super`, `capslock`, `numlock`, `scrolllock`) and shortcut chords (`ctrl`/`meta`/`alt`/`super`) in `keyInput` so OpenCode `v2.3.1+` tab switching, panel search (`Ctrl+F`/`Cmd+F`), and copy shortcuts no longer cancel active auto-selection countdowns.
+- **Uncached session sync for TUI handoffs (`src/ui.tsx`)**: Added `setHandoffIfEligible` with synchronous fast-path for cached sessions and automatic `session.sync` fallback when `session.synthetic` or `session.inbox.enqueued` arrives before a root session is cached.
+- **Server directory resolution (`src/index.ts`)**: `sessionDirectoryFromInfo` now checks both `sessionInfo.location?.directory` and flat `sessionInfo.directory`, and `context.event.subscribe` forwards `event.location?.directory` to `isSessionEligible`.
+- **OpenCode `v2.3.1+` & npm 11 compatibility (`src/ui.tsx`, `tests/v2-live-acceptance.mjs`)**: Treat OpenCode `UnknownError` HTTP 500 JSON responses as rejected synthetic deliveries without consuming remediation budget, support npm 11's object-form `npm pack --json` output, and report live host version dynamically.
+- **Verification**: 149/149 unit & regression tests, 7/7 sandbox scenarios, and 8/8 live OpenCode `v2.3.2` host acceptance scenarios pass (`npm run test:all`).
+
 ## 1.1.1 — 2026-11-17
 
 - **Config fallback fix (`src/config.ts`)**: Strip function `resolveConfig` before validating static fallback keys so `{ resolveConfig, ...fallbackOptions }` applies fallback settings instead of failing closed when `resolveConfig(directory)` returns `undefined`.

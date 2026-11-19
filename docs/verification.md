@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v1.1.1** evaluation on **17 November 2026**.
+This document describes the **v1.1.2** evaluation on **19 November 2026**.
 
 ## Automated checks
 
@@ -18,19 +18,25 @@ npm audit
 npm pack --dry-run
 ```
 
-CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.13.1**, `@opencode/plugin` **2.3.0**, and OpenCode **v2.3.0**.
+CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.13.1**, `@opencode/plugin` **2.3.0**, and OpenCode **v2.3.2**.
 
 ## Current results
 
 | Check | Observed result |
 | --- | --- |
-| Unit and regression tests (`npm test`) | **145/145 passed** |
-| Live OpenCode `v2.3.0` acceptance (`npm run test:acceptance`) | **8/8 scenarios passed** against live `opencode serve` |
+| Unit and regression tests (`npm test`) | **149/149 passed** |
+| Live OpenCode `v2.3.2` acceptance (`npm run test:acceptance`) | **8/8 scenarios passed** against live `opencode serve` |
 | Strict TypeScript and Oxlint | **Passed**, 0 warnings / 0 errors |
 | Simulated V2 comprehensive scenarios | **7/7 passed** |
 | Separate V2 smoke test | **Passed** |
 | Dependency audit (`npm audit`) | **0 vulnerabilities** |
 | Packaging dry run (`npm pack --dry-run`) | Expected server, UI, TUI, declaration, and documentation files included |
+
+## v1.1.2 regression & fix coverage
+
+- **Shortcut & modifier key filtering**: `NON_INTERVENTION_KEYS` includes modifier-only keys and `onKey` ignores `ctrl`/`meta`/`alt`/`super` shortcut chords so OpenCode `v2.3.1+` tab-switch, find, and copy shortcuts never cancel auto-selection.
+- **Uncached TUI handoff session sync**: `setHandoffIfEligible` keeps synchronous eligibility for cached sessions while falling back to `session.sync` for uncached root sessions on `session.synthetic` / `session.inbox.enqueued`.
+- **Server directory resolution & `UnknownError` handling**: `sessionDirectoryFromInfo` supports flat `sessionInfo.directory`, `event.subscribe` forwards `event.location.directory`, `client.session.synthetic` treats `{ name: 'UnknownError' }` as rejected, and `tests/v2-live-acceptance.mjs` supports npm 11's object `npm pack --json` output.
 
 ## v1.1.1 regression & fix coverage
 

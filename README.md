@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/opencode-smart-questions?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
 [![npm downloads](https://img.shields.io/npm/dm/opencode-smart-questions?color=blue&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
 [![OpenCode: v2.3.0+](https://img.shields.io/badge/OpenCode-v2.3.0%2B-10b981?logo=terminal&logoColor=white)](https://opencode.ai)
-[![Tests: 145/145 Passing](https://img.shields.io/badge/Tests-145%2F145%20Passing-339933?logo=githubactions&logoColor=white)](docs/verification.md)
+[![Tests: 149/149 Passing](https://img.shields.io/badge/Tests-149%2F149%20Passing-339933?logo=githubactions&logoColor=white)](docs/verification.md)
 [![Live Host: 8/8 Passing](https://img.shields.io/badge/Live%20Host-8%2F8%20Passing-339933?logo=checkmarx&logoColor=white)](docs/acceptance-v2.md)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.0.0-339933?logo=nodedotjs&logoColor=white)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
@@ -21,16 +21,16 @@ A high-performance, deterministic **OpenCode V2** plugin (`@opencode/plugin` `2.
 
 ![Automated and host acceptance results](docs/assets/verification-overview.svg)
 
-Smart Questions **v1.1.1** was verified on **17 November 2026**, using Node **26.13.1**, `@opencode/plugin` **2.3.0**, and OpenCode **v2.3.0**:
+Smart Questions **v1.1.2** was verified on **19 November 2026**, using Node **26.13.1**, `@opencode/plugin` **2.3.0** (`^2.3.0`), and live OpenCode **v2.3.2**:
 
-- **Unit & Regression Suite:** **145 / 145** tests passing (`npm test`).
-- **Live OpenCode v2.3.0 Host Acceptance:** **8 / 8** end-to-end scenarios passing against a live `opencode serve` (`v2.3.0`) instance (`npm run test:acceptance`).
+- **Unit & Regression Suite:** **149 / 149** tests passing (`npm test`).
+- **Live OpenCode v2.3.2 Host Acceptance:** **8 / 8** end-to-end scenarios passing against a live `opencode serve` (`v2.3.2`) instance (`npm run test:acceptance`).
 - **Sandbox Scenarios:** **7 / 7** comprehensive V2 scenarios and the separate V2 smoke test pass.
 - **Static Analysis & Audit:** Standard and strict TypeScript gates pass; Oxlint reports **0 warnings / 0 errors**; `npm audit` reports **0 vulnerabilities**.
 
 Read the detailed [V2 Acceptance Report](docs/acceptance-v2.md) and [Technical Verification](docs/verification.md) for full reproduction steps and test harnesses.
 
-See the [1.1.1 release notes](CHANGELOG.md) for config fallback, reactive slot, settlement tombstone, symlink lock safety, and detector/handoff hardening.
+See the [1.1.2 release notes](CHANGELOG.md) for modifier-shortcut filtering, uncached TUI handoff sync, flat `sessionInfo.directory` resolution, and OpenCode `v2.3.2` verification.
 
 ---
 
@@ -52,7 +52,7 @@ See the [1.1.1 release notes](CHANGELOG.md) for config fallback, reactive slot, 
 
 ## 📦 Installation
 
-The current version is **1.1.1** (OpenCode **v2.3.0+**).
+The current version is **1.1.2** (OpenCode **v2.3.0+**, verified on **v2.3.2**).
 
 ### 🔵 OpenCode V2 (`opencode.json` / `opencode.jsonc`)
 
@@ -199,7 +199,7 @@ npm pack --dry-run
 ```
 
 - **CI Matrix:** Runs on Node 22, 24, and 26 with strict typechecking and Oxlint verification.
-- **Acceptance Report:** See [V2 Acceptance](docs/acceptance-v2.md) for live OpenCode `v2.3.0` host verification.
+- **Acceptance Report:** See [V2 Acceptance](docs/acceptance-v2.md) for live OpenCode `v2.3.2` host verification.
 - **Technical Specifications:** Detailed boundaries and limitations are documented in [Technical Verification](docs/verification.md).
 
 ---
