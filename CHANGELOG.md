@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0 — 2026-11-20
+
+- **Universal OpenCode V2 Plugin Mesh Interoperability (`src/bridge.ts`, `src/handoff.ts`, `src/index.ts`, `src/ui.tsx`)**: Added zero-dependency OpenCode V2 Plugin Mesh bridge (`BRIDGE_REVISION: 2.3.0`) enabling seamless coordination across `opencode-smart-questions`, `opencode-guardian`, `opencode-hi`, `opencode-lazy-skill-engine`, and `opencode-trim` in any combination.
+- **Session Interaction Leases & Failover RPC Bridge (`src/index.ts`, `src/ui.tsx`, `src/bridge.ts`)**: Acquire and synchronize `user_interaction` session leases (`Math.max(timeoutMs + 15000, 120000)` TTL) while forms are active so orchestrators (`opencode-hi`) and policy engines (`opencode-guardian`) defer background harvesting/remediation; added automatic primary/standby failover in `registerMeshStateRpc`.
+- **Multi-Peer Handoff & Strict Anti-Spoofing Provenance (`src/handoff.ts`, `src/index.ts`)**: Support `[OPENCODE_HANDOFF:v1]` handoffs from any verified mesh peer (`source=guardian`, `source=opencode-hi`, etc.) and `[opencode-mesh remediation]` markers while strictly enforcing `hasGuardianMetadata(value, 'remediation')` for Guardian messages (rejecting `visible` or partially spoofed metadata) and requiring trusted provenance on `context` hook `event.system` parts.
+- **Complete Lease & Settlement Lifecycle (`src/ui.tsx`, `src/index.ts`)**: Release `user_interaction` leases immediately on auto-reply `fire()`, `!stillPending` sync checks, `formID`-only or `evt.properties` settlement payloads, user inbox messages, `session.deleted`, and `dispose()`.
+- **Documentation & Installation Guide (`README.md`, `docs/*`)**: Expanded installation instructions covering global (`~/.config/opencode/opencode.json`), project-scoped (`opencode.json` / `.opencode/opencode.json`), CLI/npm global & local commands, explicit server/TUI entrypoints, and local `file://` development.
+- **Verification**: 159/159 unit & regression tests, 7/7 sandbox scenarios, and 8/8 live OpenCode `v2.3.2` host acceptance scenarios pass (`npm run test:all`).
+
 ## 1.1.2 — 2026-11-19
 
 - **Shortcut & modifier key filtering (`src/ui.tsx`)**: Ignore modifier-only keys (`shift`, `ctrl`, `control`, `alt`, `meta`, `super`, `capslock`, `numlock`, `scrolllock`) and shortcut chords (`ctrl`/`meta`/`alt`/`super`) in `keyInput` so OpenCode `v2.3.1+` tab switching, panel search (`Ctrl+F`/`Cmd+F`), and copy shortcuts no longer cancel active auto-selection countdowns.

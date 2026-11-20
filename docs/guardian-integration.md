@@ -1,10 +1,10 @@
 # Guardian + Smart Questions Coordination Protocol
 
-Current documentation: Smart Questions **1.1.2** (OpenCode V2 `v2.3.0+`, verified on `v2.3.2`) and Guardian **0.11.2+**. See each package's release notes and verification report for current automated results.
+Current documentation: Smart Questions **1.2.0** (OpenCode V2 `v2.3.0+`, verified on `v2.3.2`) and Guardian **0.11.2+**. See each package's release notes and verification report for current automated results.
 
-OpenCode Guardian and Smart Questions are **completely standalone, independent plugins** with zero package dependencies on each other.
+OpenCode Guardian, OpenCode Hi, and Smart Questions are **completely standalone, independent plugins** with zero package dependencies on each other.
 
-When installed together within the same OpenCode workspace or global environment, they optionally coordinate through a decoupled, versioned event handoff protocol (`[OPENCODE_HANDOFF:v1]`).
+When installed together within the same OpenCode workspace or global environment, they optionally coordinate through the Universal OpenCode V2 Plugin Mesh (`src/bridge.ts`) and a decoupled, versioned event handoff protocol (`[OPENCODE_HANDOFF:v1]`).
 
 ---
 

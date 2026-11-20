@@ -865,6 +865,401 @@ function isEligibleSessionInfo(value, includeSubagents = false) {
   return isEligibleSessionScope(classifySessionScope(value), includeSubagents);
 }
 
+// src/bridge.ts
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import { types } from "node:util";
+var MESH_VERSION = 2;
+var MESH_SYMBOL = Symbol.for("opencode.mesh.v2");
+var LEGACY_COORDINATION_SYMBOL = Symbol.for("opencode.coordination.v1");
+var LEGACY_HANDOFF_STATE_SYMBOL = Symbol.for("opencode.handoff.state.v1");
+var MESH_METADATA_KEY = "opencode-mesh";
+var MESH_REMEDIATION_MARKER = "[opencode-mesh remediation]";
+var MESH_STATE_RPC_ID = "opencode-mesh.state";
+var CLOSED_HANDOFF_TTL_MS = 10 * 6e4;
+var MAX_BOUNDED_SESSIONS = 512;
+var MAX_TOKENS_PER_SESSION = 128;
+var MESH_STATE_RPC_DEFINITION = {
+  id: MESH_STATE_RPC_ID,
+  methods: {
+    sessionState: {
+      input: {
+        type: "object",
+        properties: {
+          sessionID: { type: "string", minLength: 1, maxLength: 256 }
+        },
+        required: ["sessionID"],
+        additionalProperties: false
+      },
+      output: {
+        type: "object",
+        properties: {
+          waitingOnUser: { type: "boolean" },
+          remediating: { type: "boolean" },
+          blockingOwner: { type: "string" },
+          blockingKind: { type: "string" },
+          activeHandoffId: { type: "string" }
+        },
+        required: ["waitingOnUser", "remediating"],
+        additionalProperties: false
+      }
+    },
+    setInteractionLease: {
+      input: {
+        type: "object",
+        properties: {
+          sessionID: { type: "string", minLength: 1, maxLength: 256 },
+          owner: { type: "string", minLength: 1, maxLength: 128 },
+          active: { type: "boolean" },
+          ttlMs: { type: "number" },
+          reason: { type: "string", maxLength: 256 }
+        },
+        required: ["sessionID", "owner", "active"],
+        additionalProperties: false
+      },
+      output: {
+        type: "object",
+        properties: {
+          ok: { type: "boolean" }
+        },
+        required: ["ok"],
+        additionalProperties: false
+      }
+    }
+  },
+  events: {
+    updated: {
+      schema: {
+        type: "object",
+        properties: {
+          sessionID: { type: "string" },
+          kind: { type: "string" }
+        },
+        required: ["sessionID", "kind"],
+        additionalProperties: false
+      }
+    }
+  }
+};
+var LEASE_PRIORITY = {
+  user_interaction: 30,
+  active_remediation: 20,
+  orchestration_dispatch: 10
+};
+var DEFAULT_LEASE_TTL_MS = {
+  user_interaction: 12e4,
+  active_remediation: 45e3,
+  orchestration_dispatch: 15e3
+};
+function isRecord(value) {
+  return Boolean(
+    value && typeof value === "object" && !Array.isArray(value) && !types.isProxy(value)
+  );
+}
+function ownData(obj, key) {
+  if (!isRecord(obj)) return void 0;
+  const desc = Object.getOwnPropertyDescriptor(obj, key);
+  return desc && "value" in desc ? desc.value : void 0;
+}
+function setBoundedMap(map, key, value, max = MAX_BOUNDED_SESSIONS) {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  while (map.size > max) {
+    const oldest = map.keys().next().value;
+    if (oldest === void 0) break;
+    map.delete(oldest);
+  }
+}
+function getMeshState() {
+  const g = globalThis;
+  let state = g[MESH_SYMBOL];
+  if (!state || typeof state !== "object") {
+    state = {
+      version: MESH_VERSION,
+      peersByKey: /* @__PURE__ */ new Map(),
+      provenanceBySession: /* @__PURE__ */ new Map(),
+      leasesBySession: /* @__PURE__ */ new Map(),
+      interventionsBySession: /* @__PURE__ */ new Map(),
+      roleResolversByKey: /* @__PURE__ */ new Map(),
+      skillProvidersByKey: /* @__PURE__ */ new Map(),
+      promptSkillClaims: /* @__PURE__ */ new Map(),
+      rpcHostsByDir: /* @__PURE__ */ new Map(),
+      remoteInteractionLeases: /* @__PURE__ */ new Map()
+    };
+    g[MESH_SYMBOL] = state;
+  }
+  if (typeof state.version !== "number" || state.version < MESH_VERSION) {
+    state.version = MESH_VERSION;
+  }
+  if (!(state.peersByKey instanceof Map)) state.peersByKey = /* @__PURE__ */ new Map();
+  if (!(state.provenanceBySession instanceof Map)) state.provenanceBySession = /* @__PURE__ */ new Map();
+  if (!(state.leasesBySession instanceof Map)) state.leasesBySession = /* @__PURE__ */ new Map();
+  if (!(state.interventionsBySession instanceof Map)) state.interventionsBySession = /* @__PURE__ */ new Map();
+  if (!(state.roleResolversByKey instanceof Map)) state.roleResolversByKey = /* @__PURE__ */ new Map();
+  if (!(state.skillProvidersByKey instanceof Map)) state.skillProvidersByKey = /* @__PURE__ */ new Map();
+  if (!(state.promptSkillClaims instanceof Map)) state.promptSkillClaims = /* @__PURE__ */ new Map();
+  if (!(state.rpcHostsByDir instanceof Map)) state.rpcHostsByDir = /* @__PURE__ */ new Map();
+  if (!(state.remoteInteractionLeases instanceof Map)) state.remoteInteractionLeases = /* @__PURE__ */ new Map();
+  return state;
+}
+function getLegacyHandoffState() {
+  const g = globalThis;
+  let state = g[LEGACY_HANDOFF_STATE_SYMBOL];
+  if (!state || typeof state !== "object") {
+    state = {
+      activeHandoffsBySession: /* @__PURE__ */ new Map(),
+      closedHandoffIds: /* @__PURE__ */ new Map()
+    };
+    g[LEGACY_HANDOFF_STATE_SYMBOL] = state;
+  }
+  if (!(state.activeHandoffsBySession instanceof Map)) {
+    state.activeHandoffsBySession = /* @__PURE__ */ new Map();
+  }
+  if (!(state.closedHandoffIds instanceof Map)) {
+    state.closedHandoffIds = /* @__PURE__ */ new Map();
+  }
+  if (state.consumedHandoffIds instanceof Set && state.consumedHandoffIds.size > 0) {
+    const now = Date.now();
+    for (const id of state.consumedHandoffIds) {
+      state.closedHandoffIds.set(id, now);
+    }
+    state.consumedHandoffIds.clear();
+  }
+  return state;
+}
+function stampMeshMetadata(sessionID, options, base = {}) {
+  const state = getMeshState();
+  const token = randomUUID2();
+  const sID = String(sessionID || "global");
+  let sessionTokens = state.provenanceBySession.get(sID);
+  if (!sessionTokens) {
+    sessionTokens = /* @__PURE__ */ new Map();
+    setBoundedMap(state.provenanceBySession, sID, sessionTokens, MAX_BOUNDED_SESSIONS);
+  } else {
+    setBoundedMap(state.provenanceBySession, sID, sessionTokens, MAX_BOUNDED_SESSIONS);
+  }
+  setBoundedMap(
+    sessionTokens,
+    token,
+    { owner: options.owner, kind: options.kind, createdAt: Date.now() },
+    MAX_TOKENS_PER_SESSION
+  );
+  const isProtected = options.protected ?? (options.kind === "remediation" || options.kind === "handoff" || options.kind === "task-contract" || options.kind === "skill-injection");
+  const envelope = {
+    v: 2,
+    owner: options.owner,
+    kind: options.kind,
+    token,
+    ...isProtected ? { protected: true } : {},
+    ...options.sanitizedBy?.length ? { sanitizedBy: [...options.sanitizedBy] } : {},
+    ...options.boundedBy ? { boundedBy: options.boundedBy } : {},
+    ...options.taskID ? { taskID: options.taskID } : {},
+    ...options.requiredSkills?.length ? { requiredSkills: [...options.requiredSkills] } : {}
+  };
+  const out = {
+    ...base,
+    [MESH_METADATA_KEY]: envelope
+  };
+  if (options.synthetic !== false && (options.kind === "remediation" || options.kind === "visible" || options.kind === "handoff" || options.kind === "wake" || options.kind === "delegation")) {
+    out.synthetic = true;
+  }
+  if (options.owner === "opencode-guardian" || options.legacyGuardian) {
+    out["opencode-guardian"] = true;
+    out["opencode-guardian-provenance"] = token;
+    out["opencode-guardian-kind"] = options.kind === "visible" ? "visible" : "remediation";
+  }
+  if (options.owner === "opencode-smart-questions") {
+    out["opencode-smart-questions"] = true;
+  }
+  if (options.owner === "opencode-hi") {
+    out["opencode-hi"] = true;
+  }
+  if (options.requiredSkills?.length || options.taskID) {
+    const existingLazy = isRecord(base.lazySkill) ? base.lazySkill : {};
+    out.lazySkill = {
+      ...existingLazy,
+      ...options.taskID ? { taskId: options.taskID } : {},
+      ...options.requiredSkills?.length ? { requiredSkills: [...options.requiredSkills] } : {}
+    };
+  }
+  return out;
+}
+function extractMetadataRecord(value) {
+  if (!isRecord(value)) return void 0;
+  const meta = ownData(value, "metadata");
+  if (isRecord(meta)) return meta;
+  const payload = ownData(value, "payload");
+  const payloadMeta = ownData(payload, "metadata");
+  if (isRecord(payloadMeta)) {
+    return payloadMeta;
+  }
+  const state = ownData(value, "state");
+  const stateMeta = ownData(state, "metadata");
+  if (isRecord(stateMeta)) {
+    return stateMeta;
+  }
+  if (isRecord(ownData(value, MESH_METADATA_KEY)) || ownData(value, "opencode-guardian") === true || ownData(value, "opencode-smart-questions") === true) {
+    return value;
+  }
+  return void 0;
+}
+function verifyMeshMetadata(sessionID, valueOrMetadata, expectedKind, expectedOwner) {
+  if (!sessionID) return false;
+  const meta = extractMetadataRecord(valueOrMetadata);
+  if (!meta) return false;
+  const state = getMeshState();
+  const sessionTokens = state.provenanceBySession.get(sessionID);
+  if (!sessionTokens) return false;
+  const meshEnv = isRecord(meta[MESH_METADATA_KEY]) ? meta[MESH_METADATA_KEY] : void 0;
+  const primaryToken = typeof meshEnv?.token === "string" ? meshEnv.token : void 0;
+  const legacyToken = typeof meta["opencode-guardian-provenance"] === "string" ? meta["opencode-guardian-provenance"] : void 0;
+  if (!primaryToken && !legacyToken) return false;
+  const record = (primaryToken ? sessionTokens.get(primaryToken) : void 0) ?? (legacyToken ? sessionTokens.get(legacyToken) : void 0);
+  if (!record) return false;
+  if (meshEnv) {
+    if (typeof meshEnv.owner === "string" && meshEnv.owner !== record.owner) return false;
+    if (typeof meshEnv.kind === "string" && meshEnv.kind !== record.kind) return false;
+  }
+  if (expectedOwner && record.owner !== expectedOwner) return false;
+  if (expectedKind) {
+    const allowed = Array.isArray(expectedKind) ? expectedKind : [expectedKind];
+    if (!allowed.includes(record.kind)) return false;
+  }
+  return true;
+}
+function isTrustedMeshMessage(value, sessionID, expectedKind) {
+  if (!isRecord(value)) return false;
+  if (sessionID && verifyMeshMetadata(sessionID, value, expectedKind)) {
+    return true;
+  }
+  const meta = extractMetadataRecord(value);
+  const meshEnv = isRecord(meta?.[MESH_METADATA_KEY]) ? meta[MESH_METADATA_KEY] : void 0;
+  const isHostSynthetic = value.type === "synthetic" || value.synthetic === true || value.ignored === true || meta?.synthetic === true || meta?.internal === true || meta?.autoContinue === true;
+  if (meshEnv && typeof meshEnv.token === "string" && meshEnv.token.length > 0 && isHostSynthetic) {
+    if (expectedKind) {
+      const allowed = Array.isArray(expectedKind) ? expectedKind : [expectedKind];
+      if (typeof meshEnv.kind !== "string" || !allowed.includes(meshEnv.kind)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (isHostSynthetic && (meta?.["opencode-guardian"] === true || meta?.["opencode-smart-questions"] === true || meta?.["opencode-hi"] === true || isRecord(meta?.hi))) {
+    return true;
+  }
+  const parts = Array.isArray(value.parts) ? value.parts : Array.isArray(value.content) ? value.content : void 0;
+  if (parts?.some((part) => isTrustedMeshMessage(part, sessionID, expectedKind))) {
+    return true;
+  }
+  if (isRecord(value.message)) {
+    return isTrustedMeshMessage(value.message, sessionID, expectedKind);
+  }
+  return false;
+}
+function forgetMeshSession(sessionID) {
+  if (!sessionID) return;
+  const state = getMeshState();
+  state.provenanceBySession.delete(sessionID);
+  state.leasesBySession.delete(sessionID);
+  state.interventionsBySession.delete(sessionID);
+  for (const key of state.promptSkillClaims.keys()) {
+    if (key.startsWith(`${sessionID}::`)) {
+      state.promptSkillClaims.delete(key);
+    }
+  }
+  for (const [key, release] of state.remoteInteractionLeases) {
+    if (key.includes(`::${sessionID}::`)) {
+      state.remoteInteractionLeases.delete(key);
+      try {
+        release();
+      } catch {
+      }
+    }
+  }
+  clearActiveMeshHandoff(sessionID);
+}
+function pruneExpiredLeases(state, sessionID, now = Date.now()) {
+  const leases = state.leasesBySession.get(sessionID);
+  if (!leases) return void 0;
+  for (const [key, lease] of leases) {
+    if (lease.expiresAt <= now) {
+      leases.delete(key);
+    }
+  }
+  if (leases.size === 0) {
+    state.leasesBySession.delete(sessionID);
+    return void 0;
+  }
+  return leases;
+}
+function acquireSessionLease(input) {
+  const sID = String(input.sessionID ?? "");
+  if (!sID) return () => {
+  };
+  const state = getMeshState();
+  const now = Date.now();
+  const ttl = typeof input.ttlMs === "number" && Number.isFinite(input.ttlMs) && input.ttlMs > 0 ? input.ttlMs : DEFAULT_LEASE_TTL_MS[input.kind];
+  let leases = pruneExpiredLeases(state, sID, now);
+  if (!leases) {
+    leases = /* @__PURE__ */ new Map();
+    setBoundedMap(state.leasesBySession, sID, leases, MAX_BOUNDED_SESSIONS);
+  }
+  const key = `${input.owner}::${input.kind}`;
+  const lease = {
+    sessionID: sID,
+    owner: input.owner,
+    kind: input.kind,
+    priority: LEASE_PRIORITY[input.kind],
+    acquiredAt: now,
+    expiresAt: now + ttl,
+    ...input.reason ? { reason: input.reason } : {}
+  };
+  leases.set(key, lease);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const current = state.leasesBySession.get(sID);
+    if (!current) return;
+    if (current.get(key) === lease) {
+      current.delete(key);
+    }
+    if (current.size === 0) {
+      state.leasesBySession.delete(sID);
+    }
+  };
+}
+function clearActiveMeshHandoff(sessionID) {
+  const sID = String(sessionID ?? "");
+  if (!sID) return;
+  getLegacyHandoffState().activeHandoffsBySession.delete(sID);
+}
+async function callMeshRpc(input) {
+  if (typeof input.rpcGetter !== "function") return void 0;
+  const timeoutMs = input.timeoutMs ?? 1200;
+  let timer;
+  try {
+    const client = input.rpcGetter(input.contract);
+    const fn = client?.[input.method];
+    if (typeof fn !== "function") return void 0;
+    const callOptions = {};
+    if (input.directory) callOptions.location = { directory: input.directory };
+    if (input.signal) callOptions.signal = input.signal;
+    const result = await Promise.race([
+      Promise.resolve().then(
+        () => fn(input.payload, callOptions)
+      ),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(void 0), timeoutMs);
+      })
+    ]);
+    return result;
+  } catch {
+    return void 0;
+  } finally {
+    if (timer !== void 0) clearTimeout(timer);
+  }
+}
+
 // src/handoff.ts
 var OPENCODE_HANDOFF_HEADER = "[OPENCODE_HANDOFF:v1]";
 var GUARDIAN_REMEDIATION_MARKER = "[opencode-guardian remediation]";
@@ -872,17 +1267,17 @@ var GUARDIAN_PROVENANCE_KEY = "opencode-guardian";
 var GUARDIAN_PROVENANCE_TOKEN_KEY = "opencode-guardian-provenance";
 var GUARDIAN_KIND_KEY = "opencode-guardian-kind";
 var DEFAULT_HANDOFF_TTL_MS = 12e4;
-var CLOSED_HANDOFF_TTL_MS = 10 * 6e4;
+var CLOSED_HANDOFF_TTL_MS2 = 10 * 6e4;
 var MAX_CLOSED_HANDOFF_IDS = 512;
 var MAX_ACTIVE_HANDOFFS = 512;
 var COORDINATION_SYMBOL = Symbol.for("opencode.coordination.v1");
-function isRecord(value) {
+function isRecord2(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 function guardianMetadata(value) {
-  if (!isRecord(value)) return void 0;
-  if (isRecord(value.metadata)) return value.metadata;
-  if (isRecord(value.payload) && isRecord(value.payload.metadata)) {
+  if (!isRecord2(value)) return void 0;
+  if (isRecord2(value.metadata)) return value.metadata;
+  if (isRecord2(value.payload) && isRecord2(value.payload.metadata)) {
     return value.payload.metadata;
   }
   return void 0;
@@ -901,28 +1296,30 @@ function hasGuardianMetadata(value, expectedKind) {
   return expectedKind !== "visible";
 }
 function isGuardianOwnedNonHumanMessage(value) {
-  if (!isRecord(value)) return false;
+  if (!isRecord2(value)) return false;
   const kind = guardianMetadata(value)?.[GUARDIAN_KIND_KEY];
   if (hasGuardianMetadata(value) && (value.type === "synthetic" || value.synthetic === true || value.ignored === true || kind === "remediation" || kind === "visible" || guardianMetadata(value)?.[GUARDIAN_PROVENANCE_KEY] === true)) {
     return true;
   }
   const parts = messageParts(value);
   if (parts?.some((part) => {
-    if (!isRecord(part) || !hasGuardianMetadata(part)) return false;
+    if (!isRecord2(part) || !hasGuardianMetadata(part)) return false;
     const partKind = guardianMetadata(part)?.[GUARDIAN_KIND_KEY];
     return part.synthetic === true || part.ignored === true || partKind === "remediation" || partKind === "visible" || guardianMetadata(part)?.[GUARDIAN_PROVENANCE_KEY] === true;
   })) {
     return true;
   }
-  return isRecord(value.message) ? isGuardianOwnedNonHumanMessage(value.message) : false;
+  return isRecord2(value.message) ? isGuardianOwnedNonHumanMessage(value.message) : false;
 }
 function isInternalNonHumanPart(part) {
-  if (!isRecord(part)) return false;
+  if (!isRecord2(part)) return false;
+  if (isTrustedMeshMessage(part)) return true;
   const meta = guardianMetadata(part);
   return part.type === "synthetic" || part.synthetic === true || part.ignored === true || meta?.["opencode-smart-questions"] === true || meta?.[GUARDIAN_PROVENANCE_KEY] === true;
 }
 function isInternalNonHumanMessage(value) {
-  if (!isRecord(value)) return false;
+  if (!isRecord2(value)) return false;
+  if (isTrustedMeshMessage(value)) return true;
   if (isGuardianOwnedNonHumanMessage(value)) return true;
   const meta = guardianMetadata(value);
   if (value.type === "synthetic" || value.synthetic === true || value.ignored === true || meta?.["opencode-smart-questions"] === true || meta?.[GUARDIAN_PROVENANCE_KEY] === true) {
@@ -932,54 +1329,53 @@ function isInternalNonHumanMessage(value) {
   if (parts?.some((part) => isInternalNonHumanPart(part))) {
     return true;
   }
-  return isRecord(value.message) ? isInternalNonHumanMessage(value.message) : false;
+  return isRecord2(value.message) ? isInternalNonHumanMessage(value.message) : false;
 }
 function messageRole(value) {
-  if (!isRecord(value)) return void 0;
+  if (!isRecord2(value)) return void 0;
   if (typeof value.role === "string") return value.role;
   if (typeof value.type === "string" && value.type === "user") return "user";
-  if (isRecord(value.info) && typeof value.info.role === "string") {
+  if (isRecord2(value.info) && typeof value.info.role === "string") {
     return value.info.role;
   }
-  if (isRecord(value.message)) {
+  if (isRecord2(value.message)) {
     return messageRole(value.message);
   }
   return void 0;
 }
 function messageParts(value) {
-  if (!isRecord(value)) return void 0;
+  if (!isRecord2(value)) return void 0;
   if (Array.isArray(value.parts)) return value.parts;
   if (Array.isArray(value.content)) return value.content;
-  if (isRecord(value.message)) return messageParts(value.message);
+  if (isRecord2(value.message)) return messageParts(value.message);
   return void 0;
 }
 function messageTextCandidates(value) {
-  if (!isRecord(value)) return [];
+  if (!isRecord2(value)) return [];
   const out = [];
   if (typeof value.text === "string") out.push(value.text);
   if (typeof value.content === "string") out.push(value.content);
-  if (isRecord(value.payload) && typeof value.payload.text === "string") {
+  if (isRecord2(value.payload) && typeof value.payload.text === "string") {
     out.push(value.payload.text);
   }
   const parts = messageParts(value);
   if (parts) {
     for (const part of parts) {
-      if (isRecord(part) && typeof part.text === "string") {
+      if (isRecord2(part) && typeof part.text === "string") {
         out.push(part.text);
       }
     }
   }
-  if (isRecord(value.message)) {
+  if (isRecord2(value.message)) {
     out.push(...messageTextCandidates(value.message));
   }
   return out;
 }
 var SQ_COUNT_SYMBOL = Symbol.for("opencode.coordination.sq.count.v1");
-var SQ_PREV_SYMBOL = Symbol.for("opencode.coordination.sq.prev.v1");
 function parseOpenCodeHandoff(text, options) {
   if (typeof text !== "string" || !text.includes(OPENCODE_HANDOFF_HEADER)) return null;
   const requireMarker = typeof options === "boolean" ? options : Boolean(options?.requireRemediationMarker);
-  if (requireMarker && !text.includes(GUARDIAN_REMEDIATION_MARKER)) {
+  if (requireMarker && !text.includes(GUARDIAN_REMEDIATION_MARKER) && !text.includes(MESH_REMEDIATION_MARKER)) {
     return null;
   }
   const match = /\[OPENCODE_HANDOFF:v1\]\s*([\s\S]*?)(?:\n\n|\r\n\r\n|$)/.exec(text);
@@ -992,12 +1388,12 @@ function parseOpenCodeHandoff(text, options) {
       map.set(line.slice(0, eq).trim().toLowerCase(), line.slice(eq + 1).trim());
     }
   }
-  const source = map.get("source");
+  const source = map.get("source")?.toLowerCase();
   const action = map.get("action");
   const kind = map.get("kind");
   const autoSelect = map.get("auto_select");
   const handoffId = map.get("handoff_id");
-  if (source !== "guardian" || action !== "question_required" || !handoffId) {
+  if (!source || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(source) || action !== "question_required" || !handoffId) {
     return null;
   }
   if (kind !== "clarification" && kind !== "choice" && kind !== "approval") {
@@ -1008,24 +1404,45 @@ function parseOpenCodeHandoff(text, options) {
   }
   return {
     version: "v1",
-    source: "guardian",
+    source,
     action: "question_required",
     kind,
     autoSelect,
     handoffId
   };
 }
+function isSyntheticCarrier(value) {
+  if (!isRecord2(value)) return false;
+  const meta = guardianMetadata(value);
+  return value.type === "synthetic" || value.synthetic === true || value.ignored === true || meta?.synthetic === true || meta?.internal === true || meta?.autoContinue === true;
+}
+function hasMeshHandoffProvenance(value, parentSynthetic = false) {
+  if (!isRecord2(value)) return false;
+  const meta = guardianMetadata(value);
+  if (!meta) return false;
+  if (meta[GUARDIAN_PROVENANCE_KEY] === true) return false;
+  const meshEnv = isRecord2(meta["opencode-mesh"]) ? meta["opencode-mesh"] : void 0;
+  if (meshEnv?.owner === "opencode-guardian") return false;
+  if (!parentSynthetic && !isSyntheticCarrier(value)) return false;
+  if (meshEnv && typeof meshEnv.token === "string" && meshEnv.token.length > 0) {
+    return meshEnv.kind === "remediation" || meshEnv.kind === "handoff";
+  }
+  return meta["opencode-hi"] === true || isRecord2(meta.hi);
+}
 function extractHandoffFromParts(parts, options) {
   if (!Array.isArray(parts)) return null;
   const requireMarker = typeof options === "boolean" ? options : options?.requireRemediationMarker ?? true;
   const requireProvenance = typeof options === "boolean" ? true : options?.requireGuardianProvenance ?? true;
   for (const part of parts) {
-    if (!isRecord(part) || typeof part.text !== "string") continue;
-    if (requireProvenance && !hasGuardianMetadata(part, "remediation")) continue;
-    if (requireProvenance && part.synthetic !== true && part.ignored !== true && guardianMetadata(part)?.[GUARDIAN_KIND_KEY] !== "remediation") {
+    if (!isRecord2(part) || typeof part.text !== "string") continue;
+    const isMeshPart = hasMeshHandoffProvenance(part);
+    if (requireProvenance && !hasGuardianMetadata(part, "remediation") && !isMeshPart) continue;
+    if (requireProvenance && !isMeshPart && part.synthetic !== true && part.ignored !== true && guardianMetadata(part)?.[GUARDIAN_KIND_KEY] !== "remediation") {
       continue;
     }
-    if (requireMarker && !part.text.includes(GUARDIAN_REMEDIATION_MARKER)) continue;
+    if (requireMarker && !part.text.includes(GUARDIAN_REMEDIATION_MARKER) && !part.text.includes(MESH_REMEDIATION_MARKER)) {
+      continue;
+    }
     const parsed = parseOpenCodeHandoff(part.text, false);
     if (parsed && typeof parsed === "object" && "version" in parsed) {
       return parsed;
@@ -1034,20 +1451,22 @@ function extractHandoffFromParts(parts, options) {
   return null;
 }
 function extractTrustedGuardianHandoff(source) {
-  if (!isRecord(source)) return null;
-  const message = isRecord(source.message) ? source.message : void 0;
+  if (!isRecord2(source)) return null;
+  const message = isRecord2(source.message) ? source.message : void 0;
+  const syntheticCarrier = isSyntheticCarrier(source) || isSyntheticCarrier(message);
   const directProvenance = hasGuardianMetadata(source, "remediation") || hasGuardianMetadata(source.info, "remediation") || hasGuardianMetadata(message, "remediation") || (message ? hasGuardianMetadata(message.info, "remediation") : false);
+  const meshProvenance = hasMeshHandoffProvenance(source, syntheticCarrier) || hasMeshHandoffProvenance(source.info, syntheticCarrier) || hasMeshHandoffProvenance(message, syntheticCarrier) || (message ? hasMeshHandoffProvenance(message.info, syntheticCarrier) : false);
   const parts = messageParts(source);
   if (parts) {
     const fromParts = extractHandoffFromParts(parts, {
       requireRemediationMarker: true,
-      requireGuardianProvenance: !directProvenance
+      requireGuardianProvenance: !(directProvenance || meshProvenance)
     });
     if (fromParts && typeof fromParts === "object" && "version" in fromParts) {
       return fromParts;
     }
   }
-  if (directProvenance && isGuardianOwnedNonHumanMessage(source)) {
+  if (directProvenance && isGuardianOwnedNonHumanMessage(source) || meshProvenance) {
     for (const text of messageTextCandidates(source)) {
       const parsed = parseOpenCodeHandoff(text, { requireRemediationMarker: true });
       if (parsed && typeof parsed === "object" && "version" in parsed) {
@@ -1099,7 +1518,7 @@ function getHandoffState() {
 }
 function pruneClosedHandoffs(state, now = Date.now()) {
   for (const [handoffId, closedAt] of state.closedHandoffIds) {
-    if (now - closedAt > CLOSED_HANDOFF_TTL_MS) {
+    if (now - closedAt > CLOSED_HANDOFF_TTL_MS2) {
       state.closedHandoffIds.delete(handoffId);
     }
   }
@@ -1553,6 +1972,44 @@ var setup = async (context) => {
   const remediatedForms = /* @__PURE__ */ new Map();
   const settledForms = /* @__PURE__ */ new Map();
   const sessionChains = /* @__PURE__ */ new Map();
+  const uiInteractionLeases = /* @__PURE__ */ new Map();
+  const syncRemoteLease = (sessionID, active, dir, ttlMs, reason) => {
+    const rpcFn = context.client?.rpc;
+    if (typeof rpcFn !== "function") return;
+    void callMeshRpc({
+      rpcGetter: rpcFn.bind(context.client),
+      contract: MESH_STATE_RPC_DEFINITION,
+      method: "setInteractionLease",
+      payload: {
+        sessionID,
+        owner: "opencode-smart-questions",
+        active,
+        ...ttlMs !== void 0 ? {
+          ttlMs
+        } : {},
+        ...reason ? {
+          reason
+        } : {}
+      },
+      directory: dir ?? context.location?.directory
+    });
+  };
+  const releaseUiLease = (sessionID, dir) => {
+    const entry = uiInteractionLeases.get(sessionID);
+    if (entry) {
+      uiInteractionLeases.delete(sessionID);
+      try {
+        entry.release();
+      } catch {
+      }
+      syncRemoteLease(sessionID, false, dir ?? entry.dir);
+    }
+  };
+  const releaseAllUiLeases = () => {
+    for (const sessionID of Array.from(uiInteractionLeases.keys())) {
+      releaseUiLease(sessionID);
+    }
+  };
   const MAX_SETTLED_FORMS = 512;
   const cancelInFlightForSession = (sessionID) => {
     for (const [fID, entry] of inFlightForms.entries()) {
@@ -1679,6 +2136,19 @@ var setup = async (context) => {
         }
       }
       if (!config?.enabled) return;
+      releaseUiLease(form.sessionID, locationDir);
+      const leaseTtl = Math.max((config.timeoutMs ?? 0) + 15e3, 12e4);
+      uiInteractionLeases.set(form.sessionID, {
+        release: acquireSessionLease({
+          sessionID: form.sessionID,
+          owner: "opencode-smart-questions",
+          kind: "user_interaction",
+          ttlMs: leaseTtl,
+          reason: `form:${form.id}`
+        }),
+        dir: locationDir
+      });
+      syncRemoteLease(form.sessionID, true, locationDir, leaseTtl, `form:${form.id}`);
       const log = createDiagnosticLogger(config, "smart-question-v2-ui");
       const effectiveConfigDir = config.configDir || path3.resolve(location?.directory || context.location?.directory || process.cwd(), ".opencode");
       cleanupStaleDrafts(effectiveConfigDir, config.timeoutMs, log);
@@ -1744,6 +2214,7 @@ var setup = async (context) => {
       }
       if (classification.status === "unclassified") {
         if (config.unclassifiedQuestionPolicy === "ignore") {
+          releaseUiLease(form.sessionID, locationDir);
           log(`unclassified form=${form.id} ignored per unclassifiedQuestionPolicy`);
           return;
         }
@@ -1840,9 +2311,11 @@ var setup = async (context) => {
                 sessionID: form.sessionID,
                 text: promptText,
                 description: "Smart Questions protocol remediation",
-                metadata: {
-                  "opencode-smart-questions": true
-                },
+                metadata: stampMeshMetadata(form.sessionID, {
+                  owner: "opencode-smart-questions",
+                  kind: "remediation",
+                  protected: true
+                }),
                 delivery: "queue",
                 resume: true
               }, {
@@ -1878,6 +2351,7 @@ var setup = async (context) => {
       }
       if (classification.status !== "auto" || !isFlightCurrent()) return;
       if (!canUseDraftCoordination(effectiveConfigDir, log)) {
+        releaseUiLease(form.sessionID, locationDir);
         log(`skip auto-selection form=${form.id} reason=draft coordination unavailable`);
         return;
       }
@@ -1947,6 +2421,9 @@ var setup = async (context) => {
           }
           const forms = context.data.session.form.list(form.sessionID, item.location);
           const stillPending = Array.isArray(forms) && forms.some((candidate) => candidate.id === form.id);
+          if (!stillPending) {
+            releaseUiLease(form.sessionID, locationDir);
+          }
           if (!stillPending || pending.get(form.id) !== item || item.status !== "firing" || activeBySession()[form.sessionID]?.formID !== form.id || activeBySession()[form.sessionID]?.focusDisabled) {
             log(`skip reply form=${form.id} reason=no longer pending or manual interaction`);
             clearPending(form.id);
@@ -1963,6 +2440,7 @@ var setup = async (context) => {
           }, item.location);
           if (disposed || pending.get(form.id) !== item) return;
           item.status = "replied";
+          releaseUiLease(form.sessionID, locationDir);
           consumeActiveHandoff(form.sessionID);
           try {
             context.data.session.form.invalidate(form.sessionID, item.location);
@@ -2011,18 +2489,19 @@ var setup = async (context) => {
     }
   };
   const onFormSettled = (event) => {
-    const formID = event?.data?.formID ?? event?.data?.id ?? event?.data?.form?.id ?? event?.properties?.id;
-    const sessionID = event?.data?.sessionID ?? event?.data?.form?.sessionID ?? event?.properties?.sessionID;
-    if (typeof sessionID === "string" && sessionID !== "global") {
-      consumeActiveHandoff(sessionID);
-      sessionChains.delete(sessionID);
+    const formID = event?.data?.formID ?? event?.data?.id ?? event?.data?.form?.id ?? event?.properties?.formID ?? event?.properties?.id ?? event?.properties?.form?.id;
+    const rawSessionID = event?.data?.sessionID ?? event?.data?.form?.sessionID ?? event?.properties?.sessionID ?? event?.properties?.form?.sessionID;
+    const targetSession = typeof rawSessionID === "string" && rawSessionID !== "global" ? rawSessionID : typeof formID === "string" ? pending.get(formID)?.sessionID ?? Object.keys(activeBySession()).find((sId) => activeBySession()[sId]?.formID === formID) : void 0;
+    if (targetSession) {
+      releaseUiLease(targetSession, event?.location?.directory);
+      consumeActiveHandoff(targetSession);
+      sessionChains.delete(targetSession);
     }
     if (typeof formID === "string") {
       setBounded(settledForms, formID, true, MAX_SETTLED_FORMS);
       inFlightForms.delete(formID);
       remediatedForms.delete(formID);
       clearPending(formID);
-      const targetSession = typeof sessionID === "string" && sessionID !== "global" ? sessionID : Object.keys(activeBySession()).find((sId) => activeBySession()[sId]?.formID === formID);
       if (targetSession) {
         const existingState = activeBySession()[targetSession];
         if (existingState?.lockPath) {
@@ -2123,6 +2602,7 @@ var setup = async (context) => {
       if (item?.type === "synthetic") {
         setHandoffIfEligible(sessionID, item, event?.location);
       } else if (item?.type === "user" && !isInternalNonHumanMessage(item)) {
+        releaseUiLease(sessionID);
         invalidateActiveHandoff(sessionID);
         sessionChains.delete(sessionID);
         cancelInFlightForSession(sessionID);
@@ -2132,7 +2612,9 @@ var setup = async (context) => {
     cleanups.push(context.data.on("session.deleted", (event) => {
       const sessionID = String(event?.data?.sessionID ?? "");
       if (sessionID && sessionID !== "global") {
+        releaseUiLease(sessionID);
         clearActiveHandoff(sessionID);
+        forgetMeshSession(sessionID);
         sessionChains.delete(sessionID);
         cancelInFlightForSession(sessionID);
         cleanupSessionRemediations(sessionID);
@@ -2169,6 +2651,7 @@ var setup = async (context) => {
     }));
   } catch (error) {
     disposed = true;
+    releaseAllUiLeases();
     inFlightForms.clear();
     lifecycleController.abort();
     disposeCleanups();
@@ -2183,6 +2666,7 @@ var setup = async (context) => {
   }
   return () => {
     disposed = true;
+    releaseAllUiLeases();
     inFlightForms.clear();
     lifecycleController.abort();
     disposeCleanups();

@@ -15,7 +15,7 @@ export type HandoffKind = 'clarification' | 'choice' | 'approval';
 export type HandoffAutoSelect = 'allowed' | 'forbidden';
 export interface OpenCodeHandoff {
     version: 'v1';
-    source: 'guardian';
+    source: string;
     action: 'question_required';
     kind: HandoffKind;
     autoSelect: HandoffAutoSelect;
@@ -41,7 +41,7 @@ export interface OpenCodeCoordinationRegistry {
     };
 }
 export declare function isInternalNonHumanMessage(value: unknown): boolean;
-export declare function registerSmartQuestionsCapability(): () => void;
+export declare function registerSmartQuestionsCapability(directory?: string): () => void;
 /**
  * Check if Guardian is registered in the in-process capability registry.
  */
@@ -62,8 +62,8 @@ export declare function formatOpenCodeHandoff(handoff: Omit<OpenCodeHandoff, 've
  */
 export declare function extractHandoffFromParts(parts: unknown, options?: ExtractHandoffOptions | boolean): OpenCodeHandoff | null;
 /**
- * Extract a Guardian handoff only when the host object carries Guardian provenance.
- * Supports V1 part metadata and V2 synthetic/message metadata without importing Guardian.
+ * Extract a Guardian or mesh handoff only when the host object carries trusted provenance.
+ * Supports V1 part metadata and V2 synthetic/message metadata without importing sibling plugins.
  */
 export declare function extractTrustedGuardianHandoff(source: unknown): OpenCodeHandoff | null;
 /**

@@ -7,6 +7,7 @@ export { classifyV2Form, detectV2FormRecommendations, type V2FormClassification,
 export { resolveLockPath, deleteLockfile, cleanupStaleDrafts, canUseDraftCoordination, } from './draft-guard.js';
 export * from './backend.js';
 export * from './handoff.js';
+export { acquireSessionLease, getBlockingSessionLease, isSessionWaitingOnUser, formatMeshHandoff, parseMeshHandoff, stampMeshMetadata, verifyMeshMetadata, isTrustedMeshMessage, forgetMeshSession, } from './bridge.js';
 /**
  * OpenCode v2 server plugin definition.
  */

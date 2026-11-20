@@ -3,6 +3,7 @@ import { hasSmartQuestionConfigOptions, resolveSmartQuestionConfig, } from './co
 import { buildRecommendationGuidance, SQ_GUIDANCE_SENTINEL } from './guidance.js';
 import { isEligibleSessionInfo } from './session-scope.js';
 import { clearActiveHandoff, consumeActiveHandoff, extractCurrentTurnGuardianHandoff, extractTrustedGuardianHandoff, invalidateActiveHandoff, isInternalNonHumanMessage, registerSmartQuestionsCapability, setActiveHandoff, } from './handoff.js';
+import { acquireSessionLease, forgetMeshSession, isTrustedMeshMessage, registerMeshStateRpc, } from './bridge.js';
 export * from './types.js';
 export { loadConfig, resolveSmartQuestionConfig, normalizeSmartQuestionConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_MANUAL_MARKERS, DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS, DEFAULT_CONFIG, } from './config.js';
 export * from './detector.js';
@@ -11,6 +12,7 @@ export { classifyV2Form, detectV2FormRecommendations, } from './form-adapter.js'
 export { resolveLockPath, deleteLockfile, cleanupStaleDrafts, canUseDraftCoordination, } from './draft-guard.js';
 export * from './backend.js';
 export * from './handoff.js';
+export { acquireSessionLease, getBlockingSessionLease, isSessionWaitingOnUser, formatMeshHandoff, parseMeshHandoff, stampMeshMetadata, verifyMeshMetadata, isTrustedMeshMessage, forgetMeshSession, } from './bridge.js';
 function sessionDirectoryFromInfo(sessionInfo, fallbackDirectory) {
     if (sessionInfo && typeof sessionInfo === 'object') {
         const record = sessionInfo;
@@ -35,6 +37,26 @@ function eventSessionID(data) {
         typeof record.form === 'object' &&
         typeof record.form.sessionID === 'string') {
         return record.form.sessionID;
+    }
+    if (record.item &&
+        typeof record.item === 'object' &&
+        typeof record.item.sessionID === 'string') {
+        return record.item.sessionID;
+    }
+    return '';
+}
+function eventFormID(data) {
+    if (!data || typeof data !== 'object')
+        return '';
+    const record = data;
+    if (typeof record.formID === 'string')
+        return record.formID;
+    if (typeof record.id === 'string')
+        return record.id;
+    if (record.form &&
+        typeof record.form === 'object' &&
+        typeof record.form.id === 'string') {
+        return record.form.id;
     }
     return '';
 }
@@ -67,9 +89,31 @@ const setupV2 = async (context) => {
         if (!explicitConfig?.enabled)
             return;
     }
-    const unregisterCapability = registerSmartQuestionsCapability();
+    const unregisterCapability = registerSmartQuestionsCapability(context.location?.directory);
+    const activeInteractionLeases = new Map();
+    const formSessionByFormID = new Map();
+    const releaseInteractionLease = (sessionID) => {
+        const release = activeInteractionLeases.get(sessionID);
+        if (release) {
+            activeInteractionLeases.delete(sessionID);
+            release();
+        }
+        for (const [fId, sId] of formSessionByFormID.entries()) {
+            if (sId === sessionID) {
+                formSessionByFormID.delete(fId);
+            }
+        }
+    };
     const registrations = [];
     const disposeRegistrations = async () => {
+        for (const release of activeInteractionLeases.values()) {
+            try {
+                release();
+            }
+            catch { }
+        }
+        activeInteractionLeases.clear();
+        formSessionByFormID.clear();
         for (const registration of registrations.splice(0).reverse()) {
             try {
                 await registration.dispose();
@@ -79,23 +123,36 @@ const setupV2 = async (context) => {
             }
         }
     };
-    const isSessionEligible = async (sessionID, eventDirectory) => {
+    const resolveEligibleSessionConfig = async (sessionID, eventDirectory) => {
         if (!sessionID)
-            return false;
+            return null;
         let sessionInfo;
         try {
             sessionInfo = await context.session.get({ sessionID });
         }
         catch {
-            return false;
+            return null;
         }
         const dir = sessionDirectoryFromInfo(sessionInfo, eventDirectory ?? context.location?.directory);
         const config = resolveSmartQuestionConfig(dir, pluginOptions);
         if (!config?.enabled)
-            return false;
-        return isEligibleSessionInfo(sessionInfo, config.includeSubagents === true);
+            return null;
+        if (!isEligibleSessionInfo(sessionInfo, config.includeSubagents === true)) {
+            return null;
+        }
+        return config;
     };
+    const isSessionEligible = async (sessionID, eventDirectory) => (await resolveEligibleSessionConfig(sessionID, eventDirectory)) !== null;
     try {
+        if (typeof context.rpc?.register === 'function') {
+            const rpcObj = context.rpc;
+            const disposeMeshRpc = await registerMeshStateRpc({
+                rpcRegister: rpcObj.register.bind(rpcObj),
+                owner: 'opencode-smart-questions',
+                directory: context.location?.directory,
+            });
+            registrations.push({ dispose: disposeMeshRpc });
+        }
         const contextRegistration = await context.session.hook('context', async (event) => {
             const sessionID = String(event.sessionID ?? '');
             if (!sessionID)
@@ -132,6 +189,21 @@ const setupV2 = async (context) => {
                     setActiveHandoff(sessionID, handoff);
                 }
             }
+            if (Array.isArray(event.system)) {
+                for (let i = event.system.length - 1; i >= 0; i--) {
+                    const part = event.system[i];
+                    if (part?.type === 'text' &&
+                        typeof part.text === 'string' &&
+                        !part.text.includes(SQ_GUIDANCE_SENTINEL) &&
+                        part.text.includes('[OPENCODE_HANDOFF:v1]')) {
+                        const parsed = extractTrustedGuardianHandoff(part);
+                        if (parsed) {
+                            setActiveHandoff(sessionID, parsed);
+                            break;
+                        }
+                    }
+                }
+            }
         });
         if (!contextRegistration || typeof contextRegistration.dispose !== 'function') {
             throw new Error('V2 context hook did not return a valid registration');
@@ -146,9 +218,12 @@ const setupV2 = async (context) => {
             const meta = event.metadata && typeof event.metadata === 'object' && !Array.isArray(event.metadata)
                 ? event.metadata
                 : undefined;
-            if (meta?.['opencode-guardian'] === true || meta?.['opencode-smart-questions'] === true) {
+            if (meta?.['opencode-guardian'] === true ||
+                meta?.['opencode-smart-questions'] === true ||
+                isTrustedMeshMessage(event, sessionID)) {
                 return;
             }
+            releaseInteractionLease(sessionID);
             invalidateActiveHandoff(sessionID);
         });
         if (!promptRegistration || typeof promptRegistration.dispose !== 'function') {
@@ -176,8 +251,10 @@ const setupV2 = async (context) => {
                             const eventType = evt.type;
                             const eventLocationDir = evt.location?.directory;
                             const eventDir = typeof eventLocationDir === 'string' ? eventLocationDir : undefined;
-                            const data = evt.data;
-                            const sessionID = eventSessionID(data);
+                            const data = evt.data ??
+                                evt.properties;
+                            const formID = eventFormID(data);
+                            const sessionID = eventSessionID(data) || (formID ? (formSessionByFormID.get(formID) ?? '') : '');
                             if (!sessionID)
                                 continue;
                             if (eventType === 'session.synthetic') {
@@ -200,14 +277,34 @@ const setupV2 = async (context) => {
                                     }
                                 }
                                 else if (itemType === 'user' && !isInternalNonHumanMessage(item)) {
+                                    releaseInteractionLease(sessionID);
                                     invalidateActiveHandoff(sessionID);
                                 }
                             }
+                            else if (eventType === 'form.created') {
+                                const sessionConfig = await resolveEligibleSessionConfig(sessionID, eventDir);
+                                if (sessionConfig) {
+                                    releaseInteractionLease(sessionID);
+                                    if (formID) {
+                                        formSessionByFormID.set(formID, sessionID);
+                                    }
+                                    activeInteractionLeases.set(sessionID, acquireSessionLease({
+                                        sessionID,
+                                        owner: 'opencode-smart-questions',
+                                        kind: 'user_interaction',
+                                        ttlMs: Math.max((sessionConfig.timeoutMs ?? 0) + 15_000, 120_000),
+                                        reason: 'form-created',
+                                    }));
+                                }
+                            }
                             else if (eventType === 'form.replied' || eventType === 'form.cancelled') {
+                                releaseInteractionLease(sessionID);
                                 consumeActiveHandoff(sessionID);
                             }
                             else if (eventType === 'session.deleted') {
+                                releaseInteractionLease(sessionID);
                                 clearActiveHandoff(sessionID);
+                                forgetMeshSession(sessionID);
                             }
                         }
                     }

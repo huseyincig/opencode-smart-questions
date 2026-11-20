@@ -2,6 +2,7 @@
  * OpenCode Coordination Handoff Protocol (v1)
  * Enables decoupled, autonomous collaboration between OpenCode Guardian and Smart Questions.
  */
+import { isTrustedMeshMessage, MESH_REMEDIATION_MARKER, registerMeshPeer, } from './bridge.js';
 export const OPENCODE_HANDOFF_HEADER = '[OPENCODE_HANDOFF:v1]';
 export const GUARDIAN_REMEDIATION_MARKER = '[opencode-guardian remediation]';
 export const GUARDIAN_PROVENANCE_KEY = 'opencode-guardian';
@@ -81,6 +82,8 @@ function isGuardianOwnedNonHumanMessage(value) {
 function isInternalNonHumanPart(part) {
     if (!isRecord(part))
         return false;
+    if (isTrustedMeshMessage(part))
+        return true;
     const meta = guardianMetadata(part);
     return (part.type === 'synthetic' ||
         part.synthetic === true ||
@@ -91,6 +94,8 @@ function isInternalNonHumanPart(part) {
 export function isInternalNonHumanMessage(value) {
     if (!isRecord(value))
         return false;
+    if (isTrustedMeshMessage(value))
+        return true;
     if (isGuardianOwnedNonHumanMessage(value))
         return true;
     const meta = guardianMetadata(value);
@@ -161,46 +166,27 @@ function messageTextCandidates(value) {
  * Register Smart Questions capability in the global OpenCode coordination registry.
  */
 const SQ_COUNT_SYMBOL = Symbol.for('opencode.coordination.sq.count.v1');
-const SQ_PREV_SYMBOL = Symbol.for('opencode.coordination.sq.prev.v1');
-export function registerSmartQuestionsCapability() {
-    const globalObj = globalThis;
-    const root = (globalObj[COORDINATION_SYMBOL] ??= {});
-    const currentCount = globalObj[SQ_COUNT_SYMBOL] ?? 0;
-    if (currentCount === 0) {
-        globalObj[SQ_PREV_SYMBOL] = root.smartQuestions
-            ? { ...root.smartQuestions }
-            : undefined;
-    }
-    globalObj[SQ_COUNT_SYMBOL] = currentCount + 1;
-    root.smartQuestions = {
-        version: 1,
-        mainAgentOnly: true,
-        supportsAutoSelect: true,
-    };
+export function registerSmartQuestionsCapability(directory) {
+    const g = globalThis;
+    g[SQ_COUNT_SYMBOL] = (g[SQ_COUNT_SYMBOL] ?? 0) + 1;
+    const unregisterMesh = registerMeshPeer({
+        id: 'opencode-smart-questions',
+        directory,
+        capabilities: ['interaction.ask'],
+    });
     let disposed = false;
     return () => {
         if (disposed)
             return;
         disposed = true;
-        const nextCount = Math.max(0, (globalObj[SQ_COUNT_SYMBOL] ?? 1) - 1);
-        globalObj[SQ_COUNT_SYMBOL] = nextCount;
-        if (nextCount > 0)
-            return;
-        const current = globalObj[COORDINATION_SYMBOL];
-        const previous = globalObj[SQ_PREV_SYMBOL];
-        globalObj[SQ_PREV_SYMBOL] = undefined;
-        if (!current) {
-            return;
-        }
-        if (previous) {
-            current.smartQuestions = previous;
+        const nextCount = Math.max(0, (g[SQ_COUNT_SYMBOL] ?? 1) - 1);
+        if (nextCount === 0) {
+            delete g[SQ_COUNT_SYMBOL];
         }
         else {
-            delete current.smartQuestions;
+            g[SQ_COUNT_SYMBOL] = nextCount;
         }
-        if (!current.guardian && !current.smartQuestions) {
-            delete globalObj[COORDINATION_SYMBOL];
-        }
+        unregisterMesh();
     };
 }
 /**
@@ -221,7 +207,9 @@ export function parseOpenCodeHandoff(text, options) {
     const requireMarker = typeof options === 'boolean'
         ? options
         : Boolean(options?.requireRemediationMarker);
-    if (requireMarker && !text.includes(GUARDIAN_REMEDIATION_MARKER)) {
+    if (requireMarker &&
+        !text.includes(GUARDIAN_REMEDIATION_MARKER) &&
+        !text.includes(MESH_REMEDIATION_MARKER)) {
         return null;
     }
     const match = /\[OPENCODE_HANDOFF:v1\]\s*([\s\S]*?)(?:\n\n|\r\n\r\n|$)/.exec(text);
@@ -235,12 +223,15 @@ export function parseOpenCodeHandoff(text, options) {
             map.set(line.slice(0, eq).trim().toLowerCase(), line.slice(eq + 1).trim());
         }
     }
-    const source = map.get('source');
+    const source = map.get('source')?.toLowerCase();
     const action = map.get('action');
     const kind = map.get('kind');
     const autoSelect = map.get('auto_select');
     const handoffId = map.get('handoff_id');
-    if (source !== 'guardian' || action !== 'question_required' || !handoffId) {
+    if (!source ||
+        !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(source) ||
+        action !== 'question_required' ||
+        !handoffId) {
         return null;
     }
     if (kind !== 'clarification' && kind !== 'choice' && kind !== 'approval') {
@@ -251,7 +242,7 @@ export function parseOpenCodeHandoff(text, options) {
     }
     return {
         version: 'v1',
-        source: 'guardian',
+        source,
         action: 'question_required',
         kind,
         autoSelect,
@@ -272,6 +263,36 @@ export function formatOpenCodeHandoff(handoff) {
         `handoff_id=${h.handoffId}`,
     ].join('\n');
 }
+function isSyntheticCarrier(value) {
+    if (!isRecord(value))
+        return false;
+    const meta = guardianMetadata(value);
+    return (value.type === 'synthetic' ||
+        value.synthetic === true ||
+        value.ignored === true ||
+        meta?.synthetic === true ||
+        meta?.internal === true ||
+        meta?.autoContinue === true);
+}
+function hasMeshHandoffProvenance(value, parentSynthetic = false) {
+    if (!isRecord(value))
+        return false;
+    const meta = guardianMetadata(value);
+    if (!meta)
+        return false;
+    // Guardian messages must always satisfy hasGuardianMetadata(value, 'remediation').
+    if (meta[GUARDIAN_PROVENANCE_KEY] === true)
+        return false;
+    const meshEnv = isRecord(meta['opencode-mesh']) ? meta['opencode-mesh'] : undefined;
+    if (meshEnv?.owner === 'opencode-guardian')
+        return false;
+    if (!parentSynthetic && !isSyntheticCarrier(value))
+        return false;
+    if (meshEnv && typeof meshEnv.token === 'string' && meshEnv.token.length > 0) {
+        return meshEnv.kind === 'remediation' || meshEnv.kind === 'handoff';
+    }
+    return meta['opencode-hi'] === true || isRecord(meta.hi);
+}
 /**
  * Extract a handoff from V1-style message parts.
  * Marker and host provenance are both required by default.
@@ -288,16 +309,21 @@ export function extractHandoffFromParts(parts, options) {
     for (const part of parts) {
         if (!isRecord(part) || typeof part.text !== 'string')
             continue;
-        if (requireProvenance && !hasGuardianMetadata(part, 'remediation'))
+        const isMeshPart = hasMeshHandoffProvenance(part);
+        if (requireProvenance && !hasGuardianMetadata(part, 'remediation') && !isMeshPart)
             continue;
         if (requireProvenance &&
+            !isMeshPart &&
             part.synthetic !== true &&
             part.ignored !== true &&
             guardianMetadata(part)?.[GUARDIAN_KIND_KEY] !== 'remediation') {
             continue;
         }
-        if (requireMarker && !part.text.includes(GUARDIAN_REMEDIATION_MARKER))
+        if (requireMarker &&
+            !part.text.includes(GUARDIAN_REMEDIATION_MARKER) &&
+            !part.text.includes(MESH_REMEDIATION_MARKER)) {
             continue;
+        }
         const parsed = parseOpenCodeHandoff(part.text, false);
         if (parsed && typeof parsed === 'object' && 'version' in parsed) {
             return parsed;
@@ -306,28 +332,33 @@ export function extractHandoffFromParts(parts, options) {
     return null;
 }
 /**
- * Extract a Guardian handoff only when the host object carries Guardian provenance.
- * Supports V1 part metadata and V2 synthetic/message metadata without importing Guardian.
+ * Extract a Guardian or mesh handoff only when the host object carries trusted provenance.
+ * Supports V1 part metadata and V2 synthetic/message metadata without importing sibling plugins.
  */
 export function extractTrustedGuardianHandoff(source) {
     if (!isRecord(source))
         return null;
     const message = isRecord(source.message) ? source.message : undefined;
+    const syntheticCarrier = isSyntheticCarrier(source) || isSyntheticCarrier(message);
     const directProvenance = hasGuardianMetadata(source, 'remediation') ||
         hasGuardianMetadata(source.info, 'remediation') ||
         hasGuardianMetadata(message, 'remediation') ||
         (message ? hasGuardianMetadata(message.info, 'remediation') : false);
+    const meshProvenance = hasMeshHandoffProvenance(source, syntheticCarrier) ||
+        hasMeshHandoffProvenance(source.info, syntheticCarrier) ||
+        hasMeshHandoffProvenance(message, syntheticCarrier) ||
+        (message ? hasMeshHandoffProvenance(message.info, syntheticCarrier) : false);
     const parts = messageParts(source);
     if (parts) {
         const fromParts = extractHandoffFromParts(parts, {
             requireRemediationMarker: true,
-            requireGuardianProvenance: !directProvenance,
+            requireGuardianProvenance: !(directProvenance || meshProvenance),
         });
         if (fromParts && typeof fromParts === 'object' && 'version' in fromParts) {
             return fromParts;
         }
     }
-    if (directProvenance && isGuardianOwnedNonHumanMessage(source)) {
+    if ((directProvenance && isGuardianOwnedNonHumanMessage(source)) || meshProvenance) {
         for (const text of messageTextCandidates(source)) {
             const parsed = parseOpenCodeHandoff(text, { requireRemediationMarker: true });
             if (parsed && typeof parsed === 'object' && 'version' in parsed) {

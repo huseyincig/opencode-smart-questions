@@ -15,6 +15,12 @@ import {
   registerSmartQuestionsCapability,
   setActiveHandoff,
 } from './handoff.js';
+import {
+  acquireSessionLease,
+  forgetMeshSession,
+  isTrustedMeshMessage,
+  registerMeshStateRpc,
+} from './bridge.js';
 
 export * from './types.js';
 export {
@@ -42,6 +48,17 @@ export {
 } from './draft-guard.js';
 export * from './backend.js';
 export * from './handoff.js';
+export {
+  acquireSessionLease,
+  getBlockingSessionLease,
+  isSessionWaitingOnUser,
+  formatMeshHandoff,
+  parseMeshHandoff,
+  stampMeshMetadata,
+  verifyMeshMetadata,
+  isTrustedMeshMessage,
+  forgetMeshSession,
+} from './bridge.js';
 
 function sessionDirectoryFromInfo(
   sessionInfo: unknown,
@@ -73,6 +90,28 @@ function eventSessionID(data: unknown): string {
     typeof (record.form as Record<string, unknown>).sessionID === 'string'
   ) {
     return (record.form as Record<string, unknown>).sessionID as string;
+  }
+  if (
+    record.item &&
+    typeof record.item === 'object' &&
+    typeof (record.item as Record<string, unknown>).sessionID === 'string'
+  ) {
+    return (record.item as Record<string, unknown>).sessionID as string;
+  }
+  return '';
+}
+
+function eventFormID(data: unknown): string {
+  if (!data || typeof data !== 'object') return '';
+  const record = data as Record<string, unknown>;
+  if (typeof record.formID === 'string') return record.formID;
+  if (typeof record.id === 'string') return record.id;
+  if (
+    record.form &&
+    typeof record.form === 'object' &&
+    typeof (record.form as Record<string, unknown>).id === 'string'
+  ) {
+    return (record.form as Record<string, unknown>).id as string;
   }
   return '';
 }
@@ -114,9 +153,30 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
     if (!explicitConfig?.enabled) return;
   }
 
-  const unregisterCapability = registerSmartQuestionsCapability();
+  const unregisterCapability = registerSmartQuestionsCapability(context.location?.directory);
+  const activeInteractionLeases = new Map<string, () => void>();
+  const formSessionByFormID = new Map<string, string>();
+  const releaseInteractionLease = (sessionID: string) => {
+    const release = activeInteractionLeases.get(sessionID);
+    if (release) {
+      activeInteractionLeases.delete(sessionID);
+      release();
+    }
+    for (const [fId, sId] of formSessionByFormID.entries()) {
+      if (sId === sessionID) {
+        formSessionByFormID.delete(fId);
+      }
+    }
+  };
   const registrations: Array<{ dispose(): Promise<void> | void }> = [];
   const disposeRegistrations = async (): Promise<void> => {
+    for (const release of activeInteractionLeases.values()) {
+      try {
+        release();
+      } catch {}
+    }
+    activeInteractionLeases.clear();
+    formSessionByFormID.clear();
     for (const registration of registrations.splice(0).reverse()) {
       try {
         await registration.dispose();
@@ -126,27 +186,44 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
     }
   };
 
-  const isSessionEligible = async (
+  const resolveEligibleSessionConfig = async (
     sessionID: string,
     eventDirectory?: string
-  ): Promise<boolean> => {
-    if (!sessionID) return false;
+  ) => {
+    if (!sessionID) return null;
     let sessionInfo: unknown;
     try {
       sessionInfo = await context.session.get({ sessionID });
     } catch {
-      return false;
+      return null;
     }
     const dir = sessionDirectoryFromInfo(
       sessionInfo,
       eventDirectory ?? context.location?.directory
     );
     const config = resolveSmartQuestionConfig(dir, pluginOptions);
-    if (!config?.enabled) return false;
-    return isEligibleSessionInfo(sessionInfo, config.includeSubagents === true);
+    if (!config?.enabled) return null;
+    if (!isEligibleSessionInfo(sessionInfo, config.includeSubagents === true)) {
+      return null;
+    }
+    return config;
   };
 
+  const isSessionEligible = async (
+    sessionID: string,
+    eventDirectory?: string
+  ): Promise<boolean> => (await resolveEligibleSessionConfig(sessionID, eventDirectory)) !== null;
+
   try {
+    if (typeof (context as { rpc?: { register?: unknown } }).rpc?.register === 'function') {
+      const rpcObj = (context as unknown as { rpc: { register: any } }).rpc;
+      const disposeMeshRpc = await registerMeshStateRpc({
+        rpcRegister: rpcObj.register.bind(rpcObj),
+        owner: 'opencode-smart-questions',
+        directory: context.location?.directory,
+      });
+      registrations.push({ dispose: disposeMeshRpc });
+    }
     const contextRegistration = await context.session.hook('context', async (event) => {
       const sessionID = String(event.sessionID ?? '');
       if (!sessionID) return;
@@ -191,6 +268,23 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
           setActiveHandoff(sessionID, handoff);
         }
       }
+      if (Array.isArray(event.system)) {
+        for (let i = event.system.length - 1; i >= 0; i--) {
+          const part = event.system[i];
+          if (
+            part?.type === 'text' &&
+            typeof part.text === 'string' &&
+            !part.text.includes(SQ_GUIDANCE_SENTINEL) &&
+            part.text.includes('[OPENCODE_HANDOFF:v1]')
+          ) {
+            const parsed = extractTrustedGuardianHandoff(part);
+            if (parsed) {
+              setActiveHandoff(sessionID, parsed);
+              break;
+            }
+          }
+        }
+      }
     });
 
     if (!contextRegistration || typeof contextRegistration.dispose !== 'function') {
@@ -206,9 +300,14 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
         event.metadata && typeof event.metadata === 'object' && !Array.isArray(event.metadata)
           ? (event.metadata as Record<string, unknown>)
           : undefined;
-      if (meta?.['opencode-guardian'] === true || meta?.['opencode-smart-questions'] === true) {
+      if (
+        meta?.['opencode-guardian'] === true ||
+        meta?.['opencode-smart-questions'] === true ||
+        isTrustedMeshMessage(event, sessionID)
+      ) {
         return;
       }
+      releaseInteractionLease(sessionID);
       invalidateActiveHandoff(sessionID);
     });
 
@@ -238,8 +337,12 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
               const eventLocationDir =
                 (evt as { location?: { directory?: unknown } }).location?.directory;
               const eventDir = typeof eventLocationDir === 'string' ? eventLocationDir : undefined;
-              const data = (evt as { data?: unknown }).data;
-              const sessionID = eventSessionID(data);
+              const data =
+                (evt as { data?: unknown; properties?: unknown }).data ??
+                (evt as { properties?: unknown }).properties;
+              const formID = eventFormID(data);
+              const sessionID =
+                eventSessionID(data) || (formID ? (formSessionByFormID.get(formID) ?? '') : '');
               if (!sessionID) continue;
 
               if (eventType === 'session.synthetic') {
@@ -262,12 +365,34 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
                     setActiveHandoff(sessionID, handoff);
                   }
                 } else if (itemType === 'user' && !isInternalNonHumanMessage(item)) {
+                  releaseInteractionLease(sessionID);
                   invalidateActiveHandoff(sessionID);
                 }
+              } else if (eventType === 'form.created') {
+                const sessionConfig = await resolveEligibleSessionConfig(sessionID, eventDir);
+                if (sessionConfig) {
+                  releaseInteractionLease(sessionID);
+                  if (formID) {
+                    formSessionByFormID.set(formID, sessionID);
+                  }
+                  activeInteractionLeases.set(
+                    sessionID,
+                    acquireSessionLease({
+                      sessionID,
+                      owner: 'opencode-smart-questions',
+                      kind: 'user_interaction',
+                      ttlMs: Math.max((sessionConfig.timeoutMs ?? 0) + 15_000, 120_000),
+                      reason: 'form-created',
+                    })
+                  );
+                }
               } else if (eventType === 'form.replied' || eventType === 'form.cancelled') {
+                releaseInteractionLease(sessionID);
                 consumeActiveHandoff(sessionID);
               } else if (eventType === 'session.deleted') {
+                releaseInteractionLease(sessionID);
                 clearActiveHandoff(sessionID);
+                forgetMeshSession(sessionID);
               }
             }
           } catch {

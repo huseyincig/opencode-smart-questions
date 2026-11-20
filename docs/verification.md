@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v1.1.2** evaluation on **19 November 2026**.
+This document describes the **v1.2.0** evaluation on **20 November 2026**.
 
 ## Automated checks
 
@@ -24,13 +24,19 @@ CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.
 
 | Check | Observed result |
 | --- | --- |
-| Unit and regression tests (`npm test`) | **149/149 passed** |
+| Unit and regression tests (`npm test`) | **159/159 passed** |
 | Live OpenCode `v2.3.2` acceptance (`npm run test:acceptance`) | **8/8 scenarios passed** against live `opencode serve` |
 | Strict TypeScript and Oxlint | **Passed**, 0 warnings / 0 errors |
 | Simulated V2 comprehensive scenarios | **7/7 passed** |
 | Separate V2 smoke test | **Passed** |
 | Dependency audit (`npm audit`) | **0 vulnerabilities** |
 | Packaging dry run (`npm pack --dry-run`) | Expected server, UI, TUI, declaration, and documentation files included |
+
+## v1.2.0 regression & fix coverage
+
+- **Universal OpenCode V2 Plugin Mesh (`src/bridge.ts`, `src/handoff.ts`, `src/index.ts`, `src/ui.tsx`)**: Added `BRIDGE_REVISION: 2.3.0` capability registry, `user_interaction` session leases (`Math.max(timeoutMs + 15000, 120000)` TTL), primary/standby RPC failover (`registerMeshStateRpc`), and multi-peer `[OPENCODE_HANDOFF:v1]` support (`source=guardian`, `source=opencode-hi`, etc.).
+- **Provenance & Anti-Spoofing Hardening (`src/handoff.ts`, `src/index.ts`)**: Enforced `hasGuardianMetadata(value, 'remediation')` on all Guardian-flagged payloads without mesh fallback bypass, and required `extractTrustedGuardianHandoff` provenance on `context` hook `event.system` parts while skipping `SQ_GUIDANCE_SENTINEL`.
+- **Lease & Settlement Lifecycle (`src/ui.tsx`, `src/index.ts`)**: Released `user_interaction` leases immediately on auto-reply `fire()`, `!stillPending` sync verification, `formID`-only and `evt.properties` settlement payloads, user inbox messages, `session.deleted`, and `dispose()`.
 
 ## v1.1.2 regression & fix coverage
 
@@ -74,6 +80,6 @@ CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.
 ## Source and test references
 
 - [Release notes](../CHANGELOG.md)
-- [V2 server](../src/index.ts), [V2 TUI](../src/ui.tsx), [V2 forms](../src/form-adapter.ts), [Handoff protocol](../src/handoff.ts)
+- [V2 server](../src/index.ts), [V2 TUI](../src/ui.tsx), [V2 forms](../src/form-adapter.ts), [Handoff protocol](../src/handoff.ts), [Mesh bridge](../src/bridge.ts)
 - [Debugging regressions](../tests/debug-regressions.test.mjs), [Live V2 acceptance](../tests/v2-live-acceptance.mjs)
 - [Sandbox scenarios](../sandbox/comprehensive-test.mjs), [CI workflow](../.github/workflows/ci.yml)
