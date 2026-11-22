@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1 — 2026-11-22
+
+- **Plugin Mesh Bridge `2.3.1` & Session Cleanup (`src/bridge.ts`, `src/handoff.ts`, `src/index.ts`, `src/ui.tsx`)**: Updated `BRIDGE_REVISION` to `2.3.1` with `onSessionForget` peer callbacks, cross-directory RPC standby promotion, `synthetic: false` envelope guards, `resolveMeshAgentProfile`-aware worker guidance skipping, and `event.data ?? event.properties` alignment across TUI and server listeners.
+- **Metadata Merging & Nested Provenance (`src/handoff.ts`)**: Merged outer host metadata with `prompt.metadata`, `info.metadata`, `payload.metadata`, and `state.metadata` so non-empty host wrappers never shadow mesh/Guardian provenance; added `prompt.parts`/`text` extraction, `hi-message`/`hi-internal` detection, and markerless non-Guardian mesh handoff support.
+- **Remediation Budget & Lease Race Fixes (`src/ui.tsx`, `src/index.ts`, `src/handoff.ts`)**: Preserved `sessionChains` remediation budgets when `form.cancelled` arrives while `session.synthetic` is in-flight, released optimistic 45s remediation leases if `session.synthetic` subsequently fails, protected newer form leases from superseded `form.cancelled` events, and preserved active handoffs + 45s leases on server `form.cancelled` during unclassified form remediation.
+- **Context Hook Handoff Priority (`src/index.ts`)**: Prioritized current-turn `event.messages` handoffs over stale `event.system` handoffs in the `context` hook.
+- **Verification**: 166/166 unit & regression tests, 7/7 sandbox scenarios, and 8/8 live OpenCode `v2.3.2` host acceptance scenarios pass (`npm run test:all`).
+
 ## 1.2.0 — 2026-11-20
 
 - **Universal OpenCode V2 Plugin Mesh Interoperability (`src/bridge.ts`, `src/handoff.ts`, `src/index.ts`, `src/ui.tsx`)**: Added zero-dependency OpenCode V2 Plugin Mesh bridge (`BRIDGE_REVISION: 2.3.0`) enabling seamless coordination across `opencode-smart-questions`, `opencode-guardian`, `opencode-hi`, `opencode-lazy-skill-engine`, and `opencode-trim` in any combination.

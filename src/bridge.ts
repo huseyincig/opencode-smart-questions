@@ -26,7 +26,7 @@ import { isAbsolute, resolve as resolvePath } from "node:path";
 import { types } from "node:util";
 
 export const MESH_VERSION = 2;
-export const BRIDGE_REVISION = "2.3.0";
+export const BRIDGE_REVISION = "2.3.1";
 export const MESH_SYMBOL = Symbol.for("opencode.mesh.v2");
 export const LEGACY_COORDINATION_SYMBOL = Symbol.for("opencode.coordination.v1");
 export const LEGACY_HANDOFF_STATE_SYMBOL = Symbol.for("opencode.handoff.state.v1");
@@ -89,6 +89,7 @@ export interface MeshMetadataEnvelope {
   owner: string;
   kind: MeshMessageKind;
   token: string;
+  synthetic?: boolean | undefined;
   protected?: boolean | undefined;
   sanitizedBy?: readonly string[] | undefined;
   boundedBy?: string | undefined;
@@ -124,6 +125,11 @@ export interface MeshAgentProfile {
   capability: "write-allowed" | "read-only" | "unknown";
   access?: "primary" | "read-write" | "read-only" | "unknown" | undefined;
   taskID?: string | undefined;
+  requiredSkills?: readonly string[] | undefined;
+  allowedSkills?: readonly string[] | undefined;
+  defaultSkills?: readonly string[] | undefined;
+  maxActiveSkills?: number | undefined;
+  autoBind?: "off" | "workers" | "all" | undefined;
   managedBy: string;
 }
 
@@ -145,7 +151,7 @@ export interface MeshSkillHit {
   name?: string | undefined;
   description?: string | undefined;
   scope: "native" | "vault" | "bundled";
-  origin?: "host" | "project" | undefined;
+  origin?: "host" | "project" | "global" | "bundled" | undefined;
   score: number;
   coverage?: number | undefined;
 }
@@ -155,7 +161,11 @@ export interface MeshSkillCatalogProvider {
   directory: string;
   search: (
     query: string,
-    options?: { topK?: number; scope?: "native" | "vault"; allowedIds?: ReadonlySet<string> }
+    options?: {
+      topK?: number;
+      scope?: "native" | "vault";
+      allowedIds?: ReadonlySet<string> | readonly string[];
+    }
   ) => Promise<readonly MeshSkillHit[]>;
 }
 
@@ -167,6 +177,7 @@ export type MeshRoleProfileResolver = (
 interface ProvenanceRecord {
   owner: string;
   kind: MeshMessageKind;
+  synthetic: boolean;
   createdAt: number;
 }
 
@@ -196,7 +207,14 @@ interface RpcStandbyCandidate {
 
 interface MeshGlobalState {
   version: number;
-  peersByKey: Map<string, { descriptor: MeshPeerDescriptor; count: number }>;
+  peersByKey: Map<
+    string,
+    {
+      descriptor: MeshPeerDescriptor;
+      count: number;
+      onSessionForgets?: Set<(sessionID: string) => void> | undefined;
+    }
+  >;
   provenanceBySession: Map<string, Map<string, ProvenanceRecord>>;
   leasesBySession: Map<string, Map<string, MeshSessionLease>>;
   interventionsBySession: Map<string, MeshInterventionRecord>;
@@ -436,11 +454,15 @@ export function registerMeshPeer(input: {
   directory?: string | undefined;
   version?: number | undefined;
   metadata?: Record<string, unknown> | undefined;
+  onSessionForget?: ((sessionID: string) => void) | undefined;
 }): () => void {
   const state = getMeshState();
   const dir = canonicalMeshDirectory(input.directory);
   const key = `${dir}::${input.id}`;
   const existing = state.peersByKey.get(key);
+  const onSessionForgets = existing?.onSessionForgets ?? new Set<(sessionID: string) => void>();
+  const forgetCb = typeof input.onSessionForget === "function" ? input.onSessionForget : undefined;
+  if (forgetCb) onSessionForgets.add(forgetCb);
   const descriptor: MeshPeerDescriptor = {
     id: input.id,
     version: input.version ?? MESH_VERSION,
@@ -451,6 +473,7 @@ export function registerMeshPeer(input: {
   state.peersByKey.set(key, {
     descriptor,
     count: (existing?.count ?? 0) + 1,
+    onSessionForgets,
   });
   syncLegacyCoordinationRegistry(state);
 
@@ -460,6 +483,7 @@ export function registerMeshPeer(input: {
     disposed = true;
     const current = state.peersByKey.get(key);
     if (!current) return;
+    if (forgetCb) current.onSessionForgets?.delete(forgetCb);
     if (current.count > 1) {
       current.count -= 1;
     } else {
@@ -514,6 +538,14 @@ export function hasMeshCapability(
 // 2. Cryptographic In-Process Session Provenance & Metadata Envelope
 // ---------------------------------------------------------------------------
 
+const SYNTHETIC_MESH_KINDS: readonly MeshMessageKind[] = [
+  "remediation",
+  "visible",
+  "handoff",
+  "wake",
+  "delegation",
+];
+
 export function stampMeshMetadata(
   sessionID: string,
   options: MeshStampOptions,
@@ -522,6 +554,14 @@ export function stampMeshMetadata(
   const state = getMeshState();
   const token = randomUUID();
   const sID = String(sessionID || "global");
+
+  const isSynthetic =
+    options.synthetic ??
+    (options.kind === "remediation" ||
+      options.kind === "visible" ||
+      options.kind === "handoff" ||
+      options.kind === "wake" ||
+      options.kind === "delegation");
 
   let sessionTokens = state.provenanceBySession.get(sID);
   if (!sessionTokens) {
@@ -533,7 +573,7 @@ export function stampMeshMetadata(
   setBoundedMap(
     sessionTokens,
     token,
-    { owner: options.owner, kind: options.kind, createdAt: Date.now() },
+    { owner: options.owner, kind: options.kind, synthetic: isSynthetic, createdAt: Date.now() },
     MAX_TOKENS_PER_SESSION
   );
 
@@ -549,6 +589,7 @@ export function stampMeshMetadata(
     owner: options.owner,
     kind: options.kind,
     token,
+    ...(options.synthetic === false ? { synthetic: false } : isSynthetic ? { synthetic: true } : {}),
     ...(isProtected ? { protected: true } : {}),
     ...(options.sanitizedBy?.length ? { sanitizedBy: [...options.sanitizedBy] } : {}),
     ...(options.boundedBy ? { boundedBy: options.boundedBy } : {}),
@@ -561,13 +602,7 @@ export function stampMeshMetadata(
     [MESH_METADATA_KEY]: envelope,
   };
 
-  if (options.synthetic !== false && (
-    options.kind === "remediation" ||
-    options.kind === "visible" ||
-    options.kind === "handoff" ||
-    options.kind === "wake" ||
-    options.kind === "delegation"
-  )) {
+  if (isSynthetic) {
     out.synthetic = true;
   }
 
@@ -598,21 +633,39 @@ export function stampMeshMetadata(
 export function extractMetadataRecord(value: unknown): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
   const meta = ownData(value, "metadata");
-  if (isRecord(meta)) return meta;
+  if (isRecord(meta) && Object.keys(meta).length > 0) return meta;
+  const prompt = ownData(value, "prompt");
+  const promptMeta = ownData(prompt, "metadata");
+  if (isRecord(promptMeta) && Object.keys(promptMeta).length > 0) {
+    return promptMeta;
+  }
+  const info = ownData(value, "info");
+  const infoMeta = ownData(info, "metadata");
+  if (isRecord(infoMeta) && Object.keys(infoMeta).length > 0) {
+    return infoMeta;
+  }
   const payload = ownData(value, "payload");
   const payloadMeta = ownData(payload, "metadata");
-  if (isRecord(payloadMeta)) {
+  if (isRecord(payloadMeta) && Object.keys(payloadMeta).length > 0) {
     return payloadMeta;
   }
   const state = ownData(value, "state");
   const stateMeta = ownData(state, "metadata");
-  if (isRecord(stateMeta)) {
+  if (isRecord(stateMeta) && Object.keys(stateMeta).length > 0) {
     return stateMeta;
   }
+  if (isRecord(meta)) return meta;
+  if (isRecord(promptMeta)) return promptMeta;
+  if (isRecord(infoMeta)) return infoMeta;
+  if (isRecord(payloadMeta)) return payloadMeta;
+  if (isRecord(stateMeta)) return stateMeta;
   if (
     isRecord(ownData(value, MESH_METADATA_KEY)) ||
     ownData(value, "opencode-guardian") === true ||
-    ownData(value, "opencode-smart-questions") === true
+    ownData(value, "opencode-smart-questions") === true ||
+    ownData(value, "opencode-hi") === true ||
+    typeof ownData(value, "hi-internal") === "string" ||
+    typeof ownData(value, "hi-message") === "string"
   ) {
     return value;
   }
@@ -631,7 +684,9 @@ export function verifyMeshMetadata(
 
   const state = getMeshState();
   const sessionTokens = state.provenanceBySession.get(sessionID);
-  if (!sessionTokens) return false;
+  const globalTokens =
+    sessionID !== "global" ? state.provenanceBySession.get("global") : undefined;
+  if (!sessionTokens && !globalTokens) return false;
 
   const meshEnv = isRecord(meta[MESH_METADATA_KEY]) ? meta[MESH_METADATA_KEY] : undefined;
   const primaryToken = typeof meshEnv?.token === "string" ? meshEnv.token : undefined;
@@ -642,8 +697,8 @@ export function verifyMeshMetadata(
   if (!primaryToken && !legacyToken) return false;
 
   const record =
-    (primaryToken ? sessionTokens.get(primaryToken) : undefined) ??
-    (legacyToken ? sessionTokens.get(legacyToken) : undefined);
+    (primaryToken ? (sessionTokens?.get(primaryToken) ?? globalTokens?.get(primaryToken)) : undefined) ??
+    (legacyToken ? (sessionTokens?.get(legacyToken) ?? globalTokens?.get(legacyToken)) : undefined);
   if (!record) return false;
 
   if (meshEnv) {
@@ -664,25 +719,38 @@ export function isTrustedMeshMessage(
   expectedKind?: MeshMessageKind | readonly MeshMessageKind[]
 ): boolean {
   if (!isRecord(value)) return false;
-  if (sessionID && verifyMeshMetadata(sessionID, value, expectedKind)) {
-    return true;
-  }
+  const effectiveExpectedKind = expectedKind ?? SYNTHETIC_MESH_KINDS;
   const meta = extractMetadataRecord(value);
   const meshEnv = isRecord(meta?.[MESH_METADATA_KEY]) ? meta[MESH_METADATA_KEY] : undefined;
+
+  if (sessionID && verifyMeshMetadata(sessionID, value, effectiveExpectedKind)) {
+    if (expectedKind === undefined && meshEnv?.synthetic === false) {
+      return false;
+    }
+    return true;
+  }
   const isHostSynthetic =
     value.type === "synthetic" ||
     value.synthetic === true ||
     value.ignored === true ||
     meta?.synthetic === true ||
     meta?.internal === true ||
-    meta?.autoContinue === true;
+    meta?.autoContinue === true ||
+    typeof meta?.["hi-internal"] === "string" ||
+    typeof meta?.["hi-message"] === "string";
 
-  if (meshEnv && typeof meshEnv.token === "string" && meshEnv.token.length > 0 && isHostSynthetic) {
-    if (expectedKind) {
-      const allowed = Array.isArray(expectedKind) ? expectedKind : [expectedKind];
-      if (typeof meshEnv.kind !== "string" || !allowed.includes(meshEnv.kind as MeshMessageKind)) {
-        return false;
-      }
+  if (
+    meshEnv &&
+    typeof meshEnv.token === "string" &&
+    meshEnv.token.length > 0 &&
+    isHostSynthetic &&
+    (expectedKind !== undefined || meshEnv.synthetic !== false)
+  ) {
+    const allowed = Array.isArray(effectiveExpectedKind)
+      ? effectiveExpectedKind
+      : [effectiveExpectedKind];
+    if (typeof meshEnv.kind !== "string" || !allowed.includes(meshEnv.kind as MeshMessageKind)) {
+      return false;
     }
     return true;
   }
@@ -703,6 +771,9 @@ export function isTrustedMeshMessage(
       ? value.content
       : undefined;
   if (parts?.some((part) => isTrustedMeshMessage(part, sessionID, expectedKind))) {
+    return true;
+  }
+  if (isRecord(value.prompt) && isTrustedMeshMessage(value.prompt, sessionID, expectedKind)) {
     return true;
   }
   if (isRecord(value.message)) {
@@ -770,6 +841,12 @@ export function forgetMeshSession(sessionID: string): void {
     }
   }
   clearActiveMeshHandoff(sessionID);
+  for (const peer of state.peersByKey.values()) {
+    if (peer.count <= 0 || !(peer.onSessionForgets instanceof Set)) continue;
+    for (const cb of peer.onSessionForgets) {
+      try { cb(sessionID); } catch {}
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -866,7 +943,14 @@ export function getBlockingSessionLease(
   // If a question handoff is currently active in the session, treat it as user_interaction (priority 30)
   if (callerPriority < LEASE_PRIORITY.user_interaction) {
     const activeHandoff = getActiveMeshHandoff(sID);
-    if (activeHandoff) {
+    const isOwnHandoff =
+      callerOwner !== undefined &&
+      (activeHandoff?.source === callerOwner ||
+        (callerOwner === "opencode-guardian" && activeHandoff?.source === "guardian") ||
+        (callerOwner === "guardian" && activeHandoff?.source === "opencode-guardian") ||
+        (callerOwner === "opencode-hi" && activeHandoff?.source === "hi") ||
+        (callerOwner === "hi" && activeHandoff?.source === "opencode-hi"));
+    if (activeHandoff && !isOwnHandoff) {
       return {
         sessionID: sID,
         owner: activeHandoff.source,
@@ -1252,7 +1336,7 @@ export async function queryMeshSkills(
     directory?: string | undefined;
     topK?: number | undefined;
     scope?: "native" | "vault" | undefined;
-    allowedIds?: ReadonlySet<string> | undefined;
+    allowedIds?: ReadonlySet<string> | readonly string[] | undefined;
   }
 ): Promise<readonly MeshSkillHit[] | undefined> {
   const state = getMeshState();
@@ -1352,23 +1436,30 @@ export async function registerMeshStateRpc(input: {
   const state = getMeshState();
   const dir = canonicalMeshDirectory(input.directory);
   const standbysByDir = (state.rpcStandbysByDir ??= new Map());
-  if (state.rpcHostsByDir.has(dir)) {
+  const activeHostDir = state.rpcHostsByDir.has(dir)
+    ? dir
+    : dir === "*" && state.rpcHostsByDir.size === 1
+      ? state.rpcHostsByDir.keys().next().value
+      : dir !== "*" && state.rpcHostsByDir.has("*")
+        ? "*"
+        : undefined;
+  if (activeHostDir !== undefined) {
     const candidate: RpcStandbyCandidate = {
       owner: input.owner,
       rpcRegister: input.rpcRegister,
       disposed: false,
     };
-    const queue = standbysByDir.get(dir) ?? [];
+    const queue = standbysByDir.get(activeHostDir) ?? [];
     queue.push(candidate);
-    standbysByDir.set(dir, queue);
+    standbysByDir.set(activeHostDir, queue);
     return async () => {
       if (candidate.disposed) return;
       candidate.disposed = true;
-      const list = standbysByDir.get(dir);
+      const list = standbysByDir.get(activeHostDir);
       if (list) {
         const idx = list.indexOf(candidate);
         if (idx >= 0) list.splice(idx, 1);
-        if (list.length === 0) standbysByDir.delete(dir);
+        if (list.length === 0) standbysByDir.delete(activeHostDir);
       }
       if (candidate.activeDispose) {
         const fn = candidate.activeDispose;
@@ -1443,7 +1534,6 @@ export async function registerMeshStateRpc(input: {
   return async () => {
     if (disposed) return;
     disposed = true;
-    hostEntry.releaseAll();
     if (state.rpcHostsByDir.get(dir) === hostEntry) {
       state.rpcHostsByDir.delete(dir);
     }
@@ -1464,9 +1554,12 @@ export async function registerMeshStateRpc(input: {
         const fn = next.activeDispose;
         next.activeDispose = undefined;
         await fn();
-      } else {
+      } else if (state.rpcHostsByDir.has(dir)) {
         break;
       }
+    }
+    if (!state.rpcHostsByDir.has(dir)) {
+      hostEntry.releaseAll();
     }
   };
 }

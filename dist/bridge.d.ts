@@ -20,7 +20,7 @@
  *    `lazySkill`, `hiOutput`).
  */
 export declare const MESH_VERSION = 2;
-export declare const BRIDGE_REVISION = "2.3.0";
+export declare const BRIDGE_REVISION = "2.3.1";
 export declare const MESH_SYMBOL: unique symbol;
 export declare const LEGACY_COORDINATION_SYMBOL: unique symbol;
 export declare const LEGACY_HANDOFF_STATE_SYMBOL: unique symbol;
@@ -58,6 +58,7 @@ export interface MeshMetadataEnvelope {
     owner: string;
     kind: MeshMessageKind;
     token: string;
+    synthetic?: boolean | undefined;
     protected?: boolean | undefined;
     sanitizedBy?: readonly string[] | undefined;
     boundedBy?: string | undefined;
@@ -90,6 +91,11 @@ export interface MeshAgentProfile {
     capability: "write-allowed" | "read-only" | "unknown";
     access?: "primary" | "read-write" | "read-only" | "unknown" | undefined;
     taskID?: string | undefined;
+    requiredSkills?: readonly string[] | undefined;
+    allowedSkills?: readonly string[] | undefined;
+    defaultSkills?: readonly string[] | undefined;
+    maxActiveSkills?: number | undefined;
+    autoBind?: "off" | "workers" | "all" | undefined;
     managedBy: string;
 }
 export interface MeshInterventionRecord {
@@ -109,7 +115,7 @@ export interface MeshSkillHit {
     name?: string | undefined;
     description?: string | undefined;
     scope: "native" | "vault" | "bundled";
-    origin?: "host" | "project" | undefined;
+    origin?: "host" | "project" | "global" | "bundled" | undefined;
     score: number;
     coverage?: number | undefined;
 }
@@ -119,7 +125,7 @@ export interface MeshSkillCatalogProvider {
     search: (query: string, options?: {
         topK?: number;
         scope?: "native" | "vault";
-        allowedIds?: ReadonlySet<string>;
+        allowedIds?: ReadonlySet<string> | readonly string[];
     }) => Promise<readonly MeshSkillHit[]>;
 }
 export type MeshRoleProfileResolver = (sessionID: string, directory: string) => Promise<MeshAgentProfile | undefined> | MeshAgentProfile | undefined;
@@ -227,6 +233,7 @@ export declare function registerMeshPeer(input: {
     directory?: string | undefined;
     version?: number | undefined;
     metadata?: Record<string, unknown> | undefined;
+    onSessionForget?: ((sessionID: string) => void) | undefined;
 }): () => void;
 export declare function getMeshPeers(options?: {
     directory?: string | undefined;
@@ -280,7 +287,7 @@ export declare function queryMeshSkills(query: string, options?: {
     directory?: string | undefined;
     topK?: number | undefined;
     scope?: "native" | "vault" | undefined;
-    allowedIds?: ReadonlySet<string> | undefined;
+    allowedIds?: ReadonlySet<string> | readonly string[] | undefined;
 }): Promise<readonly MeshSkillHit[] | undefined>;
 export declare function claimPromptSkillBinding(sessionID: string, turnKey: string, owner: string, skillIDs: readonly string[]): {
     claimed: boolean;

@@ -2,7 +2,7 @@
  * OpenCode Coordination Handoff Protocol (v1)
  * Enables decoupled, autonomous collaboration between OpenCode Guardian and Smart Questions.
  */
-import { isTrustedMeshMessage, MESH_REMEDIATION_MARKER, registerMeshPeer, } from './bridge.js';
+import { isTrustedMeshMessage, MESH_REMEDIATION_MARKER, registerMeshPeer, verifyMeshMetadata, } from './bridge.js';
 export const OPENCODE_HANDOFF_HEADER = '[OPENCODE_HANDOFF:v1]';
 export const GUARDIAN_REMEDIATION_MARKER = '[opencode-guardian remediation]';
 export const GUARDIAN_PROVENANCE_KEY = 'opencode-guardian';
@@ -19,10 +19,35 @@ function isRecord(value) {
 function guardianMetadata(value) {
     if (!isRecord(value))
         return undefined;
-    if (isRecord(value.metadata))
-        return value.metadata;
-    if (isRecord(value.payload) && isRecord(value.payload.metadata)) {
-        return value.payload.metadata;
+    const direct = isRecord(value.metadata) ? value.metadata : undefined;
+    const payloadMeta = isRecord(value.payload) && isRecord(value.payload.metadata)
+        ? value.payload.metadata
+        : undefined;
+    const infoMeta = isRecord(value.info) && isRecord(value.info.metadata)
+        ? value.info.metadata
+        : undefined;
+    const promptMeta = isRecord(value.prompt) && isRecord(value.prompt.metadata)
+        ? value.prompt.metadata
+        : undefined;
+    const stateMeta = isRecord(value.state) && isRecord(value.state.metadata)
+        ? value.state.metadata
+        : undefined;
+    if (direct || payloadMeta || infoMeta || promptMeta || stateMeta) {
+        return {
+            ...stateMeta,
+            ...promptMeta,
+            ...infoMeta,
+            ...payloadMeta,
+            ...direct,
+        };
+    }
+    if (isRecord(value['opencode-mesh']) ||
+        value[GUARDIAN_PROVENANCE_KEY] === true ||
+        value['opencode-smart-questions'] === true ||
+        value['opencode-hi'] === true ||
+        typeof value['hi-internal'] === 'string' ||
+        typeof value['hi-message'] === 'string') {
+        return value;
     }
     return undefined;
 }
@@ -79,22 +104,31 @@ function isGuardianOwnedNonHumanMessage(value) {
         ? isGuardianOwnedNonHumanMessage(value.message)
         : false;
 }
-function isInternalNonHumanPart(part) {
+function isInternalNonHumanPart(part, sessionID) {
     if (!isRecord(part))
         return false;
-    if (isTrustedMeshMessage(part))
+    if (isTrustedMeshMessage(part, sessionID))
         return true;
     const meta = guardianMetadata(part);
-    return (part.type === 'synthetic' ||
+    if (part.type === 'synthetic' ||
         part.synthetic === true ||
         part.ignored === true ||
         meta?.['opencode-smart-questions'] === true ||
-        meta?.[GUARDIAN_PROVENANCE_KEY] === true);
+        meta?.[GUARDIAN_PROVENANCE_KEY] === true ||
+        meta?.['opencode-hi'] === true ||
+        isRecord(meta?.hi) ||
+        typeof meta?.['hi-internal'] === 'string' ||
+        typeof meta?.['hi-message'] === 'string') {
+        return true;
+    }
+    return isRecord(part.prompt)
+        ? isInternalNonHumanPart(part.prompt, sessionID)
+        : false;
 }
-export function isInternalNonHumanMessage(value) {
+export function isInternalNonHumanMessage(value, sessionID) {
     if (!isRecord(value))
         return false;
-    if (isTrustedMeshMessage(value))
+    if (isTrustedMeshMessage(value, sessionID))
         return true;
     if (isGuardianOwnedNonHumanMessage(value))
         return true;
@@ -103,14 +137,26 @@ export function isInternalNonHumanMessage(value) {
         value.synthetic === true ||
         value.ignored === true ||
         meta?.['opencode-smart-questions'] === true ||
-        meta?.[GUARDIAN_PROVENANCE_KEY] === true) {
+        meta?.[GUARDIAN_PROVENANCE_KEY] === true ||
+        meta?.['opencode-hi'] === true ||
+        isRecord(meta?.hi) ||
+        typeof meta?.['hi-internal'] === 'string' ||
+        typeof meta?.['hi-message'] === 'string') {
         return true;
     }
     const parts = messageParts(value);
-    if (parts?.some((part) => isInternalNonHumanPart(part))) {
+    if (parts?.some((part) => isInternalNonHumanPart(part, sessionID))) {
         return true;
     }
-    return isRecord(value.message) ? isInternalNonHumanMessage(value.message) : false;
+    if (isRecord(value.prompt) && isInternalNonHumanMessage(value.prompt, sessionID)) {
+        return true;
+    }
+    if (isRecord(value.info) && isInternalNonHumanMessage(value.info, sessionID)) {
+        return true;
+    }
+    return isRecord(value.message)
+        ? isInternalNonHumanMessage(value.message, sessionID)
+        : false;
 }
 function messageRole(value) {
     if (!isRecord(value))
@@ -134,6 +180,11 @@ function messageParts(value) {
         return value.parts;
     if (Array.isArray(value.content))
         return value.content;
+    if (isRecord(value.prompt)) {
+        const promptParts = messageParts(value.prompt);
+        if (promptParts)
+            return promptParts;
+    }
     if (isRecord(value.message))
         return messageParts(value.message);
     return undefined;
@@ -157,6 +208,9 @@ function messageTextCandidates(value) {
             }
         }
     }
+    if (isRecord(value.prompt)) {
+        out.push(...messageTextCandidates(value.prompt));
+    }
     if (isRecord(value.message)) {
         out.push(...messageTextCandidates(value.message));
     }
@@ -166,13 +220,17 @@ function messageTextCandidates(value) {
  * Register Smart Questions capability in the global OpenCode coordination registry.
  */
 const SQ_COUNT_SYMBOL = Symbol.for('opencode.coordination.sq.count.v1');
-export function registerSmartQuestionsCapability(directory) {
+export function registerSmartQuestionsCapability(directory, onSessionForget) {
     const g = globalThis;
     g[SQ_COUNT_SYMBOL] = (g[SQ_COUNT_SYMBOL] ?? 0) + 1;
     const unregisterMesh = registerMeshPeer({
         id: 'opencode-smart-questions',
         directory,
         capabilities: ['interaction.ask'],
+        onSessionForget: (sessionID) => {
+            clearActiveHandoff(sessionID);
+            onSessionForget?.(sessionID);
+        },
     });
     let disposed = false;
     return () => {
@@ -267,14 +325,26 @@ function isSyntheticCarrier(value) {
     if (!isRecord(value))
         return false;
     const meta = guardianMetadata(value);
+    const meshEnv = isRecord(meta?.['opencode-mesh']) ? meta['opencode-mesh'] : undefined;
+    const info = isRecord(value.info) ? value.info : undefined;
+    const prompt = isRecord(value.prompt) ? value.prompt : undefined;
     return (value.type === 'synthetic' ||
         value.synthetic === true ||
         value.ignored === true ||
+        info?.type === 'synthetic' ||
+        info?.synthetic === true ||
+        info?.ignored === true ||
+        prompt?.type === 'synthetic' ||
+        prompt?.synthetic === true ||
+        prompt?.ignored === true ||
         meta?.synthetic === true ||
         meta?.internal === true ||
-        meta?.autoContinue === true);
+        meta?.autoContinue === true ||
+        meshEnv?.synthetic === true ||
+        typeof meta?.['hi-internal'] === 'string' ||
+        typeof meta?.['hi-message'] === 'string');
 }
-function hasMeshHandoffProvenance(value, parentSynthetic = false) {
+function hasMeshHandoffProvenance(value, parentSynthetic = false, sessionID) {
     if (!isRecord(value))
         return false;
     const meta = guardianMetadata(value);
@@ -286,12 +356,20 @@ function hasMeshHandoffProvenance(value, parentSynthetic = false) {
     const meshEnv = isRecord(meta['opencode-mesh']) ? meta['opencode-mesh'] : undefined;
     if (meshEnv?.owner === 'opencode-guardian')
         return false;
+    if (meshEnv?.synthetic === false)
+        return false;
+    if (sessionID && verifyMeshMetadata(sessionID, meta, ['remediation', 'handoff'])) {
+        return true;
+    }
     if (!parentSynthetic && !isSyntheticCarrier(value))
         return false;
     if (meshEnv && typeof meshEnv.token === 'string' && meshEnv.token.length > 0) {
         return meshEnv.kind === 'remediation' || meshEnv.kind === 'handoff';
     }
-    return meta['opencode-hi'] === true || isRecord(meta.hi);
+    return (meta['opencode-hi'] === true ||
+        isRecord(meta.hi) ||
+        typeof meta['hi-internal'] === 'string' ||
+        typeof meta['hi-message'] === 'string');
 }
 /**
  * Extract a handoff from V1-style message parts.
@@ -306,10 +384,12 @@ export function extractHandoffFromParts(parts, options) {
     const requireProvenance = typeof options === 'boolean'
         ? true
         : (options?.requireGuardianProvenance ?? true);
+    const parentMeshProvenance = typeof options === 'object' ? Boolean(options?.parentMeshProvenance) : false;
+    const sessionID = typeof options === 'object' ? options?.sessionID : undefined;
     for (const part of parts) {
         if (!isRecord(part) || typeof part.text !== 'string')
             continue;
-        const isMeshPart = hasMeshHandoffProvenance(part);
+        const isMeshPart = parentMeshProvenance || hasMeshHandoffProvenance(part, false, sessionID);
         if (requireProvenance && !hasGuardianMetadata(part, 'remediation') && !isMeshPart)
             continue;
         if (requireProvenance &&
@@ -319,15 +399,18 @@ export function extractHandoffFromParts(parts, options) {
             guardianMetadata(part)?.[GUARDIAN_KIND_KEY] !== 'remediation') {
             continue;
         }
-        if (requireMarker &&
-            !part.text.includes(GUARDIAN_REMEDIATION_MARKER) &&
-            !part.text.includes(MESH_REMEDIATION_MARKER)) {
+        const parsed = parseOpenCodeHandoff(part.text, false);
+        if (!parsed || typeof parsed !== 'object' || !('version' in parsed)) {
             continue;
         }
-        const parsed = parseOpenCodeHandoff(part.text, false);
-        if (parsed && typeof parsed === 'object' && 'version' in parsed) {
-            return parsed;
+        const hasMarker = part.text.includes(GUARDIAN_REMEDIATION_MARKER) ||
+            part.text.includes(MESH_REMEDIATION_MARKER);
+        if (requireMarker &&
+            !hasMarker &&
+            !(isMeshPart && parsed.source !== 'guardian')) {
+            continue;
         }
+        return parsed;
     }
     return null;
 }
@@ -335,24 +418,31 @@ export function extractHandoffFromParts(parts, options) {
  * Extract a Guardian or mesh handoff only when the host object carries trusted provenance.
  * Supports V1 part metadata and V2 synthetic/message metadata without importing sibling plugins.
  */
-export function extractTrustedGuardianHandoff(source) {
+export function extractTrustedGuardianHandoff(source, sessionID) {
     if (!isRecord(source))
         return null;
     const message = isRecord(source.message) ? source.message : undefined;
-    const syntheticCarrier = isSyntheticCarrier(source) || isSyntheticCarrier(message);
+    const prompt = isRecord(source.prompt) ? source.prompt : undefined;
+    const syntheticCarrier = isSyntheticCarrier(source) ||
+        isSyntheticCarrier(message) ||
+        isSyntheticCarrier(prompt);
     const directProvenance = hasGuardianMetadata(source, 'remediation') ||
         hasGuardianMetadata(source.info, 'remediation') ||
+        hasGuardianMetadata(prompt, 'remediation') ||
         hasGuardianMetadata(message, 'remediation') ||
         (message ? hasGuardianMetadata(message.info, 'remediation') : false);
-    const meshProvenance = hasMeshHandoffProvenance(source, syntheticCarrier) ||
-        hasMeshHandoffProvenance(source.info, syntheticCarrier) ||
-        hasMeshHandoffProvenance(message, syntheticCarrier) ||
-        (message ? hasMeshHandoffProvenance(message.info, syntheticCarrier) : false);
+    const meshProvenance = hasMeshHandoffProvenance(source, syntheticCarrier, sessionID) ||
+        hasMeshHandoffProvenance(source.info, syntheticCarrier, sessionID) ||
+        hasMeshHandoffProvenance(prompt, syntheticCarrier, sessionID) ||
+        hasMeshHandoffProvenance(message, syntheticCarrier, sessionID) ||
+        (message ? hasMeshHandoffProvenance(message.info, syntheticCarrier, sessionID) : false);
     const parts = messageParts(source);
     if (parts) {
         const fromParts = extractHandoffFromParts(parts, {
             requireRemediationMarker: true,
             requireGuardianProvenance: !(directProvenance || meshProvenance),
+            parentMeshProvenance: meshProvenance && !directProvenance,
+            sessionID,
         });
         if (fromParts && typeof fromParts === 'object' && 'version' in fromParts) {
             return fromParts;
@@ -360,10 +450,16 @@ export function extractTrustedGuardianHandoff(source) {
     }
     if ((directProvenance && isGuardianOwnedNonHumanMessage(source)) || meshProvenance) {
         for (const text of messageTextCandidates(source)) {
-            const parsed = parseOpenCodeHandoff(text, { requireRemediationMarker: true });
-            if (parsed && typeof parsed === 'object' && 'version' in parsed) {
-                return parsed;
+            const parsed = parseOpenCodeHandoff(text, false);
+            if (!parsed || typeof parsed !== 'object' || !('version' in parsed)) {
+                continue;
             }
+            const hasMarker = text.includes(GUARDIAN_REMEDIATION_MARKER) ||
+                text.includes(MESH_REMEDIATION_MARKER);
+            if (!hasMarker && !(meshProvenance && parsed.source !== 'guardian')) {
+                continue;
+            }
+            return parsed;
         }
     }
     return null;
@@ -373,17 +469,17 @@ export function extractTrustedGuardianHandoff(source) {
  * Scanning stops at the first newer ordinary user message, so an older
  * remediation cannot be resurrected for a later user request.
  */
-export function extractCurrentTurnGuardianHandoff(messages) {
+export function extractCurrentTurnGuardianHandoff(messages, sessionID) {
     if (!Array.isArray(messages))
         return null;
     for (let i = messages.length - 1; i >= 0; i--) {
         const message = messages[i];
-        const handoff = extractTrustedGuardianHandoff(message);
+        const handoff = extractTrustedGuardianHandoff(message, sessionID);
         if (handoff) {
             return handoff;
         }
         if (messageRole(message) === 'user' &&
-            !isInternalNonHumanMessage(message)) {
+            !isInternalNonHumanMessage(message, sessionID)) {
             return null;
         }
     }
@@ -400,6 +496,7 @@ function getHandoffState() {
         state = {
             activeHandoffsBySession: new Map(),
             closedHandoffIds: new Map(),
+            remediatedFormsById: new Map(),
         };
         g[HANDOFF_STATE_SYMBOL] = state;
     }
@@ -408,6 +505,9 @@ function getHandoffState() {
     }
     if (!(state.closedHandoffIds instanceof Map)) {
         state.closedHandoffIds = new Map();
+    }
+    if (!(state.remediatedFormsById instanceof Map)) {
+        state.remediatedFormsById = new Map();
     }
     // Hot-reload compatibility with v1 state that used an unbounded Set.
     if (state.consumedHandoffIds instanceof Set && state.consumedHandoffIds.size > 0) {
@@ -548,6 +648,40 @@ export function clearActiveHandoff(sessionID) {
         return;
     getHandoffState().activeHandoffsBySession.delete(sID);
 }
+export function markFormRemediated(formID, sessionID) {
+    if (!formID || !sessionID)
+        return;
+    const map = getHandoffState().remediatedFormsById;
+    if (map.has(formID))
+        map.delete(formID);
+    map.set(formID, sessionID);
+    while (map.size > MAX_ACTIVE_HANDOFFS) {
+        const oldest = map.keys().next().value;
+        if (!oldest)
+            break;
+        map.delete(oldest);
+    }
+}
+export function unmarkFormRemediated(formID) {
+    if (!formID)
+        return;
+    getHandoffState().remediatedFormsById?.delete(formID);
+}
+export function isFormRemediated(formID, sessionID) {
+    const map = getHandoffState().remediatedFormsById;
+    if (!map)
+        return false;
+    if (formID && map.has(formID)) {
+        return sessionID ? map.get(formID) === sessionID : true;
+    }
+    if (sessionID) {
+        for (const sid of map.values()) {
+            if (sid === sessionID)
+                return true;
+        }
+    }
+    return false;
+}
 /**
  * Reset all handoff tracking state (primarily for test isolation).
  */
@@ -555,5 +689,6 @@ export function resetHandoffTracking() {
     const state = getHandoffState();
     state.activeHandoffsBySession.clear();
     state.closedHandoffIds.clear();
+    state.remediatedFormsById?.clear();
     state.consumedHandoffIds?.clear();
 }

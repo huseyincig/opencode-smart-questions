@@ -27,6 +27,8 @@ export interface ParseHandoffOptions {
 export interface ExtractHandoffOptions {
     requireRemediationMarker?: boolean;
     requireGuardianProvenance?: boolean;
+    parentMeshProvenance?: boolean;
+    sessionID?: string | undefined;
 }
 export declare const COORDINATION_SYMBOL: unique symbol;
 export interface OpenCodeCoordinationRegistry {
@@ -40,8 +42,8 @@ export interface OpenCodeCoordinationRegistry {
         supportsAutoSelect?: boolean;
     };
 }
-export declare function isInternalNonHumanMessage(value: unknown): boolean;
-export declare function registerSmartQuestionsCapability(directory?: string): () => void;
+export declare function isInternalNonHumanMessage(value: unknown, sessionID?: string): boolean;
+export declare function registerSmartQuestionsCapability(directory?: string, onSessionForget?: (sessionID: string) => void): () => void;
 /**
  * Check if Guardian is registered in the in-process capability registry.
  */
@@ -65,13 +67,13 @@ export declare function extractHandoffFromParts(parts: unknown, options?: Extrac
  * Extract a Guardian or mesh handoff only when the host object carries trusted provenance.
  * Supports V1 part metadata and V2 synthetic/message metadata without importing sibling plugins.
  */
-export declare function extractTrustedGuardianHandoff(source: unknown): OpenCodeHandoff | null;
+export declare function extractTrustedGuardianHandoff(source: unknown, sessionID?: string): OpenCodeHandoff | null;
 /**
  * Return the latest trusted Guardian handoff in the current human turn.
  * Scanning stops at the first newer ordinary user message, so an older
  * remediation cannot be resurrected for a later user request.
  */
-export declare function extractCurrentTurnGuardianHandoff(messages: unknown): OpenCodeHandoff | null;
+export declare function extractCurrentTurnGuardianHandoff(messages: unknown, sessionID?: string): OpenCodeHandoff | null;
 /**
  * Store an active handoff for a session.
  * Fails safe and ignores recently closed handoff IDs to prevent replay loops.
@@ -100,6 +102,9 @@ export declare function invalidateActiveHandoff(sessionID: string): OpenCodeHand
  * Use invalidateActiveHandoff() when a new human turn makes replay invalid.
  */
 export declare function clearActiveHandoff(sessionID: string): void;
+export declare function markFormRemediated(formID: string, sessionID: string): void;
+export declare function unmarkFormRemediated(formID: string): void;
+export declare function isFormRemediated(formID?: string, sessionID?: string): boolean;
 /**
  * Reset all handoff tracking state (primarily for test isolation).
  */

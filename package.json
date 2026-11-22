@@ -1,7 +1,7 @@
 {
   "name": "opencode-smart-questions",
-  "version": "1.2.0",
-  "description": "Language-neutral auto-selection of recommended OpenCode V2 question options with user-interaction cancellation",
+  "version": "1.2.1",
+  "description": "Language-neutral auto-selection of recommended OpenCode V2 question forms with user-interaction cancellation, remediation, and optional Plugin Mesh handoffs",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -46,13 +46,17 @@
   },
   "keywords": [
     "opencode",
+    "opencode-v2",
     "opencode-plugin",
     "ai-agent",
     "smart-question",
     "auto-selection",
     "tui",
+    "opentui",
     "automation",
-    "question-dialog"
+    "question-dialog",
+    "plugin-mesh",
+    "handoff"
   ],
   "author": "Hüseyin Hadi Çığ",
   "license": "MIT",

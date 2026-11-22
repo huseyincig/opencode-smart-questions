@@ -337,7 +337,7 @@ test('3.2: registerSmartQuestionsCapability stores reference count on globalThis
 });
 
 test('3.4: ui.tsx reuses stripMarker and formatCountdown from view-model.ts without duplication', async () => {
-  const uiSrc = fs.readFileSync(path.resolve('src/ui.tsx'), 'utf8');
+  const uiSrc = fs.readFileSync(path.resolve(import.meta.dirname, '../src/ui.tsx'), 'utf8');
   assert.match(uiSrc, /from '\.\/view-model\.js'/);
   assert.equal(/strLabel\.slice/.test(uiSrc), false, 'ui.tsx must not duplicate stripMarker logic');
   assert.equal(/Math\.floor\(clamped \/ 60\)/.test(uiSrc), false, 'ui.tsx must not duplicate formatCountdown logic');
@@ -688,7 +688,7 @@ test('3.5 (mesh): index.ts exports mesh bridge helpers and handoff.ts has no unu
   assert.equal(typeof idxMod.acquireSessionLease, 'function');
   assert.equal(typeof idxMod.getBlockingSessionLease, 'function');
   assert.equal(typeof idxMod.isTrustedMeshMessage, 'function');
-  const handoffSrc = fs.readFileSync(path.resolve('src/handoff.ts'), 'utf8');
+  const handoffSrc = fs.readFileSync(path.resolve(import.meta.dirname, '../src/handoff.ts'), 'utf8');
   assert.equal(handoffSrc.includes('SQ_PREV_SYMBOL'), false, 'unused SQ_PREV_SYMBOL should be removed');
 });
 
@@ -907,3 +907,819 @@ test('3.10 (mesh): TUI fire() releases user_interaction lease when form.sync sho
   assert.equal(h.replies.length, 0);
   assert.equal(isSessionWaitingOnUser(sessionID), false, 'fire() must release lease when form is no longer pending');
 });
+
+test('4.1 (mesh): handoff.ts inspects info/prompt metadata, detects hi-internal prompt messages, and allows markerless non-Guardian mesh handoffs', async () => {
+  const {
+    extractHandoffFromParts,
+    extractTrustedGuardianHandoff,
+    isInternalNonHumanMessage,
+  } = await import('../dist/handoff.js');
+  const { formatMeshHandoff, stampMeshMetadata } = await import('../dist/bridge.js');
+
+  const sessionID = 'ses-mesh-41';
+  const hiMeta = stampMeshMetadata(sessionID, {
+    owner: 'opencode-hi',
+    kind: 'handoff',
+    protected: true,
+  });
+  const markerlessHiText = formatMeshHandoff({
+    source: 'opencode-hi',
+    action: 'question_required',
+    kind: 'approval',
+    autoSelect: 'forbidden',
+    handoffId: 'hiq_markerless_1',
+  });
+
+  // 1) Markerless non-Guardian mesh handoff in parts & message with info.metadata when metadata is empty {}
+  const fromParts = extractHandoffFromParts([
+    {
+      type: 'text',
+      text: markerlessHiText,
+      synthetic: true,
+      metadata: {},
+      info: { metadata: hiMeta },
+    },
+  ]);
+  assert.equal(fromParts?.source, 'opencode-hi');
+  assert.equal(fromParts?.handoffId, 'hiq_markerless_1');
+
+  const fromMsg = extractTrustedGuardianHandoff({
+    synthetic: true,
+    metadata: {},
+    prompt: { metadata: hiMeta },
+    text: markerlessHiText,
+  });
+  assert.equal(fromMsg?.source, 'opencode-hi');
+  assert.equal(fromMsg?.handoffId, 'hiq_markerless_1');
+
+  // 2) Markerless source=guardian must still be rejected even if wrapped in mesh metadata
+  const spoofedGuardianText = formatMeshHandoff({
+    source: 'guardian',
+    action: 'question_required',
+    kind: 'approval',
+    autoSelect: 'forbidden',
+    handoffId: 'gq_nomarker_1',
+  });
+  assert.equal(
+    extractTrustedGuardianHandoff({
+      synthetic: true,
+      metadata: hiMeta,
+      text: spoofedGuardianText,
+    }),
+    null,
+    'source=guardian without remediation marker must still be rejected'
+  );
+
+  // 3) isInternalNonHumanMessage inspects prompt recursion, hi-internal, and session-scoped mesh provenance
+  assert.equal(
+    isInternalNonHumanMessage(
+      {
+        metadata: {},
+        prompt: {
+          metadata: { 'hi-internal': 'wake' },
+        },
+      },
+      sessionID
+    ),
+    true,
+    'prompt.metadata with hi-internal must be treated as internal non-human message'
+  );
+});
+
+test('4.2 (mesh): index.ts re-exports bridge helpers, registers per-session directory capability, skips guidance for Hi child workers, and protects newer form lease', async () => {
+  const idx = await import('../dist/index.js');
+  const { registerRoleProfileResolver } = await import('../dist/bridge.js');
+
+  for (const fnName of [
+    'extractTrustedMeshHandoff',
+    'extractCurrentTurnMeshHandoff',
+    'setActiveMeshHandoff',
+    'getActiveMeshHandoff',
+    'consumeActiveMeshHandoff',
+    'clearActiveMeshHandoff',
+    'registerMeshPeer',
+    'getMeshPeers',
+    'hasMeshCapability',
+    'registerMeshStateRpc',
+    'callMeshRpc',
+    'resetMeshStateForTests',
+    'resolveMeshAgentProfile',
+  ]) {
+    assert.equal(typeof idx[fnName], 'function', `index.ts must export ${fnName}`);
+  }
+  assert.equal(typeof idx.MESH_STATE_RPC_DEFINITION, 'object');
+  assert.equal(typeof idx.MESH_STATE_RPC_ID, 'string');
+
+  const startupDir = '/tmp/sq-42-startup';
+  const workerDir = '/tmp/sq-42-worker';
+  const sessionID = 'ses-hi-worker-1';
+  const primarySessionID = 'ses-hi-primary-1';
+
+  const unregisterResolver = registerRoleProfileResolver({
+    owner: 'opencode-hi',
+    directory: workerDir,
+    resolve(sid) {
+      if (sid === sessionID) {
+        return {
+          sessionID: sid,
+          managedBy: 'opencode-hi',
+          capability: 'write-allowed',
+          access: 'read-write',
+        };
+      }
+      if (sid === primarySessionID) {
+        return {
+          sessionID: sid,
+          managedBy: 'opencode-hi',
+          capability: 'write-allowed',
+          access: 'primary',
+        };
+      }
+      return undefined;
+    },
+  });
+
+  let contextHook;
+  let promptHook;
+  const eventQueue = [];
+  let pushEvent;
+  const waitNext = (signal) =>
+    new Promise((resolve) => {
+      if (signal?.aborted) return resolve();
+      pushEvent = resolve;
+      signal?.addEventListener('abort', resolve, { once: true });
+    });
+
+  const dispose = await idx.default.setup({
+    location: { directory: startupDir },
+    options: { enabled: true, includeSubagents: true },
+    session: {
+      async get({ sessionID: sid }) {
+        return {
+          id: sid,
+          parentID: sid === sessionID ? 'ses-root' : undefined,
+          location: { directory: workerDir },
+        };
+      },
+      async hook(name, fn) {
+        if (name === 'context') contextHook = fn;
+        if (name === 'prompt') promptHook = fn;
+        return { async dispose() {} };
+      },
+    },
+    event: {
+      subscribe({ signal }) {
+        return (async function* () {
+          while (!signal?.aborted) {
+            if (eventQueue.length === 0) {
+              await waitNext(signal);
+            }
+            while (eventQueue.length > 0 && !signal?.aborted) {
+              yield eventQueue.shift();
+            }
+          }
+        })();
+      },
+    },
+  });
+
+  try {
+    // Context hook for Hi non-primary child worker skips [SQ_GUIDANCE:v1] and dynamically registers workerDir capability
+    const workerEvent = { sessionID, system: [], messages: [] };
+    await contextHook(workerEvent);
+    assert.equal(
+      workerEvent.system.length,
+      0,
+      'Hi non-primary child worker must not receive [SQ_GUIDANCE:v1]'
+    );
+    assert.equal(
+      idx.hasMeshCapability('interaction.ask', workerDir),
+      true,
+      'dynamic sessionDirectory must be registered in mesh peers'
+    );
+
+    // Context hook for Hi primary agent still injects [SQ_GUIDANCE:v1]
+    const primaryEvent = { sessionID: primarySessionID, system: [], messages: [] };
+    await contextHook(primaryEvent);
+    assert.equal(primaryEvent.system.length, 1);
+
+    // Newer form superseding older form on server event stream
+    idx.setActiveHandoff(primarySessionID, {
+      version: 'v1',
+      source: 'opencode-hi',
+      action: 'question_required',
+      kind: 'choice',
+      autoSelect: 'allowed',
+      handoffId: 'hiq_newer_form_1',
+    });
+
+    eventQueue.push(
+      {
+        type: 'form.created',
+        location: { directory: workerDir },
+        data: { form: { id: 'frm-old', sessionID: primarySessionID, fields: [] } },
+      },
+      {
+        type: 'form.created',
+        location: { directory: workerDir },
+        data: { form: { id: 'frm-new', sessionID: primarySessionID, fields: [] } },
+      },
+      {
+        type: 'form.cancelled',
+        location: { directory: workerDir },
+        data: { formID: 'frm-old', sessionID: primarySessionID },
+      }
+    );
+    pushEvent?.();
+    await delay(30);
+
+    assert.equal(
+      idx.isSessionWaitingOnUser(primarySessionID),
+      true,
+      'cancelling superseded frm-old must not release frm-new interaction lease'
+    );
+    assert.equal(
+      idx.getActiveHandoff(primarySessionID)?.handoffId,
+      'hiq_newer_form_1',
+      'cancelling superseded frm-old must not consume frm-new handoff'
+    );
+
+    // Prompt hook with internal non-human prompt (e.g. hi-internal) preserves lease and handoff
+    await promptHook({
+      sessionID: primarySessionID,
+      prompt: { metadata: { 'hi-internal': 'supervision' } },
+    });
+    assert.equal(idx.isSessionWaitingOnUser(primarySessionID), true);
+    assert.equal(idx.getActiveHandoff(primarySessionID)?.handoffId, 'hiq_newer_form_1');
+
+    // Settling frm-new releases lease and consumes handoff
+    eventQueue.push({
+      type: 'form.replied',
+      location: { directory: workerDir },
+      data: { formID: 'frm-new' },
+    });
+    pushEvent?.();
+    await delay(30);
+    assert.equal(idx.isSessionWaitingOnUser(primarySessionID), false);
+    assert.equal(idx.getActiveHandoff(primarySessionID) ?? null, null);
+  } finally {
+    unregisterResolver();
+    idx.clearActiveHandoff(primarySessionID);
+    await dispose?.();
+  }
+});
+
+test('4.3 (mesh): TUI retains lease when form stays open, syncs non-empty stale message list for handoff, and preserves remediation chain/lease on cancelled remediated form', async (t) => {
+  const {
+    getBlockingSessionLease,
+    isSessionWaitingOnUser,
+    stampMeshMetadata,
+    formatMeshHandoff,
+  } = await import('../dist/bridge.js');
+  const { setActiveHandoff, getActiveHandoff, clearActiveHandoff } = await import('../dist/handoff.js');
+
+  // 1) unclassifiedQuestionPolicy: 'ignore' keeps lease active while form remains open on screen
+  const ignoreSession = 'ses-ignore-open';
+  const unclassifiedForm = {
+    id: 'frm-ignore-1',
+    sessionID: ignoreSession,
+    fields: [{
+      key: 'pick',
+      type: 'string',
+      options: [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }],
+    }],
+  };
+  const hIgnore = makeTuiHarness(t, {
+    options: { timeoutMs: 50, unclassifiedQuestionPolicy: 'ignore' },
+    formList: () => [unclassifiedForm],
+  });
+  const dIgnore = await setup(hIgnore.context);
+  t.after(dIgnore);
+
+  await hIgnore.events.get('form.created')({ data: { form: unclassifiedForm } });
+  assert.equal(
+    isSessionWaitingOnUser(ignoreSession),
+    true,
+    'ignored unclassified form remains open for manual user answer and must retain lease'
+  );
+  await hIgnore.events.get('form.replied')({ data: { sessionID: ignoreSession, formID: 'frm-ignore-1' } });
+  assert.equal(isSessionWaitingOnUser(ignoreSession), false);
+
+  // 2) Message sync fallback when msgApi.list() is non-empty from earlier turns
+  const syncSession = 'ses-msg-sync-fallback';
+  clearActiveHandoff(syncSession);
+  const handoffMeta = stampMeshMetadata(syncSession, {
+    owner: 'opencode-hi',
+    kind: 'handoff',
+    protected: true,
+  });
+  let syncedMessages = false;
+  const staleMsgs = [{ role: 'user', text: 'earlier turn message' }];
+  const freshMsgs = [
+    ...staleMsgs,
+    {
+      synthetic: true,
+      metadata: handoffMeta,
+      text: formatMeshHandoff({
+        source: 'opencode-hi',
+        action: 'question_required',
+        kind: 'approval',
+        autoSelect: 'forbidden',
+        handoffId: 'hiq_synced_turn2',
+      }),
+    },
+  ];
+  const recommendedForm = {
+    id: 'frm-sync-handoff-1',
+    sessionID: syncSession,
+    fields: [{
+      key: 'pick',
+      type: 'string',
+      options: [{ value: 'a', label: 'Approve [SQ:recommended]' }, { value: 'b', label: 'Reject' }],
+    }],
+  };
+  const hSync = makeTuiHarness(t, {
+    options: { timeoutMs: 20 },
+    formList: () => [recommendedForm],
+    messageApi: {
+      list() {
+        return syncedMessages ? freshMsgs : staleMsgs;
+      },
+      async sync() {
+        syncedMessages = true;
+      },
+    },
+  });
+  const dSync = await setup(hSync.context);
+  t.after(() => {
+    clearActiveHandoff(syncSession);
+    dSync();
+  });
+
+  await hSync.events.get('form.created')({ data: { form: recommendedForm } });
+  await delay(45);
+  assert.equal(syncedMessages, true, 'msgApi.sync must be called when non-empty list has no current-turn handoff');
+  assert.equal(
+    hSync.replies.length,
+    0,
+    'synced auto_select=forbidden handoff must block auto-reply'
+  );
+
+  // 3) Remediated form cancellation preserves sessionChains, active handoff, and refreshes lease to 45s TTL;
+  //    superseded form settlement does not disturb newer active form
+  const remSession = 'ses-rem-cancel';
+  setActiveHandoff(remSession, {
+    version: 'v1',
+    source: 'opencode-hi',
+    action: 'question_required',
+    kind: 'choice',
+    autoSelect: 'allowed',
+    handoffId: 'hiq_rem_keep_1',
+  });
+  let syntheticSent = 0;
+  const remForm1 = {
+    id: 'frm-rem-1',
+    sessionID: remSession,
+    fields: [{
+      key: 'pick',
+      type: 'string',
+      options: [{ value: 'a', label: 'Option A' }, { value: 'b', label: 'Option B' }],
+    }],
+  };
+  const remForm2 = { ...remForm1, id: 'frm-rem-2' };
+
+  const hRem = makeTuiHarness(t, {
+    options: {
+      timeoutMs: 200,
+      maxUnclassifiedRemediations: 1,
+      unclassifiedQuestionPolicy: 'remediate',
+    },
+    formList: () => [remForm1, remForm2],
+  });
+  hRem.context.client = {
+    session: {
+      async synthetic() {
+        syntheticSent += 1;
+        return { ok: true };
+      },
+    },
+  };
+  const dRem = await setup(hRem.context);
+  t.after(() => {
+    clearActiveHandoff(remSession);
+    dRem();
+  });
+
+  await hRem.events.get('form.created')({ data: { form: remForm1 } });
+  assert.equal(syntheticSent, 1);
+
+  // Host cancels frm-rem-1 while remediation turn generates replacement form
+  await hRem.events.get('form.cancelled')({ data: { sessionID: remSession, formID: 'frm-rem-1' } });
+  const refreshedLease = getBlockingSessionLease(remSession, 'orchestration_dispatch');
+  assert.ok(refreshedLease, 'user_interaction lease must remain active during remediation turn');
+  assert.ok(
+    refreshedLease.expiresAt - refreshedLease.acquiredAt <= 45_000,
+    'remediation lease refresh must use bounded 45_000ms TTL'
+  );
+  assert.equal(
+    getActiveHandoff(remSession)?.handoffId,
+    'hiq_rem_keep_1',
+    'active handoff must not be consumed when remediated form is cancelled'
+  );
+
+  // Replacement unclassified form with identical fingerprint arrives: budget (1) is now exhausted!
+  await hRem.events.get('form.created')({ data: { form: remForm2 } });
+  assert.equal(
+    syntheticSent,
+    1,
+    'sessionChains consecutiveFailures must survive form.cancelled of remediated form so budget is enforced'
+  );
+
+  // Late duplicate form.cancelled for superseded frm-rem-1 must not release frm-rem-2 lease or handoff
+  await hRem.events.get('form.cancelled')({ data: { sessionID: remSession, formID: 'frm-rem-1' } });
+  assert.equal(isSessionWaitingOnUser(remSession), true);
+  assert.equal(getActiveHandoff(remSession)?.handoffId, 'hiq_rem_keep_1');
+});
+
+test('4.4 (mesh): handoff.ts merges non-empty outer host metadata with prompt/info provenance and extracts prompt.parts/text', async () => {
+  const {
+    extractTrustedGuardianHandoff,
+    isInternalNonHumanMessage,
+  } = await import('../dist/handoff.js');
+  const { formatMeshHandoff, stampMeshMetadata } = await import('../dist/bridge.js');
+
+  const sessionID = 'ses-mesh-44';
+  const hiMeta = stampMeshMetadata(sessionID, {
+    owner: 'opencode-hi',
+    kind: 'handoff',
+    protected: true,
+  });
+  const handoffText = formatMeshHandoff({
+    source: 'opencode-hi',
+    action: 'question_required',
+    kind: 'approval',
+    autoSelect: 'forbidden',
+    handoffId: 'hiq_shadow_1',
+  });
+
+  // Outer metadata is non-empty ({ client: 'tui' }), provenance is in prompt.metadata and text in prompt.parts
+  const extracted = extractTrustedGuardianHandoff(
+    {
+      metadata: { client: 'tui' },
+      prompt: {
+        synthetic: true,
+        metadata: hiMeta,
+        parts: [{ type: 'text', text: handoffText }],
+      },
+    },
+    sessionID
+  );
+  assert.equal(extracted?.source, 'opencode-hi');
+  assert.equal(extracted?.handoffId, 'hiq_shadow_1');
+
+  // isInternalNonHumanMessage recognizes hi-message even when outer metadata has host keys
+  assert.equal(
+    isInternalNonHumanMessage(
+      {
+        metadata: { client: 'tui' },
+        info: {
+          metadata: { 'hi-message': 'delegation' },
+        },
+      },
+      sessionID
+    ),
+    true,
+    'info.metadata with hi-message must not be shadowed by non-empty outer metadata'
+  );
+});
+
+test('4.5 (mesh): TUI preserves remediation budget when form.cancelled arrives while session.synthetic is still in-flight, and releases 45s lease if synthetic rejects after cancel', async (t) => {
+  const { isSessionWaitingOnUser } = await import('../dist/bridge.js');
+
+  // Part A: form.cancelled arrives while session.synthetic is still awaiting, then session.synthetic succeeds
+  const sessionA = 'ses-inflight-cancel-ok';
+  const formA1 = {
+    id: 'frm-inflight-a1',
+    sessionID: sessionA,
+    fields: [{
+      key: 'pick',
+      type: 'string',
+      options: [{ value: 'a', label: 'Option A' }, { value: 'b', label: 'Option B' }],
+    }],
+  };
+  const formA2 = { ...formA1, id: 'frm-inflight-a2' };
+
+  let resolveSyntheticA;
+  let syntheticCallsA = 0;
+  const hA = makeTuiHarness(t, {
+    options: {
+      timeoutMs: 100,
+      maxUnclassifiedRemediations: 1,
+      unclassifiedQuestionPolicy: 'remediate',
+    },
+    formList: () => [formA1, formA2],
+  });
+  hA.context.client = {
+    session: {
+      synthetic() {
+        syntheticCallsA += 1;
+        if (syntheticCallsA > 1) {
+          return Promise.resolve({ ok: true });
+        }
+        return new Promise((resolve) => {
+          resolveSyntheticA = resolve;
+        });
+      },
+    },
+  };
+  const dA = await setup(hA.context);
+  t.after(dA);
+
+  const createdPromiseA = hA.events.get('form.created')({ data: { form: formA1 } });
+  await delay(10);
+  assert.equal(syntheticCallsA, 1);
+
+  // form.cancelled arrives BEFORE session.synthetic promise resolves
+  await hA.events.get('form.cancelled')({ data: { sessionID: sessionA, formID: 'frm-inflight-a1' } });
+  resolveSyntheticA({ ok: true });
+  await createdPromiseA;
+
+  // Next identical unclassified form must see budget (1) exhausted instead of rolled back!
+  await hA.events.get('form.created')({ data: { form: formA2 } });
+  assert.equal(
+    syntheticCallsA,
+    1,
+    'successful in-flight session.synthetic must not roll back sessionChains when form.cancelled arrived mid-flight'
+  );
+
+  // Part B: form.cancelled arrives while session.synthetic is awaiting, and then session.synthetic rejects
+  const sessionB = 'ses-inflight-cancel-fail';
+  const formB1 = { ...formA1, id: 'frm-inflight-b1', sessionID: sessionB };
+  let resolveSyntheticB;
+  const hB = makeTuiHarness(t, {
+    options: {
+      timeoutMs: 100,
+      maxUnclassifiedRemediations: 1,
+      unclassifiedQuestionPolicy: 'remediate',
+    },
+    formList: () => [formB1],
+  });
+  hB.context.client = {
+    session: {
+      synthetic() {
+        return new Promise((resolve) => {
+          resolveSyntheticB = resolve;
+        });
+      },
+    },
+  };
+  const dB = await setup(hB.context);
+  t.after(dB);
+
+  const createdPromiseB = hB.events.get('form.created')({ data: { form: formB1 } });
+  await delay(10);
+  await hB.events.get('form.cancelled')({ data: { sessionID: sessionB, formID: 'frm-inflight-b1' } });
+  assert.equal(isSessionWaitingOnUser(sessionB), true, '45s lease acquired optimistically on cancel');
+
+  // Now synthetic fails with UnknownError
+  resolveSyntheticB({ name: 'UnknownError', message: 'failed' });
+  await createdPromiseB;
+  assert.equal(
+    isSessionWaitingOnUser(sessionB),
+    false,
+    'failed in-flight synthetic after form.cancelled must release the optimistic 45s remediation lease'
+  );
+});
+
+test('4.6 (mesh): server form.cancelled during unclassified form remediation preserves active handoff and refreshes 45s lease', async (t) => {
+  const { default: OpencodeSmartQuestions, setActiveHandoff, getActiveHandoff, clearActiveHandoff } = await import('../dist/index.js');
+  const { isSessionWaitingOnUser, getBlockingSessionLease } = await import('../dist/bridge.js');
+
+  const dir = '/tmp/sq-46-coexist';
+  const sessionID = 'ses-coexist-rem-1';
+  clearActiveHandoff(sessionID);
+  setActiveHandoff(sessionID, {
+    version: 'v1',
+    source: 'opencode-hi',
+    action: 'question_required',
+    kind: 'choice',
+    autoSelect: 'allowed',
+    handoffId: 'hiq_coexist_1',
+  });
+
+  const unclassifiedForm = {
+    id: 'frm-coexist-1',
+    sessionID,
+    fields: [{
+      key: 'pick',
+      type: 'string',
+      options: [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }],
+    }],
+  };
+
+  const serverQueue = [];
+  let wakeServer;
+  const waitServer = (signal) =>
+    new Promise((resolve) => {
+      if (signal?.aborted) return resolve();
+      wakeServer = resolve;
+      signal?.addEventListener('abort', resolve, { once: true });
+    });
+
+  const disposeServer = await OpencodeSmartQuestions.setup({
+    location: { directory: dir },
+    options: { enabled: true, timeoutMs: 200 },
+    session: {
+      async get() {
+        return { id: sessionID, location: { directory: dir } };
+      },
+      async hook() {
+        return { async dispose() {} };
+      },
+    },
+    event: {
+      subscribe({ signal }) {
+        return (async function* () {
+          while (!signal?.aborted) {
+            if (serverQueue.length === 0) await waitServer(signal);
+            while (serverQueue.length > 0 && !signal?.aborted) {
+              yield serverQueue.shift();
+            }
+          }
+        })();
+      },
+    },
+  });
+
+  const hTui = makeTuiHarness(t, {
+    dir,
+    options: { timeoutMs: 200, unclassifiedQuestionPolicy: 'remediate' },
+    formList: () => [unclassifiedForm],
+  });
+  hTui.context.client = {
+    session: {
+      async synthetic() {
+        return { ok: true };
+      },
+    },
+  };
+  const disposeTui = await setup(hTui.context);
+
+  try {
+    // Both TUI and Server receive form.created
+    await hTui.events.get('form.created')({ data: { form: unclassifiedForm } });
+    serverQueue.push({
+      type: 'form.created',
+      location: { directory: dir },
+      data: { form: unclassifiedForm },
+    });
+    wakeServer?.();
+    await delay(25);
+
+    // Now form.cancelled arrives at BOTH TUI and Server while remediation turn is in progress
+    await hTui.events.get('form.cancelled')({ data: { sessionID, formID: 'frm-coexist-1' } });
+    serverQueue.push({
+      type: 'form.cancelled',
+      location: { directory: dir },
+      data: { sessionID, formID: 'frm-coexist-1' },
+    });
+    wakeServer?.();
+    await delay(25);
+
+    assert.equal(
+      getActiveHandoff(sessionID)?.handoffId,
+      'hiq_coexist_1',
+      'server form.cancelled must not consume active handoff when form was cancelled for remediation'
+    );
+    assert.equal(
+      isSessionWaitingOnUser(sessionID),
+      true,
+      'user_interaction lease must remain active during remediation round'
+    );
+    const lease = getBlockingSessionLease(sessionID, 'orchestration_dispatch');
+    assert.ok(lease && lease.expiresAt - lease.acquiredAt <= 45_000);
+  } finally {
+    clearActiveHandoff(sessionID);
+    disposeTui();
+    await disposeServer?.();
+  }
+});
+
+test('4.7 (mesh): forgetMeshSession triggers peer cleanup callback and context hook prioritizes event.messages handoff over stale event.system handoff', async () => {
+  const {
+    default: OpencodeSmartQuestions,
+    getActiveHandoff,
+    clearActiveHandoff,
+    formatOpenCodeHandoff,
+    GUARDIAN_REMEDIATION_MARKER,
+  } = await import('../dist/index.js');
+  const { forgetMeshSession, isSessionWaitingOnUser } = await import('../dist/bridge.js');
+
+  const dir = '/tmp/sq-47-forget';
+  const sessionID = 'ses-forget-1';
+  clearActiveHandoff(sessionID);
+
+  let contextHook;
+  const serverQueue = [];
+  let wakeServer;
+  const waitServer = (signal) =>
+    new Promise((resolve) => {
+      if (signal?.aborted) return resolve();
+      wakeServer = resolve;
+      signal?.addEventListener('abort', resolve, { once: true });
+    });
+
+  const dispose = await OpencodeSmartQuestions.setup({
+    location: { directory: dir },
+    options: { enabled: true },
+    session: {
+      async get() {
+        return { id: sessionID, location: { directory: dir } };
+      },
+      async hook(name, fn) {
+        if (name === 'context') contextHook = fn;
+        return { async dispose() {} };
+      },
+    },
+    event: {
+      subscribe({ signal }) {
+        return (async function* () {
+          while (!signal?.aborted) {
+            if (serverQueue.length === 0) await waitServer(signal);
+            while (serverQueue.length > 0 && !signal?.aborted) {
+              yield serverQueue.shift();
+            }
+          }
+        })();
+      },
+    },
+  });
+
+  try {
+    const sysHandoffText = `${GUARDIAN_REMEDIATION_MARKER}\n${formatOpenCodeHandoff({
+      action: 'question_required',
+      kind: 'choice',
+      autoSelect: 'allowed',
+      handoffId: 'gq_sys_old',
+    })}`;
+    const msgHandoffText = `${GUARDIAN_REMEDIATION_MARKER}\n${formatOpenCodeHandoff({
+      action: 'question_required',
+      kind: 'approval',
+      autoSelect: 'forbidden',
+      handoffId: 'gq_msg_new',
+    })}`;
+
+    const event = {
+      sessionID,
+      system: [
+        {
+          type: 'text',
+          synthetic: true,
+          metadata: {
+            'opencode-guardian': true,
+            'opencode-guardian-kind': 'remediation',
+            'opencode-guardian-provenance': 'tok-sys-1',
+          },
+          text: sysHandoffText,
+        },
+      ],
+      messages: [
+        {
+          type: 'synthetic',
+          synthetic: true,
+          metadata: {
+            'opencode-guardian': true,
+            'opencode-guardian-kind': 'remediation',
+            'opencode-guardian-provenance': 'tok-msg-1',
+          },
+          text: msgHandoffText,
+        },
+      ],
+    };
+
+    await contextHook(event);
+    assert.equal(
+      getActiveHandoff(sessionID)?.handoffId,
+      'gq_msg_new',
+      'current-turn event.messages handoff must not be overwritten by event.system handoff'
+    );
+
+    // Acquire server lease via form.created, then call forgetMeshSession(sessionID) directly
+    serverQueue.push({
+      type: 'form.created',
+      location: { directory: dir },
+      data: { form: { id: 'frm-forget-1', sessionID, fields: [] } },
+    });
+    wakeServer?.();
+    await delay(25);
+    assert.equal(isSessionWaitingOnUser(sessionID), true);
+
+    forgetMeshSession(sessionID);
+    assert.equal(isSessionWaitingOnUser(sessionID), false);
+    assert.equal(getActiveHandoff(sessionID) ?? null, null, 'forgetMeshSession must also clear active handoff in handoff.ts');
+  } finally {
+    clearActiveHandoff(sessionID);
+    await dispose?.();
+  }
+});
+

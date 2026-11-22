@@ -11,15 +11,18 @@ import {
   extractCurrentTurnGuardianHandoff,
   extractTrustedGuardianHandoff,
   invalidateActiveHandoff,
+  isFormRemediated,
   isInternalNonHumanMessage,
   registerSmartQuestionsCapability,
   setActiveHandoff,
+  unmarkFormRemediated,
 } from './handoff.js';
 import {
   acquireSessionLease,
   forgetMeshSession,
   isTrustedMeshMessage,
   registerMeshStateRpc,
+  resolveMeshAgentProfile,
 } from './bridge.js';
 
 export * from './types.js';
@@ -58,7 +61,44 @@ export {
   verifyMeshMetadata,
   isTrustedMeshMessage,
   forgetMeshSession,
+  extractTrustedMeshHandoff,
+  extractCurrentTurnMeshHandoff,
+  setActiveMeshHandoff,
+  getActiveMeshHandoff,
+  consumeActiveMeshHandoff,
+  clearActiveMeshHandoff,
+  registerMeshPeer,
+  getMeshPeers,
+  hasMeshCapability,
+  registerMeshStateRpc,
+  callMeshRpc,
+  MESH_STATE_RPC_DEFINITION,
+  MESH_STATE_RPC_ID,
+  resetMeshStateForTests,
+  resolveMeshAgentProfile,
 } from './bridge.js';
+
+const MAX_BOUNDED_ENTRIES = 512;
+
+function setBoundedMap<K, V>(
+  map: Map<K, V>,
+  key: K,
+  value: V,
+  max = MAX_BOUNDED_ENTRIES,
+  onEvict?: (key: K, value: V) => void
+): void {
+  if (map.has(key)) {
+    map.delete(key);
+  }
+  map.set(key, value);
+  while (map.size > max) {
+    const oldestKey = map.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldestValue = map.get(oldestKey)!;
+    map.delete(oldestKey);
+    onEvict?.(oldestKey, oldestValue);
+  }
+}
 
 function sessionDirectoryFromInfo(
   sessionInfo: unknown,
@@ -80,7 +120,7 @@ function sessionDirectoryFromInfo(
   return fallbackDirectory;
 }
 
-function eventSessionID(data: unknown): string {
+function eventSessionID(data: unknown, eventType?: unknown): string {
   if (!data || typeof data !== 'object') return '';
   const record = data as Record<string, unknown>;
   if (typeof record.sessionID === 'string') return record.sessionID;
@@ -97,6 +137,23 @@ function eventSessionID(data: unknown): string {
     typeof (record.item as Record<string, unknown>).sessionID === 'string'
   ) {
     return (record.item as Record<string, unknown>).sessionID as string;
+  }
+  if (
+    record.info &&
+    typeof record.info === 'object' &&
+    typeof (record.info as Record<string, unknown>).id === 'string'
+  ) {
+    return (record.info as Record<string, unknown>).id as string;
+  }
+  if (
+    record.session &&
+    typeof record.session === 'object' &&
+    typeof (record.session as Record<string, unknown>).id === 'string'
+  ) {
+    return (record.session as Record<string, unknown>).id as string;
+  }
+  if (eventType === 'session.deleted' && typeof record.id === 'string') {
+    return record.id;
   }
   return '';
 }
@@ -153,21 +210,50 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
     if (!explicitConfig?.enabled) return;
   }
 
-  const unregisterCapability = registerSmartQuestionsCapability(context.location?.directory);
   const activeInteractionLeases = new Map<string, () => void>();
   const formSessionByFormID = new Map<string, string>();
+  const activeFormBySession = new Map<string, string>();
   const releaseInteractionLease = (sessionID: string) => {
     const release = activeInteractionLeases.get(sessionID);
     if (release) {
       activeInteractionLeases.delete(sessionID);
       release();
     }
+    activeFormBySession.delete(sessionID);
     for (const [fId, sId] of formSessionByFormID.entries()) {
       if (sId === sessionID) {
         formSessionByFormID.delete(fId);
       }
     }
   };
+
+  const capabilityDisposersByDir = new Map<string, () => void>();
+  const ensureDirectoryCapability = (directory?: string) => {
+    const key = typeof directory === 'string' && directory.trim() ? directory.trim() : '*';
+    if (capabilityDisposersByDir.has(key)) return;
+    setBoundedMap(
+      capabilityDisposersByDir,
+      key,
+      registerSmartQuestionsCapability(directory, (sessionID) => {
+        releaseInteractionLease(sessionID);
+      }),
+      MAX_BOUNDED_ENTRIES,
+      (_k, dispose) => {
+        try {
+          dispose();
+        } catch {}
+      }
+    );
+  };
+  const disposeCapabilities = () => {
+    for (const dispose of Array.from(capabilityDisposersByDir.values()).reverse()) {
+      try {
+        dispose();
+      } catch {}
+    }
+    capabilityDisposersByDir.clear();
+  };
+  ensureDirectoryCapability(context.location?.directory);
   const registrations: Array<{ dispose(): Promise<void> | void }> = [];
   const disposeRegistrations = async (): Promise<void> => {
     for (const release of activeInteractionLeases.values()) {
@@ -177,6 +263,7 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
     }
     activeInteractionLeases.clear();
     formSessionByFormID.clear();
+    activeFormBySession.clear();
     for (const registration of registrations.splice(0).reverse()) {
       try {
         await registration.dispose();
@@ -206,6 +293,7 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
     if (!isEligibleSessionInfo(sessionInfo, config.includeSubagents === true)) {
       return null;
     }
+    ensureDirectoryCapability(dir);
     return config;
   };
 
@@ -242,33 +330,45 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
       const config = resolveSmartQuestionConfig(sessionDirectory, pluginOptions);
       if (!config?.enabled) return;
       if (!isEligibleSessionInfo(sessionInfo, config.includeSubagents === true)) return;
+      ensureDirectoryCapability(sessionDirectory);
 
-      const guidance = buildRecommendationGuidance(config);
-
-      if (!Array.isArray(event.system)) {
-        event.system = [];
-      }
-
-      const alreadyInjected = event.system.some(
-        (part) =>
-          part.type === 'text' &&
-          typeof part.text === 'string' &&
-          part.text.includes(SQ_GUIDANCE_SENTINEL)
-      );
-      if (!alreadyInjected) {
-        event.system.push({
-          type: 'text',
-          text: guidance.system,
-        });
-      }
-
-      if (Array.isArray(event.messages)) {
-        const handoff = extractCurrentTurnGuardianHandoff(event.messages);
-        if (handoff) {
-          setActiveHandoff(sessionID, handoff);
+      let skipGuidanceForHiWorker = false;
+      if (config.includeSubagents === true) {
+        const profile = await resolveMeshAgentProfile(sessionID, sessionDirectory);
+        if (
+          profile?.managedBy === 'opencode-hi' &&
+          profile.access &&
+          profile.access !== 'primary'
+        ) {
+          skipGuidanceForHiWorker = true;
         }
       }
-      if (Array.isArray(event.system)) {
+
+      if (!skipGuidanceForHiWorker) {
+        const guidance = buildRecommendationGuidance(config);
+
+        if (!Array.isArray(event.system)) {
+          event.system = [];
+        }
+
+        const alreadyInjected = event.system.some(
+          (part) =>
+            part.type === 'text' &&
+            typeof part.text === 'string' &&
+            part.text.includes(SQ_GUIDANCE_SENTINEL)
+        );
+        if (!alreadyInjected) {
+          event.system.push({
+            type: 'text',
+            text: guidance.system,
+          });
+        }
+      }
+
+      let handoff = Array.isArray(event.messages)
+        ? extractCurrentTurnGuardianHandoff(event.messages, sessionID)
+        : null;
+      if (!handoff && Array.isArray(event.system)) {
         for (let i = event.system.length - 1; i >= 0; i--) {
           const part = event.system[i];
           if (
@@ -277,13 +377,16 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
             !part.text.includes(SQ_GUIDANCE_SENTINEL) &&
             part.text.includes('[OPENCODE_HANDOFF:v1]')
           ) {
-            const parsed = extractTrustedGuardianHandoff(part);
+            const parsed = extractTrustedGuardianHandoff(part, sessionID);
             if (parsed) {
-              setActiveHandoff(sessionID, parsed);
+              handoff = parsed;
               break;
             }
           }
         }
+      }
+      if (handoff) {
+        setActiveHandoff(sessionID, handoff);
       }
     });
 
@@ -303,6 +406,7 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
       if (
         meta?.['opencode-guardian'] === true ||
         meta?.['opencode-smart-questions'] === true ||
+        isInternalNonHumanMessage(event, sessionID) ||
         isTrustedMeshMessage(event, sessionID)
       ) {
         return;
@@ -342,11 +446,12 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
                 (evt as { properties?: unknown }).properties;
               const formID = eventFormID(data);
               const sessionID =
-                eventSessionID(data) || (formID ? (formSessionByFormID.get(formID) ?? '') : '');
+                eventSessionID(data, eventType) ||
+                (formID ? (formSessionByFormID.get(formID) ?? '') : '');
               if (!sessionID) continue;
 
               if (eventType === 'session.synthetic') {
-                const handoff = extractTrustedGuardianHandoff(data);
+                const handoff = extractTrustedGuardianHandoff(data, sessionID);
                 if (handoff && (await isSessionEligible(sessionID, eventDir))) {
                   setActiveHandoff(sessionID, handoff);
                 }
@@ -360,22 +465,30 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
                     ? (item as { type?: unknown }).type
                     : undefined;
                 if (itemType === 'synthetic') {
-                  const handoff = extractTrustedGuardianHandoff(item);
+                  const handoff = extractTrustedGuardianHandoff(item, sessionID);
                   if (handoff && (await isSessionEligible(sessionID, eventDir))) {
                     setActiveHandoff(sessionID, handoff);
                   }
-                } else if (itemType === 'user' && !isInternalNonHumanMessage(item)) {
+                } else if (itemType === 'user' && !isInternalNonHumanMessage(item, sessionID)) {
                   releaseInteractionLease(sessionID);
                   invalidateActiveHandoff(sessionID);
                 }
               } else if (eventType === 'form.created') {
                 const sessionConfig = await resolveEligibleSessionConfig(sessionID, eventDir);
                 if (sessionConfig) {
-                  releaseInteractionLease(sessionID);
-                  if (formID) {
-                    formSessionByFormID.set(formID, sessionID);
+                  const existingRelease = activeInteractionLeases.get(sessionID);
+                  if (existingRelease) {
+                    activeInteractionLeases.delete(sessionID);
+                    existingRelease();
                   }
-                  activeInteractionLeases.set(
+                  if (formID) {
+                    setBoundedMap(formSessionByFormID, formID, sessionID);
+                    setBoundedMap(activeFormBySession, sessionID, formID);
+                  } else {
+                    activeFormBySession.delete(sessionID);
+                  }
+                  setBoundedMap(
+                    activeInteractionLeases,
                     sessionID,
                     acquireSessionLease({
                       sessionID,
@@ -383,12 +496,60 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
                       kind: 'user_interaction',
                       ttlMs: Math.max((sessionConfig.timeoutMs ?? 0) + 15_000, 120_000),
                       reason: 'form-created',
-                    })
+                    }),
+                    MAX_BOUNDED_ENTRIES,
+                    (_k, release) => {
+                      try {
+                        release();
+                      } catch {}
+                    }
                   );
                 }
               } else if (eventType === 'form.replied' || eventType === 'form.cancelled') {
-                releaseInteractionLease(sessionID);
-                consumeActiveHandoff(sessionID);
+                const activeFormID = activeFormBySession.get(sessionID);
+                if (formID && activeFormID && activeFormID !== formID) {
+                  formSessionByFormID.delete(formID);
+                  unmarkFormRemediated(formID);
+                } else if (
+                  eventType === 'form.cancelled' &&
+                  isFormRemediated(formID || activeFormID, sessionID)
+                ) {
+                  if (formID) {
+                    formSessionByFormID.delete(formID);
+                    unmarkFormRemediated(formID);
+                  } else if (activeFormID) {
+                    unmarkFormRemediated(activeFormID);
+                  }
+                  const existingRelease = activeInteractionLeases.get(sessionID);
+                  if (existingRelease) {
+                    activeInteractionLeases.delete(sessionID);
+                    existingRelease();
+                  }
+                  setBoundedMap(
+                    activeInteractionLeases,
+                    sessionID,
+                    acquireSessionLease({
+                      sessionID,
+                      owner: 'opencode-smart-questions',
+                      kind: 'user_interaction',
+                      ttlMs: 45_000,
+                      reason: `remediation:${formID || activeFormID || sessionID}`,
+                    }),
+                    MAX_BOUNDED_ENTRIES,
+                    (_k, release) => {
+                      try {
+                        release();
+                      } catch {}
+                    }
+                  );
+                } else {
+                  if (formID) {
+                    formSessionByFormID.delete(formID);
+                    unmarkFormRemediated(formID);
+                  }
+                  releaseInteractionLease(sessionID);
+                  consumeActiveHandoff(sessionID);
+                }
               } else if (eventType === 'session.deleted') {
                 releaseInteractionLease(sessionID);
                 clearActiveHandoff(sessionID);
@@ -409,7 +570,7 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
     }
   } catch (error) {
     await disposeRegistrations();
-    unregisterCapability();
+    disposeCapabilities();
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`[smart-question] V2 backend registration failed: ${message}`);
   }
@@ -418,7 +579,7 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
     try {
       await disposeRegistrations();
     } finally {
-      unregisterCapability();
+      disposeCapabilities();
     }
   };
 };

@@ -38,6 +38,8 @@ import {
   isInternalNonHumanMessage,
   extractTrustedGuardianHandoff,
   extractCurrentTurnGuardianHandoff,
+  markFormRemediated,
+  unmarkFormRemediated,
 } from './handoff.js';
 import {
   acquireSessionLease,
@@ -406,7 +408,11 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
   const remediatedForms = new Map<string, string>();
   const settledForms = new Map<string, true>();
   const sessionChains = new Map<string, { fingerprint: string; consecutiveFailures: number }>();
-  const uiInteractionLeases = new Map<string, { release: () => void; dir?: string | undefined }>();
+  const uiInteractionLeases = new Map<
+    string,
+    { release: () => void; dir?: string | undefined; formID?: string | undefined }
+  >();
+  const MAX_UI_INTERACTION_LEASES = 512;
   const syncRemoteLease = (
     sessionID: string,
     active: boolean,
@@ -430,6 +436,27 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       directory: dir ?? context.location?.directory,
     });
   };
+  const setUiInteractionLease = (
+    sessionID: string,
+    entry: { release: () => void; dir?: string | undefined; formID?: string | undefined }
+  ) => {
+    if (uiInteractionLeases.has(sessionID)) {
+      uiInteractionLeases.delete(sessionID);
+    }
+    uiInteractionLeases.set(sessionID, entry);
+    while (uiInteractionLeases.size > MAX_UI_INTERACTION_LEASES) {
+      const oldestSessionID = uiInteractionLeases.keys().next().value;
+      if (oldestSessionID === undefined) break;
+      const oldest = uiInteractionLeases.get(oldestSessionID);
+      uiInteractionLeases.delete(oldestSessionID);
+      if (oldest) {
+        try {
+          oldest.release();
+        } catch {}
+        syncRemoteLease(oldestSessionID, false, oldest.dir);
+      }
+    }
+  };
   const releaseUiLease = (sessionID: string, dir?: string) => {
     const entry = uiInteractionLeases.get(sessionID);
     if (entry) {
@@ -437,7 +464,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       try {
         entry.release();
       } catch {}
-      syncRemoteLease(sessionID, false, dir ?? entry.dir);
+      syncRemoteLease(sessionID, false, entry.dir ?? dir);
     }
   };
   const releaseAllUiLeases = () => {
@@ -460,6 +487,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     for (const [fID, sID] of remediatedForms.entries()) {
       if (sID === sessionID) {
         remediatedForms.delete(fID);
+        unmarkFormRemediated(fID);
       }
     }
   };
@@ -539,7 +567,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
   const onFormCreated = async (event: any) => {
     if (disposed) return;
-    const form = event?.data?.form as V2FormInfo | undefined;
+    const form = (event?.data?.form ?? event?.properties?.form) as V2FormInfo | undefined;
     if (!form?.id || !form.sessionID || form.sessionID === 'global') return;
 
     // Re-delivery of the same form must preserve its reply owner and any
@@ -599,7 +627,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       if (!config?.enabled) return;
       releaseUiLease(form.sessionID, locationDir);
       const leaseTtl = Math.max((config.timeoutMs ?? 0) + 15_000, 120_000);
-      uiInteractionLeases.set(form.sessionID, {
+      setUiInteractionLease(form.sessionID, {
         release: acquireSessionLease({
           sessionID: form.sessionID,
           owner: 'opencode-smart-questions',
@@ -608,6 +636,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
           reason: `form:${form.id}`,
         }),
         dir: locationDir,
+        formID: form.id,
       });
       syncRemoteLease(form.sessionID, true, locationDir, leaseTtl, `form:${form.id}`);
       const log = createDiagnosticLogger(config, 'smart-question-v2-ui');
@@ -624,20 +653,30 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         try {
           const msgApi = (context.data?.session as any)?.message;
           let msgs = msgApi?.list?.(form.sessionID);
+          let synced = false;
           if (
             (!Array.isArray(msgs) || msgs.length === 0) &&
             typeof msgApi?.sync === 'function'
           ) {
             await msgApi.sync(form.sessionID);
+            synced = true;
             if (!isFlightCurrent()) return;
             msgs = msgApi?.list?.(form.sessionID);
           }
-          if (Array.isArray(msgs)) {
-            const extracted = extractCurrentTurnGuardianHandoff(msgs);
-            if (extracted) {
-              if (setActiveHandoff(form.sessionID, extracted) === true) {
-                handoff = extracted;
-              }
+          let extracted = Array.isArray(msgs)
+            ? extractCurrentTurnGuardianHandoff(msgs, form.sessionID)
+            : null;
+          if (!extracted && !synced && typeof msgApi?.sync === 'function') {
+            await msgApi.sync(form.sessionID);
+            if (!isFlightCurrent()) return;
+            msgs = msgApi?.list?.(form.sessionID);
+            extracted = Array.isArray(msgs)
+              ? extractCurrentTurnGuardianHandoff(msgs, form.sessionID)
+              : null;
+          }
+          if (extracted) {
+            if (setActiveHandoff(form.sessionID, extracted) === true) {
+              handoff = extracted;
             }
           }
         } catch {
@@ -691,7 +730,6 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
       if (classification.status === 'unclassified') {
         if (config.unclassifiedQuestionPolicy === 'ignore') {
-          releaseUiLease(form.sessionID, locationDir);
           log(`unclassified form=${form.id} ignored per unclassifiedQuestionPolicy`);
           return;
         }
@@ -761,6 +799,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
         if (classification.status === 'unclassified') {
           setBounded(remediatedForms, form.id, form.sessionID, MAX_REMEDIATED_FORMS);
+          markFormRemediated(form.id, form.sessionID);
           setBounded(
             sessionChains,
             form.sessionID,
@@ -815,13 +854,20 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
                 (Boolean((response as { error?: unknown }).error) ||
                   (response as { ok?: unknown }).ok === false ||
                   (response as { name?: unknown }).name === 'UnknownError');
-              remediationSent = isFlightCurrent() && !rejected;
+              remediationSent = !disposed && !rejected;
             }
           } catch (err) {
             log(`remediation send failed form=${form.id} code=${diagnosticErrorCode(err)}`);
           }
           if (!remediationSent) {
             remediatedForms.delete(form.id);
+            unmarkFormRemediated(form.id);
+            if (
+              settledForms.has(form.id) &&
+              uiInteractionLeases.get(form.sessionID)?.formID === form.id
+            ) {
+              releaseUiLease(form.sessionID, locationDir);
+            }
             if (currentCount === 0) {
               sessionChains.delete(form.sessionID);
             } else {
@@ -835,7 +881,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
                 MAX_SESSION_CHAINS
               );
             }
-            if (!disposed) {
+            if (!disposed && !settledForms.has(form.id)) {
               updateSessionState(form.sessionID, (current) =>
                 current?.formID === form.id
                   ? { ...current, status: 'error', errorMessage: config.uiText.remediationFailed }
@@ -850,7 +896,6 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
       if (classification.status !== 'auto' || !isFlightCurrent()) return;
       if (!canUseDraftCoordination(effectiveConfigDir, log)) {
-        releaseUiLease(form.sessionID, locationDir);
         log(`skip auto-selection form=${form.id} reason=draft coordination unavailable`);
         return;
       }
@@ -1010,7 +1055,10 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     }
   };
 
-  const onFormSettled = (event: any) => {
+  const onFormSettled = (
+    event: any,
+    kind: 'replied' | 'cancelled' = 'replied'
+  ) => {
     const formID =
       event?.data?.formID ??
       event?.data?.id ??
@@ -1028,26 +1076,100 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         ? rawSessionID
         : typeof formID === 'string'
           ? (pending.get(formID)?.sessionID ??
-            Object.keys(activeBySession()).find((sId) => activeBySession()[sId]?.formID === formID))
+            remediatedForms.get(formID) ??
+            inFlightForms.get(formID)?.sessionID ??
+            Object.keys(activeBySession()).find((sId) => activeBySession()[sId]?.formID === formID) ??
+            Array.from(uiInteractionLeases.entries()).find(([, v]) => v.formID === formID)?.[0])
           : undefined;
-    if (targetSession) {
-      releaseUiLease(targetSession, event?.location?.directory);
-      consumeActiveHandoff(targetSession);
-      sessionChains.delete(targetSession);
+
+    const currentFormID = targetSession
+      ? (uiInteractionLeases.get(targetSession)?.formID ??
+        activeBySession()[targetSession]?.formID)
+      : undefined;
+
+    if (
+      targetSession &&
+      typeof formID === 'string' &&
+      currentFormID &&
+      currentFormID !== formID
+    ) {
+      setBounded(settledForms, formID, true, MAX_SETTLED_FORMS);
+      inFlightForms.delete(formID);
+      remediatedForms.delete(formID);
+      unmarkFormRemediated(formID);
+      clearPending(formID);
+      const existingState = activeBySession()[targetSession];
+      if (existingState?.formID === formID && existingState.lockPath) {
+        try {
+          deleteLockfile(existingState.lockPath);
+        } catch {}
+      }
+      updateSessionState(targetSession, (current) =>
+        current?.formID === formID ? undefined : current
+      );
+      return;
     }
+
+    const wasRemediated =
+      typeof formID === 'string' && remediatedForms.has(formID);
+
     if (typeof formID === 'string') {
       setBounded(settledForms, formID, true, MAX_SETTLED_FORMS);
       inFlightForms.delete(formID);
       remediatedForms.delete(formID);
+      if (kind !== 'cancelled') {
+        unmarkFormRemediated(formID);
+      }
       clearPending(formID);
-      if (targetSession) {
-        const existingState = activeBySession()[targetSession];
-        if (existingState?.lockPath) {
-          try { deleteLockfile(existingState.lockPath); } catch {}
-        }
+    }
+
+    if (targetSession) {
+      const existingState = activeBySession()[targetSession];
+      if (
+        existingState?.lockPath &&
+        (!formID || existingState.formID === formID)
+      ) {
+        try {
+          deleteLockfile(existingState.lockPath);
+        } catch {}
+      }
+      if (typeof formID === 'string') {
         updateSessionState(targetSession, (current) =>
           current?.formID === formID ? undefined : current
         );
+      } else {
+        updateSessionState(targetSession, () => undefined);
+      }
+
+      if (kind === 'cancelled' && wasRemediated) {
+        const prevDir =
+          uiInteractionLeases.get(targetSession)?.dir ??
+          event?.location?.directory ??
+          context.location?.directory;
+        releaseUiLease(targetSession, prevDir);
+        const remediationTtlMs = 45_000;
+        setUiInteractionLease(targetSession, {
+          release: acquireSessionLease({
+            sessionID: targetSession,
+            owner: 'opencode-smart-questions',
+            kind: 'user_interaction',
+            ttlMs: remediationTtlMs,
+            reason: `remediation:${formID}`,
+          }),
+          dir: prevDir,
+          formID: typeof formID === 'string' ? formID : undefined,
+        });
+        syncRemoteLease(
+          targetSession,
+          true,
+          prevDir,
+          remediationTtlMs,
+          `remediation:${formID}`
+        );
+      } else {
+        releaseUiLease(targetSession, event?.location?.directory);
+        consumeActiveHandoff(targetSession);
+        sessionChains.delete(targetSession);
       }
     }
   };
@@ -1130,7 +1252,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     payload: unknown,
     eventLocation?: { directory?: string }
   ) => {
-    const handoff = extractTrustedGuardianHandoff(payload);
+    const handoff = extractTrustedGuardianHandoff(payload, sessionID);
     if (!handoff) return;
     const cachedInfo = getCachedSessionInfo(sessionID);
     if (cachedInfo !== undefined || typeof (context.data.session as any)?.sync !== 'function') {
@@ -1177,26 +1299,28 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
   try {
     cleanups.push(context.data.on('form.created', onFormCreated));
-    cleanups.push(context.data.on('form.replied', onFormSettled));
-    cleanups.push(context.data.on('form.cancelled', onFormSettled));
+    cleanups.push(context.data.on('form.replied', (event) => onFormSettled(event, 'replied')));
+    cleanups.push(context.data.on('form.cancelled', (event) => onFormSettled(event, 'cancelled')));
 
     cleanups.push(
-      context.data.on('session.synthetic', (event) => {
-        const sessionID = String(event?.data?.sessionID ?? '');
+      context.data.on('session.synthetic', (event: any) => {
+        const payload = event?.data ?? event?.properties;
+        const sessionID = String(payload?.sessionID ?? '');
         if (!sessionID || sessionID === 'global') return;
-        setHandoffIfEligible(sessionID, event?.data, event?.location);
+        setHandoffIfEligible(sessionID, payload, event?.location);
       })
     );
 
     cleanups.push(
-      context.data.on('session.inbox.enqueued', (event) => {
-        const sessionID = String(event?.data?.sessionID ?? '');
+      context.data.on('session.inbox.enqueued', (event: any) => {
+        const payload = event?.data ?? event?.properties;
+        const item = payload?.item;
+        const sessionID = String(payload?.sessionID ?? item?.sessionID ?? '');
         if (!sessionID || sessionID === 'global') return;
-        const item = event?.data?.item;
         if (item?.type === 'synthetic') {
           setHandoffIfEligible(sessionID, item, event?.location);
-        } else if (item?.type === 'user' && !isInternalNonHumanMessage(item)) {
-          releaseUiLease(sessionID);
+        } else if (item?.type === 'user' && !isInternalNonHumanMessage(item, sessionID)) {
+          releaseUiLease(sessionID, event?.location?.directory);
           invalidateActiveHandoff(sessionID);
           sessionChains.delete(sessionID);
           cancelInFlightForSession(sessionID);
@@ -1206,10 +1330,17 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     );
 
     cleanups.push(
-      context.data.on('session.deleted', (event) => {
-        const sessionID = String(event?.data?.sessionID ?? '');
+      context.data.on('session.deleted', (event: any) => {
+        const payload = event?.data ?? event?.properties;
+        const sessionID = String(
+          payload?.sessionID ??
+            payload?.info?.id ??
+            payload?.session?.id ??
+            payload?.id ??
+            ''
+        );
         if (sessionID && sessionID !== 'global') {
-          releaseUiLease(sessionID);
+          releaseUiLease(sessionID, event?.location?.directory);
           clearActiveHandoff(sessionID);
           forgetMeshSession(sessionID);
           sessionChains.delete(sessionID);

@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/opencode-smart-questions?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
 [![npm downloads](https://img.shields.io/npm/dm/opencode-smart-questions?color=blue&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
 [![OpenCode: v2.3.0+](https://img.shields.io/badge/OpenCode-v2.3.0%2B-10b981?logo=terminal&logoColor=white)](https://opencode.ai)
-[![Tests: 159/159 Passing](https://img.shields.io/badge/Tests-159%2F159%20Passing-339933?logo=githubactions&logoColor=white)](docs/verification.md)
+[![Tests: 166/166 Passing](https://img.shields.io/badge/Tests-166%2F166%20Passing-339933?logo=githubactions&logoColor=white)](docs/verification.md)
 [![Live Host: 8/8 Passing](https://img.shields.io/badge/Live%20Host-8%2F8%20Passing-339933?logo=checkmarx&logoColor=white)](docs/acceptance-v2.md)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.0.0-339933?logo=nodedotjs&logoColor=white)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
@@ -21,16 +21,16 @@ A high-performance, deterministic **OpenCode V2** plugin (`@opencode/plugin` `2.
 
 ![Automated and host acceptance results](docs/assets/verification-overview.svg)
 
-Smart Questions **v1.2.0** was verified on **20 November 2026**, using Node **26.13.1**, `@opencode/plugin` **2.3.0** (`^2.3.0`), and live OpenCode **v2.3.2**:
+Smart Questions **v1.2.1** was verified on **22 November 2026**, using Node **26.13.1**, `@opencode/plugin` **2.3.0** (`^2.3.0`), and live OpenCode **v2.3.2**:
 
-- **Unit & Regression Suite:** **159 / 159** tests passing (`npm test`).
+- **Unit & Regression Suite:** **166 / 166** tests passing (`npm test`).
 - **Live OpenCode v2.3.2 Host Acceptance:** **8 / 8** end-to-end scenarios passing against a live `opencode serve` (`v2.3.2`) instance (`npm run test:acceptance`).
 - **Sandbox Scenarios:** **7 / 7** comprehensive V2 scenarios and the separate V2 smoke test pass.
 - **Static Analysis & Audit:** Standard and strict TypeScript gates pass; Oxlint reports **0 warnings / 0 errors**; `npm audit` reports **0 vulnerabilities**.
 
 Read the detailed [V2 Acceptance Report](docs/acceptance-v2.md) and [Technical Verification](docs/verification.md) for full reproduction steps and test harnesses.
 
-See the [1.2.0 release notes](CHANGELOG.md) for Universal OpenCode V2 Plugin Mesh interoperability (`src/bridge.ts`), `user_interaction` session leases, multi-peer handoff provenance hardening, and expanded installation documentation.
+See the [1.2.1 release notes](CHANGELOG.md) for Plugin Mesh Bridge `2.3.1` (`onSessionForget`, cross-directory RPC standby), nested `prompt`/`info` provenance merging, in-flight remediation budget & lease race fixes, and `context` hook handoff prioritization.
 
 ---
 
@@ -52,7 +52,7 @@ See the [1.2.0 release notes](CHANGELOG.md) for Universal OpenCode V2 Plugin Mes
 
 ## 📦 Installation
 
-The current version is **1.2.0** (OpenCode **v2.3.0+**, verified on **v2.3.2**).
+The current version is **1.2.1** (OpenCode **v2.3.0+**, verified on **v2.3.2**).
 
 You can install **OpenCode Smart Questions** globally for all workspaces, per-project, via npm/CLI, or from a local checkout.
 
@@ -72,7 +72,7 @@ Or pin an exact version and pass optional inline plugin settings:
 {
   "plugins": [
     [
-      "opencode-smart-questions@1.2.0",
+      "opencode-smart-questions@1.2.1",
       {
         "timeoutMs": 30000,
         "includeSubagents": false
@@ -259,7 +259,7 @@ npm pack --dry-run
 
 - `src/index.ts`: Pure OpenCode V2 server plugin (`Plugin.define`) registering `context`/`prompt` hooks, `event.subscribe`, and mesh state RPC.
 - `src/ui.tsx`: Pure OpenCode V2 TUI plugin (`Plugin.define`) with reactive Solid overlay, countdown, `user_interaction` leases, and `session.form.reply`.
-- `src/bridge.ts`: Universal OpenCode V2 Plugin Mesh bridge (`BRIDGE_REVISION: 2.3.0`) providing capability discovery, session leases, provenance envelopes, and failover RPC.
+- `src/bridge.ts`: Universal OpenCode V2 Plugin Mesh bridge (`BRIDGE_REVISION: 2.3.1`) providing capability discovery, session leases, provenance envelopes, and failover RPC.
 - `src/backend.ts`: Shared unclassified remediation prompt builder.
 - `src/detector.ts`: Pure recommendation parser enforcing single/multi-choice invariants.
 - `src/handoff.ts`: `[OPENCODE_HANDOFF:v1]` protocol parser, Guardian/Mesh provenance checks, and TTL/replay tracking.

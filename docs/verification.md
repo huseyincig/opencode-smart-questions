@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v1.2.0** evaluation on **20 November 2026**.
+This document describes the **v1.2.1** evaluation on **22 November 2026**.
 
 ## Automated checks
 
@@ -24,13 +24,19 @@ CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.
 
 | Check | Observed result |
 | --- | --- |
-| Unit and regression tests (`npm test`) | **159/159 passed** |
+| Unit and regression tests (`npm test`) | **166/166 passed** |
 | Live OpenCode `v2.3.2` acceptance (`npm run test:acceptance`) | **8/8 scenarios passed** against live `opencode serve` |
 | Strict TypeScript and Oxlint | **Passed**, 0 warnings / 0 errors |
 | Simulated V2 comprehensive scenarios | **7/7 passed** |
 | Separate V2 smoke test | **Passed** |
 | Dependency audit (`npm audit`) | **0 vulnerabilities** |
 | Packaging dry run (`npm pack --dry-run`) | Expected server, UI, TUI, declaration, and documentation files included |
+
+## v1.2.1 regression & fix coverage
+
+- **Plugin Mesh Bridge `2.3.1` & Session Cleanup (`src/bridge.ts`, `src/handoff.ts`, `src/index.ts`, `src/ui.tsx`)**: Added `onSessionForget` peer cleanup callbacks, cross-directory RPC standby promotion, `synthetic: false` envelope checks, `resolveMeshAgentProfile`-aware worker guidance skipping, and `event.data ?? event.properties` alignment.
+- **Metadata Merging & Nested Provenance (`src/handoff.ts`)**: Merged outer host metadata with `prompt`/`info`/`payload`/`state` metadata so host keys never shadow provenance; added `prompt.parts`/`text` extraction, `hi-message`/`hi-internal` detection, and markerless non-Guardian mesh handoffs.
+- **Remediation Budget, Lease Races & Context Priority (`src/ui.tsx`, `src/index.ts`, `src/handoff.ts`)**: Preserved `sessionChains` when `form.cancelled` arrives mid-`synthetic`, released 45s remediation leases if `session.synthetic` subsequently fails, protected newer form leases from superseded `form.cancelled` events, preserved handoffs on server `form.cancelled` during remediation, and prioritized `event.messages` handoffs over stale `event.system` handoffs.
 
 ## v1.2.0 regression & fix coverage
 
