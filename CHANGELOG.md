@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.0 — 2026-11-23
+
+- **Unsupported Form Field Bypass & Policy (`src/form-adapter.ts`, `src/ui.tsx`, `src/config.ts`, `src/types.ts`)**: Forms containing free-text (`type: "string"` without `options`), numeric, boolean, hidden (`hidden: true`), or conditional (`when`) fields are now flagged with `unsupported: true` and no longer trigger `client.session.synthetic` unclassified remediation loops. Added `unsupportedFieldPolicy: "ignore" | "manual" | "remediate"` (default `"ignore"`).
+- **Runtime Destructive Pattern Guard (`src/detector.ts`, `src/form-adapter.ts`, `src/config.ts`)**: Added configurable `manualOnPatterns` (with built-in `DEFAULT_MANUAL_ON_PATTERNS` covering `rm -rf`, `force push`, `force-push`, `git push --force`, `git reset --hard`, `drop database`, `drop table`, `truncate table`, `delete production`, `format disk`, `mkfs`) that forces `status: "manual"` at runtime even if the model appended `[SQ:recommended]`. Pass `manualOnPatterns: []` to opt out or provide custom patterns.
+- **Guidance Token Cost Control (`src/guidance.ts`, `src/index.ts`, `src/config.ts`)**: Added `guidanceMode: "full" | "compact" | "hint" | "off"` (default `"full"`). `"compact"` (`"hint"`) reduces the injected system guidance block by ~82% (< 350 chars), and `"off"` disables guidance injection completely while keeping TUI auto-selection active.
+- **In-Memory Decision Audit Ring Buffer (`src/diagnostics.ts`, `src/ui.tsx`, `src/index.ts`)**: Exported `getRecentSmartQuestionDecisions`, `recordSmartQuestionDecision`, and `clearSmartQuestionDecisions` backed by a 128-entry bounded ring buffer recording redacted classification and auto-reply decisions per session without requiring `debugLog` file I/O.
+- **Verification**: 170/170 unit & regression tests, 7/7 sandbox scenarios, and 8/8 live OpenCode `v2.3.2` host acceptance scenarios pass (`npm run test:all`).
+
 ## 1.2.1 — 2026-11-22
 
 - **Plugin Mesh Bridge `2.3.1` & Session Cleanup (`src/bridge.ts`, `src/handoff.ts`, `src/index.ts`, `src/ui.tsx`)**: Updated `BRIDGE_REVISION` to `2.3.1` with `onSessionForget` peer callbacks, cross-directory RPC standby promotion, `synthetic: false` envelope guards, `resolveMeshAgentProfile`-aware worker guidance skipping, and `event.data ?? event.properties` alignment across TUI and server listeners.

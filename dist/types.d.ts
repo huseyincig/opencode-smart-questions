@@ -49,8 +49,11 @@ export interface SmartQuestionConfig {
     recommendedMarker?: string;
     manualMarkers?: string[];
     manualMarker?: string;
+    manualOnPatterns?: string[] | undefined;
     maxUnclassifiedRemediations?: number | undefined;
     unclassifiedQuestionPolicy?: 'remediate' | 'ignore' | 'fallback-first' | 'remediate-then-fallback' | undefined;
+    unsupportedFieldPolicy?: 'ignore' | 'manual' | 'remediate' | undefined;
+    guidanceMode?: 'full' | 'compact' | 'off' | undefined;
     fallbackToFirstOption?: boolean | undefined;
     fallbackOnManual?: boolean | undefined;
     requireExactlyOneRecommendation: boolean;

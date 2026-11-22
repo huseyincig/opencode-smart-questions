@@ -14,7 +14,7 @@ export declare function detectRecommendations(questions: QuestionInfo[], marker?
 /**
  * Checks if a question is explicitly classified as requiring manual human decision.
  */
-export declare function isQuestionExplicitlyManual(q: QuestionInfo, manualMarkers?: string[]): {
+export declare function isQuestionExplicitlyManual(q: QuestionInfo, manualMarkers?: string[], manualOnPatterns?: string[]): {
     isManual: boolean;
     matchedMarker?: string;
 };
@@ -28,6 +28,7 @@ export declare function classifyQuestions(questions: QuestionInfo[] | Record<str
     requireExactlyOneRecommendation?: boolean;
     allowFallback?: boolean;
     allowFallbackOnManual?: boolean;
+    manualOnPatterns?: string[] | undefined;
 }): QuestionClassification;
 /**
  * Computes a deterministic normalized fingerprint for a set of questions.

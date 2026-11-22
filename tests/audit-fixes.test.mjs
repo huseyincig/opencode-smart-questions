@@ -1723,3 +1723,172 @@ test('4.7 (mesh): forgetMeshSession triggers peer cleanup callback and context h
   }
 });
 
+test('5.1: unsupported V2 form fields (free-text, hidden, conditional) do not trigger synthetic remediation and support unsupportedFieldPolicy="manual"', async (t) => {
+  const { classifyV2Form } = await import('../dist/index.js');
+
+  const freeTextForm = {
+    id: 'frm-freetext-51',
+    sessionID: 'ses-51',
+    fields: [{ key: 'apiKey', type: 'string', title: 'Enter API Key' }],
+  };
+
+  const cDefault = classifyV2Form(freeTextForm);
+  assert.equal(cDefault.status, 'unclassified');
+  assert.equal(cDefault.unsupported, true, 'free-text field must be flagged as unsupported');
+
+  const cManual = classifyV2Form(freeTextForm, undefined, undefined, null, {
+    unsupportedFieldPolicy: 'manual',
+  });
+  assert.equal(cManual.status, 'manual', 'unsupportedFieldPolicy="manual" must classify unsupported form as manual');
+
+  // Verify TUI does NOT dispatch session.synthetic remediation for unsupported free-text / conditional forms
+  let syntheticCalls = 0;
+  const h = makeTuiHarness(t, {
+    options: { timeoutMs: 25, unclassifiedQuestionPolicy: 'remediate' },
+    formList: () => [freeTextForm],
+  });
+  h.context.client = {
+    session: {
+      async synthetic() {
+        syntheticCalls += 1;
+        return { ok: true };
+      },
+    },
+  };
+  const dispose = await setup(h.context);
+  t.after(dispose);
+
+  await h.events.get('form.created')({ data: { form: freeTextForm } });
+  await delay(40);
+  assert.equal(
+    syntheticCalls,
+    0,
+    'free-text unsupported form must never trigger session.synthetic unclassified remediation'
+  );
+});
+
+test('5.2: runtime destructive pattern guard (DEFAULT_MANUAL_ON_PATTERNS and custom manualOnPatterns) forces status="manual" even when [SQ:recommended] is present', async (t) => {
+  const { classifyQuestions, classifyV2Form, resolveSmartQuestionConfig } = await import('../dist/index.js');
+
+  // 1) Default destructive pattern ('rm -rf' / 'force push' / 'drop database') overrides [SQ:recommended]
+  const destructiveForm = {
+    id: 'frm-destruct-52',
+    sessionID: 'ses-52',
+    fields: [{
+      key: 'action',
+      type: 'string',
+      title: 'Run rm -rf /var/data and force push to main?',
+      options: [
+        { value: 'yes', label: 'Yes, proceed [SQ:recommended]' },
+        { value: 'no', label: 'Cancel' },
+      ],
+    }],
+  };
+  const resDefault = classifyV2Form(destructiveForm);
+  assert.equal(resDefault.status, 'manual', 'built-in destructive pattern must force manual classification');
+
+  // 2) Opt-out via manualOnPatterns: [] allows normal [SQ:recommended] auto classification
+  const resOptOut = classifyV2Form(destructiveForm, undefined, undefined, null, {
+    manualOnPatterns: [],
+  });
+  assert.equal(resOptOut.status, 'auto', 'manualOnPatterns=[] must allow opting out of pattern guard');
+
+  // 3) Custom manualOnPatterns in config & TUI
+  const dir = tempDirectory(t);
+  const cfg = resolveSmartQuestionConfig(dir, {
+    manualOnPatterns: ['canlı ödeme', 'prod-deploy'],
+  });
+  assert.deepEqual(cfg?.manualOnPatterns, ['canlı ödeme', 'prod-deploy']);
+
+  const customQ = classifyQuestions(
+    [{
+      question: 'Canlı ödeme işlemini başlat?',
+      options: [{ label: 'Evet [SQ:recommended]' }, { label: 'Hayır' }],
+    }],
+    undefined,
+    undefined,
+    null,
+    { manualOnPatterns: cfg?.manualOnPatterns }
+  );
+  assert.equal(customQ.status, 'manual');
+  assert.equal(customQ.matchedMarker, 'canlı ödeme');
+});
+
+test('5.3: guidanceMode supports "off" and "compact" ("hint") to control system prompt token cost', async () => {
+  const {
+    default: OpencodeSmartQuestions,
+    buildRecommendationGuidance,
+    resolveSmartQuestionConfig,
+    SQ_GUIDANCE_SENTINEL,
+  } = await import('../dist/index.js');
+
+  const compactCfg = resolveSmartQuestionConfig('/tmp', { guidanceMode: 'hint' });
+  assert.equal(compactCfg?.guidanceMode, 'compact');
+  const compactGuidance = buildRecommendationGuidance(compactCfg);
+  assert.ok(compactGuidance.system.includes(SQ_GUIDANCE_SENTINEL));
+  assert.ok(
+    compactGuidance.system.length < 360,
+    `compact guidance should be under 360 chars, got ${compactGuidance.system.length}`
+  );
+
+  let contextHook;
+  const dispose = await OpencodeSmartQuestions.setup({
+    location: { directory: '/tmp/sq-53-off' },
+    options: { enabled: true, guidanceMode: 'off' },
+    session: {
+      async get({ sessionID }) {
+        return { id: sessionID, location: { directory: '/tmp/sq-53-off' } };
+      },
+      async hook(name, fn) {
+        if (name === 'context') contextHook = fn;
+        return { async dispose() {} };
+      },
+    },
+  });
+
+  try {
+    const event = { sessionID: 'ses-53', system: [], messages: [] };
+    await contextHook(event);
+    assert.equal(event.system.length, 0, 'guidanceMode="off" must not inject system prompt guidance');
+  } finally {
+    await dispose?.();
+  }
+});
+
+test('5.4: in-memory decision audit log records classification and auto-reply decisions per session', async (t) => {
+  const {
+    getRecentSmartQuestionDecisions,
+    clearSmartQuestionDecisions,
+  } = await import('../dist/index.js');
+
+  clearSmartQuestionDecisions();
+  const sessionID = 'ses-audit-54';
+  const form = {
+    id: 'frm-audit-54',
+    sessionID,
+    fields: [{
+      key: 'pick',
+      type: 'string',
+      options: [{ value: 'a', label: 'Alpha [SQ:recommended]' }, { value: 'b', label: 'Beta' }],
+    }],
+  };
+
+  const h = makeTuiHarness(t, {
+    options: { timeoutMs: 15 },
+    formList: () => [form],
+  });
+  const dispose = await setup(h.context);
+  t.after(() => {
+    clearSmartQuestionDecisions();
+    dispose();
+  });
+
+  await h.events.get('form.created')({ data: { form } });
+  await delay(50);
+
+  const decisions = getRecentSmartQuestionDecisions({ sessionID });
+  assert.ok(decisions.length >= 2, 'must record schedule/auto and replied decisions');
+  assert.equal(decisions.some((d) => d.formID === 'frm-audit-54' && d.status === 'auto'), true);
+  assert.equal(decisions.some((d) => d.formID === 'frm-audit-54' && d.status === 'replied'), true);
+});
+

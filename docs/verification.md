@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v1.2.1** evaluation on **22 November 2026**.
+This document describes the **v1.3.0** evaluation on **23 November 2026**.
 
 ## Automated checks
 
@@ -24,13 +24,19 @@ CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.
 
 | Check | Observed result |
 | --- | --- |
-| Unit and regression tests (`npm test`) | **166/166 passed** |
+| Unit and regression tests (`npm test`) | **170/170 passed** |
 | Live OpenCode `v2.3.2` acceptance (`npm run test:acceptance`) | **8/8 scenarios passed** against live `opencode serve` |
 | Strict TypeScript and Oxlint | **Passed**, 0 warnings / 0 errors |
 | Simulated V2 comprehensive scenarios | **7/7 passed** |
 | Separate V2 smoke test | **Passed** |
 | Dependency audit (`npm audit`) | **0 vulnerabilities** |
 | Packaging dry run (`npm pack --dry-run`) | Expected server, UI, TUI, declaration, and documentation files included |
+
+## v1.3.0 regression & fix coverage
+
+- **Unsupported Form Field Bypass (`src/form-adapter.ts`, `src/ui.tsx`, `src/config.ts`)**: Flagged non-selectable V2 form fields (`free-text` string without `options`, numeric, boolean, `hidden`, `when`) with `unsupported: true` so they never trigger `session.synthetic` remediation loops; added `unsupportedFieldPolicy: "ignore" | "manual" | "remediate"`.
+- **Runtime Destructive Pattern Guard (`src/detector.ts`, `src/form-adapter.ts`, `src/config.ts`)**: Added `manualOnPatterns` (with `DEFAULT_MANUAL_ON_PATTERNS` for high-risk shell/git/SQL/disk commands) to force `status: "manual"` at runtime regardless of `[SQ:recommended]`.
+- **Guidance Token Control & In-Memory Decision Audit (`src/guidance.ts`, `src/diagnostics.ts`, `src/index.ts`, `src/ui.tsx`)**: Added `guidanceMode: "full" | "compact" | "hint" | "off"` and exported bounded in-memory audit helpers (`getRecentSmartQuestionDecisions`, `recordSmartQuestionDecision`, `clearSmartQuestionDecisions`).
 
 ## v1.2.1 regression & fix coverage
 

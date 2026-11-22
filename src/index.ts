@@ -32,9 +32,16 @@ export {
   normalizeSmartQuestionConfig,
   DEFAULT_RECOMMENDED_MARKERS,
   DEFAULT_MANUAL_MARKERS,
+  DEFAULT_MANUAL_ON_PATTERNS,
   DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS,
   DEFAULT_CONFIG,
 } from './config.js';
+export {
+  recordSmartQuestionDecision,
+  getRecentSmartQuestionDecisions,
+  clearSmartQuestionDecisions,
+  type SmartQuestionDecisionRecord,
+} from './diagnostics.js';
 export * from './detector.js';
 export * from './guidance.js';
 export {
@@ -344,24 +351,26 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
         }
       }
 
-      if (!skipGuidanceForHiWorker) {
+      if (!skipGuidanceForHiWorker && config.guidanceMode !== 'off') {
         const guidance = buildRecommendationGuidance(config);
 
-        if (!Array.isArray(event.system)) {
-          event.system = [];
-        }
+        if (guidance.system) {
+          if (!Array.isArray(event.system)) {
+            event.system = [];
+          }
 
-        const alreadyInjected = event.system.some(
-          (part) =>
-            part.type === 'text' &&
-            typeof part.text === 'string' &&
-            part.text.includes(SQ_GUIDANCE_SENTINEL)
-        );
-        if (!alreadyInjected) {
-          event.system.push({
-            type: 'text',
-            text: guidance.system,
-          });
+          const alreadyInjected = event.system.some(
+            (part) =>
+              part.type === 'text' &&
+              typeof part.text === 'string' &&
+              part.text.includes(SQ_GUIDANCE_SENTINEL)
+          );
+          if (!alreadyInjected) {
+            event.system.push({
+              type: 'text',
+              text: guidance.system,
+            });
+          }
         }
       }
 

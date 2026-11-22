@@ -5,7 +5,8 @@ import { isEligibleSessionInfo } from './session-scope.js';
 import { clearActiveHandoff, consumeActiveHandoff, extractCurrentTurnGuardianHandoff, extractTrustedGuardianHandoff, invalidateActiveHandoff, isFormRemediated, isInternalNonHumanMessage, registerSmartQuestionsCapability, setActiveHandoff, unmarkFormRemediated, } from './handoff.js';
 import { acquireSessionLease, forgetMeshSession, isTrustedMeshMessage, registerMeshStateRpc, resolveMeshAgentProfile, } from './bridge.js';
 export * from './types.js';
-export { loadConfig, resolveSmartQuestionConfig, normalizeSmartQuestionConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_MANUAL_MARKERS, DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS, DEFAULT_CONFIG, } from './config.js';
+export { loadConfig, resolveSmartQuestionConfig, normalizeSmartQuestionConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_MANUAL_MARKERS, DEFAULT_MANUAL_ON_PATTERNS, DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS, DEFAULT_CONFIG, } from './config.js';
+export { recordSmartQuestionDecision, getRecentSmartQuestionDecisions, clearSmartQuestionDecisions, } from './diagnostics.js';
 export * from './detector.js';
 export * from './guidance.js';
 export { classifyV2Form, detectV2FormRecommendations, } from './form-adapter.js';
@@ -235,19 +236,21 @@ const setupV2 = async (context) => {
                     skipGuidanceForHiWorker = true;
                 }
             }
-            if (!skipGuidanceForHiWorker) {
+            if (!skipGuidanceForHiWorker && config.guidanceMode !== 'off') {
                 const guidance = buildRecommendationGuidance(config);
-                if (!Array.isArray(event.system)) {
-                    event.system = [];
-                }
-                const alreadyInjected = event.system.some((part) => part.type === 'text' &&
-                    typeof part.text === 'string' &&
-                    part.text.includes(SQ_GUIDANCE_SENTINEL));
-                if (!alreadyInjected) {
-                    event.system.push({
-                        type: 'text',
-                        text: guidance.system,
-                    });
+                if (guidance.system) {
+                    if (!Array.isArray(event.system)) {
+                        event.system = [];
+                    }
+                    const alreadyInjected = event.system.some((part) => part.type === 'text' &&
+                        typeof part.text === 'string' &&
+                        part.text.includes(SQ_GUIDANCE_SENTINEL));
+                    if (!alreadyInjected) {
+                        event.system.push({
+                            type: 'text',
+                            text: guidance.system,
+                        });
+                    }
                 }
             }
             let handoff = Array.isArray(event.messages)

@@ -22,6 +22,22 @@ export function buildRecommendationGuidance(config: SmartQuestionConfig): {
       : ['[SQ:manual]'];
   const primaryManualMarker = manualMarkers[0] ?? '[SQ:manual]';
 
+  if (config.guidanceMode === 'off') {
+    return { primaryMarker, markerList, primaryManualMarker, tool: '', system: '' };
+  }
+
+  if (config.guidanceMode === 'compact') {
+    const compactText =
+      `\n${SQ_GUIDANCE_SENTINEL} For selectable forms/questions, mark the recommended choice in every step with "${primaryMarker}", or use "${primaryManualMarker}" when destructive/manual approval is required (including [OPENCODE_HANDOFF:v1] auto_select=forbidden).\n`;
+    return {
+      primaryMarker,
+      markerList,
+      primaryManualMarker,
+      tool: compactText,
+      system: compactText,
+    };
+  }
+
   const tool =
     `\n\n${SQ_GUIDANCE_SENTINEL} [SMART QUESTIONS CLASSIFICATION CONVENTION]: ` +
     `If the user's existing instructions already determine the next action, do not ask a new question or create a form; continue the requested work. ` +

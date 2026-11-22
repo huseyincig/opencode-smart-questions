@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/opencode-smart-questions?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
 [![npm downloads](https://img.shields.io/npm/dm/opencode-smart-questions?color=blue&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
 [![OpenCode: v2.3.0+](https://img.shields.io/badge/OpenCode-v2.3.0%2B-10b981?logo=terminal&logoColor=white)](https://opencode.ai)
-[![Tests: 166/166 Passing](https://img.shields.io/badge/Tests-166%2F166%20Passing-339933?logo=githubactions&logoColor=white)](docs/verification.md)
+[![Tests: 170/170 Passing](https://img.shields.io/badge/Tests-170%2F170%20Passing-339933?logo=githubactions&logoColor=white)](docs/verification.md)
 [![Live Host: 8/8 Passing](https://img.shields.io/badge/Live%20Host-8%2F8%20Passing-339933?logo=checkmarx&logoColor=white)](docs/acceptance-v2.md)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.0.0-339933?logo=nodedotjs&logoColor=white)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
@@ -21,16 +21,16 @@ A high-performance, deterministic **OpenCode V2** plugin (`@opencode/plugin` `2.
 
 ![Automated and host acceptance results](docs/assets/verification-overview.svg)
 
-Smart Questions **v1.2.1** was verified on **22 November 2026**, using Node **26.13.1**, `@opencode/plugin` **2.3.0** (`^2.3.0`), and live OpenCode **v2.3.2**:
+Smart Questions **v1.3.0** was verified on **23 November 2026**, using Node **26.13.1**, `@opencode/plugin` **2.3.0** (`^2.3.0`), and live OpenCode **v2.3.2**:
 
-- **Unit & Regression Suite:** **166 / 166** tests passing (`npm test`).
+- **Unit & Regression Suite:** **170 / 170** tests passing (`npm test`).
 - **Live OpenCode v2.3.2 Host Acceptance:** **8 / 8** end-to-end scenarios passing against a live `opencode serve` (`v2.3.2`) instance (`npm run test:acceptance`).
 - **Sandbox Scenarios:** **7 / 7** comprehensive V2 scenarios and the separate V2 smoke test pass.
 - **Static Analysis & Audit:** Standard and strict TypeScript gates pass; Oxlint reports **0 warnings / 0 errors**; `npm audit` reports **0 vulnerabilities**.
 
 Read the detailed [V2 Acceptance Report](docs/acceptance-v2.md) and [Technical Verification](docs/verification.md) for full reproduction steps and test harnesses.
 
-See the [1.2.1 release notes](CHANGELOG.md) for Plugin Mesh Bridge `2.3.1` (`onSessionForget`, cross-directory RPC standby), nested `prompt`/`info` provenance merging, in-flight remediation budget & lease race fixes, and `context` hook handoff prioritization.
+See the [1.3.0 release notes](CHANGELOG.md) for runtime destructive-action pattern protection (`manualOnPatterns`), unsupported free-text/conditional field remediation bypass (`unsupportedFieldPolicy`), token-saving `guidanceMode` (`"full" | "compact" | "off"`), and the in-memory decision audit log (`getRecentSmartQuestionDecisions`).
 
 ---
 
@@ -52,7 +52,7 @@ See the [1.2.1 release notes](CHANGELOG.md) for Plugin Mesh Bridge `2.3.1` (`onS
 
 ## 📦 Installation
 
-The current version is **1.2.1** (OpenCode **v2.3.0+**, verified on **v2.3.2**).
+The current version is **1.3.0** (OpenCode **v2.3.0+**, verified on **v2.3.2**).
 
 You can install **OpenCode Smart Questions** globally for all workspaces, per-project, via npm/CLI, or from a local checkout.
 
@@ -72,7 +72,7 @@ Or pin an exact version and pass optional inline plugin settings:
 {
   "plugins": [
     [
-      "opencode-smart-questions@1.2.1",
+      "opencode-smart-questions@1.3.0",
       {
         "timeoutMs": 30000,
         "includeSubagents": false
@@ -223,6 +223,9 @@ Settings are resolved hierarchically from `<project>/.opencode/smart-question.js
 | `timeoutMs` | `30000` | Countdown duration in milliseconds before auto-selecting. |
 | `includeSubagents` | `false` | Opts host-confirmed child sessions into guidance, countdown and reply handling. Unknown topology is excluded. |
 | `unclassifiedQuestionPolicy` | `"remediate"` | `remediate`, `ignore`, `fallback-first`, or `remediate-then-fallback`. Budget exhaustion with fallback preserves existing recommendations. |
+| `unsupportedFieldPolicy` | `"ignore"` | `ignore`, `manual`, or `remediate`. Prevents free-text, hidden, or conditional forms from triggering synthetic remediation loops. |
+| `manualOnPatterns` | `["rm -rf", "force push", ...]` | Case-insensitive destructive patterns that force `manual` decision mode at runtime even if `[SQ:recommended]` is present. Set to `[]` to disable. |
+| `guidanceMode` | `"full"` | `"full"`, `"compact"` (`"hint"`), or `"off"`. Controls system prompt guidance verbosity and token cost. |
 | `maxUnclassifiedRemediations` | `3` | Maximum protocol-remediation attempts in the same question-fingerprint chain. |
 | `fallbackToFirstOption` | `false` | Enables immediate first-option fallback for unresolved steps. |
 | `fallbackOnManual` | `false` | Allows manual classifications, including Guardian's forbidden handoff, to proceed through normal recommendation/fallback detection. |

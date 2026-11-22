@@ -56,6 +56,7 @@ export type V2FormClassification = {
     status: 'unclassified';
     reason: string;
     questions: QuestionInfo[];
+    unsupported?: boolean | undefined;
 };
 /**
  * Converts OpenCode v2 selectable form fields into the legacy question shape
@@ -78,4 +79,6 @@ export declare function classifyV2Form(form: V2FormInfo, markers?: string | stri
     requireExactlyOneRecommendation?: boolean;
     allowFallback?: boolean;
     allowFallbackOnManual?: boolean;
+    manualOnPatterns?: string[] | undefined;
+    unsupportedFieldPolicy?: 'ignore' | 'manual' | 'remediate' | undefined;
 }): V2FormClassification;

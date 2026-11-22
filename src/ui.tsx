@@ -27,7 +27,10 @@ import {
 } from './form-adapter.js';
 import { buildUnclassifiedRemediationPrompt } from './backend.js';
 import { DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS } from './config.js';
-import { diagnosticErrorCode } from './diagnostics.js';
+import {
+  diagnosticErrorCode,
+  recordSmartQuestionDecision,
+} from './diagnostics.js';
 import { isEligibleSessionInfo } from './session-scope.js';
 import {
   getActiveHandoff,
@@ -699,10 +702,20 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
           requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
           allowFallback: fallbackActive,
           allowFallbackOnManual: config.fallbackOnManual === true,
+          manualOnPatterns: config.manualOnPatterns,
+          unsupportedFieldPolicy: config.unsupportedFieldPolicy,
         }
       );
 
       if (classification.status === 'manual') {
+        recordSmartQuestionDecision({
+          formID: form.id,
+          sessionID: form.sessionID,
+          status: 'manual',
+          reason: classification.reason,
+          matchedMarker: classification.matchedMarker,
+          timestamp: Date.now(),
+        });
         sessionChains.delete(form.sessionID);
         const lockPath = resolveLockPath(effectiveConfigDir, form.id);
         ensureDraftLock(lockPath, { formID: form.id, sessionID: form.sessionID, ts: Date.now(), reason: 'manual' });
@@ -729,6 +742,24 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       }
 
       if (classification.status === 'unclassified') {
+        if (classification.unsupported && config.unsupportedFieldPolicy !== 'remediate') {
+          recordSmartQuestionDecision({
+            formID: form.id,
+            sessionID: form.sessionID,
+            status: 'unsupported',
+            reason: classification.reason,
+            timestamp: Date.now(),
+          });
+          log(`unsupported form=${form.id} reason=${classification.reason}`);
+          return;
+        }
+        recordSmartQuestionDecision({
+          formID: form.id,
+          sessionID: form.sessionID,
+          status: 'unclassified',
+          reason: classification.reason,
+          timestamp: Date.now(),
+        });
         if (config.unclassifiedQuestionPolicy === 'ignore') {
           log(`unclassified form=${form.id} ignored per unclassifiedQuestionPolicy`);
           return;
@@ -766,6 +797,8 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
                 requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
                 allowFallback: true,
                 allowFallbackOnManual: config.fallbackOnManual === true,
+                manualOnPatterns: config.manualOnPatterns,
+                unsupportedFieldPolicy: config.unsupportedFieldPolicy,
               }
             );
             if (fallbackClassification.status === 'auto') {
@@ -902,6 +935,14 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
       sessionChains.delete(form.sessionID);
       const detection: DetectionResult = classification.detection;
+      recordSmartQuestionDecision({
+        formID: form.id,
+        sessionID: form.sessionID,
+        status: 'auto',
+        matchedMarker: detection.matchedMarker,
+        timeoutMs: config.timeoutMs,
+        timestamp: Date.now(),
+      });
       const lockPath = resolveLockPath(effectiveConfigDir, form.id);
       const expiresAt = Date.now() + config.timeoutMs;
       const initialCountdown = Math.ceil(config.timeoutMs / 1000);
@@ -998,6 +1039,14 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
           );
           if (disposed || pending.get(form.id) !== item) return;
           item.status = 'replied';
+          recordSmartQuestionDecision({
+            formID: form.id,
+            sessionID: form.sessionID,
+            status: 'replied',
+            matchedMarker: detection.matchedMarker,
+            timeoutMs: config.timeoutMs,
+            timestamp: Date.now(),
+          });
           releaseUiLease(form.sessionID, locationDir);
           consumeActiveHandoff(form.sessionID);
           try {

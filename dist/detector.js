@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { DEFAULT_CONFIG, DEFAULT_MANUAL_MARKERS, normalizeParamMarkers } from './config.js';
+import { DEFAULT_CONFIG, DEFAULT_MANUAL_MARKERS, DEFAULT_MANUAL_ON_PATTERNS, normalizeParamMarkers, } from './config.js';
 /**
  * Pure decision logic for detecting recommendations across questions.
  * Enforces fail-safe conditions:
@@ -74,7 +74,7 @@ export function detectRecommendations(questions, marker = DEFAULT_CONFIG.recomme
 /**
  * Checks if a question is explicitly classified as requiring manual human decision.
  */
-export function isQuestionExplicitlyManual(q, manualMarkers = DEFAULT_MANUAL_MARKERS) {
+export function isQuestionExplicitlyManual(q, manualMarkers = DEFAULT_MANUAL_MARKERS, manualOnPatterns = DEFAULT_MANUAL_ON_PATTERNS) {
     if (!q)
         return { isManual: false };
     const textsToCheck = [];
@@ -110,6 +110,19 @@ export function isQuestionExplicitlyManual(q, manualMarkers = DEFAULT_MANUAL_MAR
         }
         if (/\[SQ_DECISION:(?:v1\][\s\S]*?mode=)?manual/iu.test(normalized)) {
             return { isManual: true, matchedMarker: '[SQ:manual]' };
+        }
+    }
+    if (Array.isArray(manualOnPatterns) && manualOnPatterns.length > 0) {
+        for (const text of textsToCheck) {
+            const lower = text.normalize('NFC').toLowerCase();
+            for (const pattern of manualOnPatterns) {
+                if (typeof pattern !== 'string' || !pattern.trim())
+                    continue;
+                const normPattern = pattern.trim().normalize('NFC').toLowerCase();
+                if (lower.includes(normPattern)) {
+                    return { isManual: true, matchedMarker: pattern.trim() };
+                }
+            }
         }
     }
     return { isManual: false };
@@ -216,7 +229,7 @@ export function classifyQuestions(questions, recommendedMarker = DEFAULT_CONFIG.
             continue;
         }
         // Check if explicitly manual
-        const manualCheck = isQuestionExplicitlyManual(q, manMarkers);
+        const manualCheck = isQuestionExplicitlyManual(q, manMarkers, options.manualOnPatterns ?? DEFAULT_MANUAL_ON_PATTERNS);
         if (manualCheck.isManual && !options.allowFallbackOnManual) {
             if (!firstManual) {
                 firstManual = { index: qIndex, marker: manualCheck.matchedMarker };

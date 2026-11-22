@@ -1,5 +1,10 @@
 import { classifyQuestions, detectRecommendations } from './detector.js';
-import { DEFAULT_CONFIG, DEFAULT_MANUAL_MARKERS, normalizeParamMarkers } from './config.js';
+import {
+  DEFAULT_CONFIG,
+  DEFAULT_MANUAL_MARKERS,
+  DEFAULT_MANUAL_ON_PATTERNS,
+  normalizeParamMarkers,
+} from './config.js';
 import type { OpenCodeHandoff } from './handoff.js';
 import type { DetectionResult, QuestionInfo, QuestionOption } from './types.js';
 
@@ -60,6 +65,7 @@ export type V2FormClassification =
       status: 'unclassified';
       reason: string;
       questions: QuestionInfo[];
+      unsupported?: boolean | undefined;
     };
 
 interface SelectableFieldMeta {
@@ -268,15 +274,26 @@ export function classifyV2Form(
     requireExactlyOneRecommendation?: boolean;
     allowFallback?: boolean;
     allowFallbackOnManual?: boolean;
+    manualOnPatterns?: string[] | undefined;
+    unsupportedFieldPolicy?: 'ignore' | 'manual' | 'remediate' | undefined;
   }
 ): V2FormClassification {
   if (!form || !Array.isArray(form.fields) || form.fields.length === 0) {
-    return { status: 'unclassified', reason: 'Form has no fields', questions: [] };
+    if (options?.unsupportedFieldPolicy === 'manual') {
+      return {
+        status: 'manual',
+        reason: 'Form has no fields',
+        questions: [],
+        matchedMarker: '[SQ:unsupported]',
+      };
+    }
+    return { status: 'unclassified', reason: 'Form has no fields', questions: [], unsupported: true };
   }
 
   const manMarkers = normalizeParamMarkers(manualMarkers);
+  const manualPatterns = options?.manualOnPatterns ?? DEFAULT_MANUAL_ON_PATTERNS;
 
-  // Check form-level manual markers
+  // Check form-level manual markers & destructive patterns
   const formTexts: string[] = [];
   if (typeof form.title === 'string') formTexts.push(form.title);
   if (typeof form.description === 'string') formTexts.push(form.description);
@@ -298,14 +315,34 @@ export function classifyV2Form(
       matchedManualMarker = '[SQ:manual]';
       break;
     }
+    if (!formExplicitlyManual && Array.isArray(manualPatterns) && manualPatterns.length > 0) {
+      const lower = normalized.toLowerCase();
+      for (const pattern of manualPatterns) {
+        if (typeof pattern !== 'string' || !pattern.trim()) continue;
+        if (lower.includes(pattern.trim().normalize('NFC').toLowerCase())) {
+          formExplicitlyManual = true;
+          matchedManualMarker = pattern.trim();
+          break;
+        }
+      }
+    }
   }
 
   const prepared = prepareV2FormFields(form.fields);
   if (!prepared.ok) {
+    if (options?.unsupportedFieldPolicy === 'manual') {
+      return {
+        status: 'manual',
+        reason: prepared.reason,
+        questions: prepared.questions,
+        matchedMarker: '[SQ:unsupported]',
+      };
+    }
     return {
       status: 'unclassified',
       reason: prepared.reason,
       questions: prepared.questions,
+      unsupported: true,
     };
   }
   const { questions, selectableFields } = prepared;

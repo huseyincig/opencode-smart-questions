@@ -1,6 +1,7 @@
 import { Plugin as OpenCodeV2 } from '@opencode/plugin';
 export * from './types.js';
-export { loadConfig, resolveSmartQuestionConfig, normalizeSmartQuestionConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_MANUAL_MARKERS, DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS, DEFAULT_CONFIG, } from './config.js';
+export { loadConfig, resolveSmartQuestionConfig, normalizeSmartQuestionConfig, DEFAULT_RECOMMENDED_MARKERS, DEFAULT_MANUAL_MARKERS, DEFAULT_MANUAL_ON_PATTERNS, DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS, DEFAULT_CONFIG, } from './config.js';
+export { recordSmartQuestionDecision, getRecentSmartQuestionDecisions, clearSmartQuestionDecisions, type SmartQuestionDecisionRecord, } from './diagnostics.js';
 export * from './detector.js';
 export * from './guidance.js';
 export { classifyV2Form, detectV2FormRecommendations, type V2FormClassification, type V2FormDetectionResult, } from './form-adapter.js';

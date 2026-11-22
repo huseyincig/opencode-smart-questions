@@ -63,6 +63,31 @@ function diagnosticErrorCode(error) {
   if (error === void 0) return "undefined-error";
   return `${typeof error}-error`;
 }
+var DECISION_STATE_SYMBOL = Symbol.for("opencode.smart-questions.decisions.v1");
+var MAX_DECISION_HISTORY = 128;
+function getDecisionStore() {
+  const g = globalThis;
+  if (!Array.isArray(g[DECISION_STATE_SYMBOL])) {
+    g[DECISION_STATE_SYMBOL] = [];
+  }
+  return g[DECISION_STATE_SYMBOL];
+}
+function recordSmartQuestionDecision(record) {
+  if (!record || typeof record.formID !== "string" || typeof record.sessionID !== "string") return;
+  const store = getDecisionStore();
+  store.push({
+    formID: record.formID,
+    sessionID: record.sessionID,
+    status: record.status,
+    ...record.reason ? { reason: record.reason } : {},
+    ...record.matchedMarker ? { matchedMarker: record.matchedMarker } : {},
+    ...typeof record.timeoutMs === "number" ? { timeoutMs: record.timeoutMs } : {},
+    timestamp: typeof record.timestamp === "number" ? record.timestamp : Date.now()
+  });
+  while (store.length > MAX_DECISION_HISTORY) {
+    store.shift();
+  }
+}
 
 // src/config.ts
 var DEFAULT_RECOMMENDED_MARKERS = [
@@ -74,6 +99,20 @@ var DEFAULT_MANUAL_MARKERS = [
   "[SQ:manual]",
   "[SQ_DECISION:manual]"
 ];
+var DEFAULT_MANUAL_ON_PATTERNS = [
+  "rm -rf",
+  "force push",
+  "force-push",
+  "git push --force",
+  "git reset --hard",
+  "drop database",
+  "drop table",
+  "truncate table",
+  "delete production",
+  "deleting production",
+  "format disk",
+  "mkfs"
+];
 var DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS = 3;
 var MAX_TIMEOUT_MS = 2147483647;
 var SMART_QUESTION_CONFIG_KEYS = /* @__PURE__ */ new Set([
@@ -83,8 +122,11 @@ var SMART_QUESTION_CONFIG_KEYS = /* @__PURE__ */ new Set([
   "recommendedMarker",
   "manualMarkers",
   "manualMarker",
+  "manualOnPatterns",
   "maxUnclassifiedRemediations",
   "unclassifiedQuestionPolicy",
+  "unsupportedFieldPolicy",
+  "guidanceMode",
   "fallbackToFirstOption",
   "fallbackOnManual",
   "requireExactlyOneRecommendation",
@@ -118,8 +160,11 @@ var DEFAULT_CONFIG = {
   recommendedMarker: "[SQ:recommended]",
   manualMarkers: DEFAULT_MANUAL_MARKERS,
   manualMarker: "[SQ:manual]",
+  manualOnPatterns: DEFAULT_MANUAL_ON_PATTERNS,
   maxUnclassifiedRemediations: DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS,
   unclassifiedQuestionPolicy: "remediate",
+  unsupportedFieldPolicy: "ignore",
+  guidanceMode: "full",
   requireExactlyOneRecommendation: true,
   uiText: DEFAULT_UI_TEXT,
   debugLog: ""
@@ -172,7 +217,7 @@ function normalizeSmartQuestionConfig(raw, configDir) {
   }
   const parsed = raw ?? {};
   if (parsed.enabled === false) return null;
-  if (Object.keys(parsed).some((key) => !SMART_QUESTION_CONFIG_KEYS.has(key)) || parsed.enabled !== void 0 && parsed.enabled !== true || parsed.timeoutMs !== void 0 && (typeof parsed.timeoutMs !== "number" || !Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs < 0 || parsed.timeoutMs > MAX_TIMEOUT_MS) || parsed.requireExactlyOneRecommendation !== void 0 && typeof parsed.requireExactlyOneRecommendation !== "boolean" || parsed.recommendedMarkers !== void 0 && (!Array.isArray(parsed.recommendedMarkers) || parsed.recommendedMarkers.length === 0 || parsed.recommendedMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.recommendedMarker !== void 0 && (typeof parsed.recommendedMarker !== "string" || parsed.recommendedMarker.trim().length === 0) || parsed.debugLog !== void 0 && typeof parsed.debugLog !== "string" || parsed.configDir !== void 0 && (typeof parsed.configDir !== "string" || parsed.configDir.trim().length === 0) || parsed.manualMarkers !== void 0 && (!Array.isArray(parsed.manualMarkers) || parsed.manualMarkers.length === 0 || parsed.manualMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.manualMarker !== void 0 && (typeof parsed.manualMarker !== "string" || parsed.manualMarker.trim().length === 0) || parsed.maxUnclassifiedRemediations !== void 0 && (typeof parsed.maxUnclassifiedRemediations !== "number" || !Number.isFinite(parsed.maxUnclassifiedRemediations) || parsed.maxUnclassifiedRemediations < 0) || parsed.unclassifiedQuestionPolicy !== void 0 && parsed.unclassifiedQuestionPolicy !== "remediate" && parsed.unclassifiedQuestionPolicy !== "ignore" && parsed.unclassifiedQuestionPolicy !== "fallback-first" && parsed.unclassifiedQuestionPolicy !== "remediate-then-fallback" || parsed.fallbackToFirstOption !== void 0 && typeof parsed.fallbackToFirstOption !== "boolean" || parsed.fallbackOnManual !== void 0 && typeof parsed.fallbackOnManual !== "boolean" || parsed.includeSubagents !== void 0 && typeof parsed.includeSubagents !== "boolean" || parsed.uiText !== void 0 && (parsed.uiText === null || typeof parsed.uiText !== "object" || Array.isArray(parsed.uiText) || Object.values(parsed.uiText).some((value) => typeof value !== "string" || value.trim().length === 0))) {
+  if (Object.keys(parsed).some((key) => !SMART_QUESTION_CONFIG_KEYS.has(key)) || parsed.enabled !== void 0 && parsed.enabled !== true || parsed.timeoutMs !== void 0 && (typeof parsed.timeoutMs !== "number" || !Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs < 0 || parsed.timeoutMs > MAX_TIMEOUT_MS) || parsed.requireExactlyOneRecommendation !== void 0 && typeof parsed.requireExactlyOneRecommendation !== "boolean" || parsed.recommendedMarkers !== void 0 && (!Array.isArray(parsed.recommendedMarkers) || parsed.recommendedMarkers.length === 0 || parsed.recommendedMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.recommendedMarker !== void 0 && (typeof parsed.recommendedMarker !== "string" || parsed.recommendedMarker.trim().length === 0) || parsed.debugLog !== void 0 && typeof parsed.debugLog !== "string" || parsed.configDir !== void 0 && (typeof parsed.configDir !== "string" || parsed.configDir.trim().length === 0) || parsed.manualMarkers !== void 0 && (!Array.isArray(parsed.manualMarkers) || parsed.manualMarkers.length === 0 || parsed.manualMarkers.some((marker) => typeof marker !== "string" || marker.trim().length === 0)) || parsed.manualMarker !== void 0 && (typeof parsed.manualMarker !== "string" || parsed.manualMarker.trim().length === 0) || parsed.manualOnPatterns !== void 0 && (!Array.isArray(parsed.manualOnPatterns) || parsed.manualOnPatterns.some((pattern) => typeof pattern !== "string" || pattern.trim().length === 0)) || parsed.maxUnclassifiedRemediations !== void 0 && (typeof parsed.maxUnclassifiedRemediations !== "number" || !Number.isFinite(parsed.maxUnclassifiedRemediations) || parsed.maxUnclassifiedRemediations < 0) || parsed.unclassifiedQuestionPolicy !== void 0 && parsed.unclassifiedQuestionPolicy !== "remediate" && parsed.unclassifiedQuestionPolicy !== "ignore" && parsed.unclassifiedQuestionPolicy !== "fallback-first" && parsed.unclassifiedQuestionPolicy !== "remediate-then-fallback" || parsed.unsupportedFieldPolicy !== void 0 && parsed.unsupportedFieldPolicy !== "ignore" && parsed.unsupportedFieldPolicy !== "manual" && parsed.unsupportedFieldPolicy !== "remediate" || parsed.guidanceMode !== void 0 && parsed.guidanceMode !== "full" && parsed.guidanceMode !== "compact" && parsed.guidanceMode !== "hint" && parsed.guidanceMode !== "off" || parsed.fallbackToFirstOption !== void 0 && typeof parsed.fallbackToFirstOption !== "boolean" || parsed.fallbackOnManual !== void 0 && typeof parsed.fallbackOnManual !== "boolean" || parsed.includeSubagents !== void 0 && typeof parsed.includeSubagents !== "boolean" || parsed.uiText !== void 0 && (parsed.uiText === null || typeof parsed.uiText !== "object" || Array.isArray(parsed.uiText) || Object.values(parsed.uiText).some((value) => typeof value !== "string" || value.trim().length === 0))) {
     return null;
   }
   const recommendedMarkers = normalizeConfigMarkers(
@@ -183,8 +228,11 @@ function normalizeSmartQuestionConfig(raw, configDir) {
   const rawManualMarkers = cleanMarkers(parsed.manualMarkers);
   const manualMarkers = rawManualMarkers.length > 0 ? rawManualMarkers : typeof parsed.manualMarker === "string" && parsed.manualMarker.trim().length > 0 ? [parsed.manualMarker.trim()] : [...DEFAULT_MANUAL_MARKERS];
   const manualMarker = manualMarkers[0] ?? DEFAULT_CONFIG.manualMarker ?? "[SQ:manual]";
+  const manualOnPatterns = parsed.manualOnPatterns !== void 0 ? cleanMarkers(parsed.manualOnPatterns) : [...DEFAULT_MANUAL_ON_PATTERNS];
   const maxUnclassifiedRemediations = typeof parsed.maxUnclassifiedRemediations === "number" && Number.isFinite(parsed.maxUnclassifiedRemediations) && parsed.maxUnclassifiedRemediations >= 0 ? Math.floor(parsed.maxUnclassifiedRemediations) : DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS;
   const unclassifiedQuestionPolicy = parsed.unclassifiedQuestionPolicy === "ignore" ? "ignore" : parsed.unclassifiedQuestionPolicy === "fallback-first" ? "fallback-first" : parsed.unclassifiedQuestionPolicy === "remediate-then-fallback" ? "remediate-then-fallback" : "remediate";
+  const unsupportedFieldPolicy = parsed.unsupportedFieldPolicy === "manual" ? "manual" : parsed.unsupportedFieldPolicy === "remediate" ? "remediate" : "ignore";
+  const guidanceMode = parsed.guidanceMode === "off" ? "off" : parsed.guidanceMode === "compact" || parsed.guidanceMode === "hint" ? "compact" : "full";
   const timeoutMs = typeof parsed.timeoutMs === "number" && Number.isFinite(parsed.timeoutMs) && parsed.timeoutMs >= 0 && parsed.timeoutMs <= MAX_TIMEOUT_MS ? parsed.timeoutMs : DEFAULT_CONFIG.timeoutMs;
   const normalized = {
     enabled: true,
@@ -193,8 +241,11 @@ function normalizeSmartQuestionConfig(raw, configDir) {
     recommendedMarker,
     manualMarkers,
     manualMarker,
+    manualOnPatterns,
     maxUnclassifiedRemediations,
     unclassifiedQuestionPolicy,
+    unsupportedFieldPolicy,
+    guidanceMode,
     requireExactlyOneRecommendation: typeof parsed.requireExactlyOneRecommendation === "boolean" ? parsed.requireExactlyOneRecommendation : DEFAULT_CONFIG.requireExactlyOneRecommendation,
     uiText: normalizeUIText(parsed.uiText),
     debugLog: typeof parsed.debugLog === "string" ? parsed.debugLog : DEFAULT_CONFIG.debugLog ?? ""
@@ -330,7 +381,7 @@ function detectRecommendations(questions, marker = DEFAULT_CONFIG.recommendedMar
   }
   return { ok: true, answers, recommendedOptions, matchedMarker };
 }
-function isQuestionExplicitlyManual(q, manualMarkers = DEFAULT_MANUAL_MARKERS) {
+function isQuestionExplicitlyManual(q, manualMarkers = DEFAULT_MANUAL_MARKERS, manualOnPatterns = DEFAULT_MANUAL_ON_PATTERNS) {
   if (!q) return { isManual: false };
   const textsToCheck = [];
   if (typeof q.question === "string") textsToCheck.push(q.question);
@@ -359,6 +410,18 @@ function isQuestionExplicitlyManual(q, manualMarkers = DEFAULT_MANUAL_MARKERS) {
     }
     if (/\[SQ_DECISION:(?:v1\][\s\S]*?mode=)?manual/iu.test(normalized)) {
       return { isManual: true, matchedMarker: "[SQ:manual]" };
+    }
+  }
+  if (Array.isArray(manualOnPatterns) && manualOnPatterns.length > 0) {
+    for (const text of textsToCheck) {
+      const lower = text.normalize("NFC").toLowerCase();
+      for (const pattern of manualOnPatterns) {
+        if (typeof pattern !== "string" || !pattern.trim()) continue;
+        const normPattern = pattern.trim().normalize("NFC").toLowerCase();
+        if (lower.includes(normPattern)) {
+          return { isManual: true, matchedMarker: pattern.trim() };
+        }
+      }
     }
   }
   return { isManual: false };
@@ -438,7 +501,11 @@ function classifyQuestions(questions, recommendedMarker = DEFAULT_CONFIG.recomme
       }
       continue;
     }
-    const manualCheck = isQuestionExplicitlyManual(q, manMarkers);
+    const manualCheck = isQuestionExplicitlyManual(
+      q,
+      manMarkers,
+      options.manualOnPatterns ?? DEFAULT_MANUAL_ON_PATTERNS
+    );
     if (manualCheck.isManual && !options.allowFallbackOnManual) {
       if (!firstManual) {
         firstManual = { index: qIndex, marker: manualCheck.matchedMarker };
@@ -686,9 +753,18 @@ function prepareV2FormFields(fields) {
 }
 function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers, manualMarkers = DEFAULT_MANUAL_MARKERS, handoff, options) {
   if (!form || !Array.isArray(form.fields) || form.fields.length === 0) {
-    return { status: "unclassified", reason: "Form has no fields", questions: [] };
+    if (options?.unsupportedFieldPolicy === "manual") {
+      return {
+        status: "manual",
+        reason: "Form has no fields",
+        questions: [],
+        matchedMarker: "[SQ:unsupported]"
+      };
+    }
+    return { status: "unclassified", reason: "Form has no fields", questions: [], unsupported: true };
   }
   const manMarkers = normalizeParamMarkers(manualMarkers);
+  const manualPatterns = options?.manualOnPatterns ?? DEFAULT_MANUAL_ON_PATTERNS;
   const formTexts = [];
   if (typeof form.title === "string") formTexts.push(form.title);
   if (typeof form.description === "string") formTexts.push(form.description);
@@ -708,13 +784,33 @@ function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers, manua
       matchedManualMarker = "[SQ:manual]";
       break;
     }
+    if (!formExplicitlyManual && Array.isArray(manualPatterns) && manualPatterns.length > 0) {
+      const lower = normalized.toLowerCase();
+      for (const pattern of manualPatterns) {
+        if (typeof pattern !== "string" || !pattern.trim()) continue;
+        if (lower.includes(pattern.trim().normalize("NFC").toLowerCase())) {
+          formExplicitlyManual = true;
+          matchedManualMarker = pattern.trim();
+          break;
+        }
+      }
+    }
   }
   const prepared = prepareV2FormFields(form.fields);
   if (!prepared.ok) {
+    if (options?.unsupportedFieldPolicy === "manual") {
+      return {
+        status: "manual",
+        reason: prepared.reason,
+        questions: prepared.questions,
+        matchedMarker: "[SQ:unsupported]"
+      };
+    }
     return {
       status: "unclassified",
       reason: prepared.reason,
-      questions: prepared.questions
+      questions: prepared.questions,
+      unsupported: true
     };
   }
   const { questions, selectableFields } = prepared;
@@ -2313,9 +2409,19 @@ var setup = async (context) => {
       let classification = classifyV2Form(form, config.recommendedMarkers, config.manualMarkers, handoff, {
         requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
         allowFallback: fallbackActive,
-        allowFallbackOnManual: config.fallbackOnManual === true
+        allowFallbackOnManual: config.fallbackOnManual === true,
+        manualOnPatterns: config.manualOnPatterns,
+        unsupportedFieldPolicy: config.unsupportedFieldPolicy
       });
       if (classification.status === "manual") {
+        recordSmartQuestionDecision({
+          formID: form.id,
+          sessionID: form.sessionID,
+          status: "manual",
+          reason: classification.reason,
+          matchedMarker: classification.matchedMarker,
+          timestamp: Date.now()
+        });
         sessionChains.delete(form.sessionID);
         const lockPath2 = resolveLockPath(effectiveConfigDir, form.id);
         ensureDraftLock(lockPath2, {
@@ -2347,6 +2453,24 @@ var setup = async (context) => {
         return;
       }
       if (classification.status === "unclassified") {
+        if (classification.unsupported && config.unsupportedFieldPolicy !== "remediate") {
+          recordSmartQuestionDecision({
+            formID: form.id,
+            sessionID: form.sessionID,
+            status: "unsupported",
+            reason: classification.reason,
+            timestamp: Date.now()
+          });
+          log(`unsupported form=${form.id} reason=${classification.reason}`);
+          return;
+        }
+        recordSmartQuestionDecision({
+          formID: form.id,
+          sessionID: form.sessionID,
+          status: "unclassified",
+          reason: classification.reason,
+          timestamp: Date.now()
+        });
         if (config.unclassifiedQuestionPolicy === "ignore") {
           log(`unclassified form=${form.id} ignored per unclassifiedQuestionPolicy`);
           return;
@@ -2368,7 +2492,9 @@ var setup = async (context) => {
             const fallbackClassification = classifyV2Form(form, config.recommendedMarkers, config.manualMarkers, handoff, {
               requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
               allowFallback: true,
-              allowFallbackOnManual: config.fallbackOnManual === true
+              allowFallbackOnManual: config.fallbackOnManual === true,
+              manualOnPatterns: config.manualOnPatterns,
+              unsupportedFieldPolicy: config.unsupportedFieldPolicy
             });
             if (fallbackClassification.status === "auto") {
               classification = fallbackClassification;
@@ -2494,6 +2620,14 @@ var setup = async (context) => {
       }
       sessionChains.delete(form.sessionID);
       const detection = classification.detection;
+      recordSmartQuestionDecision({
+        formID: form.id,
+        sessionID: form.sessionID,
+        status: "auto",
+        matchedMarker: detection.matchedMarker,
+        timeoutMs: config.timeoutMs,
+        timestamp: Date.now()
+      });
       const lockPath = resolveLockPath(effectiveConfigDir, form.id);
       const expiresAt = Date.now() + config.timeoutMs;
       const initialCountdown = Math.ceil(config.timeoutMs / 1e3);
@@ -2577,6 +2711,14 @@ var setup = async (context) => {
           }, item.location);
           if (disposed || pending.get(form.id) !== item) return;
           item.status = "replied";
+          recordSmartQuestionDecision({
+            formID: form.id,
+            sessionID: form.sessionID,
+            status: "replied",
+            matchedMarker: detection.matchedMarker,
+            timeoutMs: config.timeoutMs,
+            timestamp: Date.now()
+          });
           releaseUiLease(form.sessionID, locationDir);
           consumeActiveHandoff(form.sessionID);
           try {

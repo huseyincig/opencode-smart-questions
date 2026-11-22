@@ -11,6 +11,20 @@ export const DEFAULT_MANUAL_MARKERS = [
     '[SQ:manual]',
     '[SQ_DECISION:manual]',
 ];
+export const DEFAULT_MANUAL_ON_PATTERNS = [
+    'rm -rf',
+    'force push',
+    'force-push',
+    'git push --force',
+    'git reset --hard',
+    'drop database',
+    'drop table',
+    'truncate table',
+    'delete production',
+    'deleting production',
+    'format disk',
+    'mkfs',
+];
 export const DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS = 3;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const SMART_QUESTION_CONFIG_KEYS = new Set([
@@ -20,8 +34,11 @@ const SMART_QUESTION_CONFIG_KEYS = new Set([
     'recommendedMarker',
     'manualMarkers',
     'manualMarker',
+    'manualOnPatterns',
     'maxUnclassifiedRemediations',
     'unclassifiedQuestionPolicy',
+    'unsupportedFieldPolicy',
+    'guidanceMode',
     'fallbackToFirstOption',
     'fallbackOnManual',
     'requireExactlyOneRecommendation',
@@ -57,8 +74,11 @@ export const DEFAULT_CONFIG = {
     recommendedMarker: '[SQ:recommended]',
     manualMarkers: DEFAULT_MANUAL_MARKERS,
     manualMarker: '[SQ:manual]',
+    manualOnPatterns: DEFAULT_MANUAL_ON_PATTERNS,
     maxUnclassifiedRemediations: DEFAULT_MAX_UNCLASSIFIED_REMEDIATIONS,
     unclassifiedQuestionPolicy: 'remediate',
+    unsupportedFieldPolicy: 'ignore',
+    guidanceMode: 'full',
     requireExactlyOneRecommendation: true,
     uiText: DEFAULT_UI_TEXT,
     debugLog: '',
@@ -143,6 +163,9 @@ export function normalizeSmartQuestionConfig(raw, configDir) {
                 parsed.manualMarkers.some((marker) => typeof marker !== 'string' || marker.trim().length === 0))) ||
         (parsed.manualMarker !== undefined &&
             (typeof parsed.manualMarker !== 'string' || parsed.manualMarker.trim().length === 0)) ||
+        (parsed.manualOnPatterns !== undefined &&
+            (!Array.isArray(parsed.manualOnPatterns) ||
+                parsed.manualOnPatterns.some((pattern) => typeof pattern !== 'string' || pattern.trim().length === 0))) ||
         (parsed.maxUnclassifiedRemediations !== undefined &&
             (typeof parsed.maxUnclassifiedRemediations !== 'number' ||
                 !Number.isFinite(parsed.maxUnclassifiedRemediations) ||
@@ -152,6 +175,15 @@ export function normalizeSmartQuestionConfig(raw, configDir) {
             parsed.unclassifiedQuestionPolicy !== 'ignore' &&
             parsed.unclassifiedQuestionPolicy !== 'fallback-first' &&
             parsed.unclassifiedQuestionPolicy !== 'remediate-then-fallback') ||
+        (parsed.unsupportedFieldPolicy !== undefined &&
+            parsed.unsupportedFieldPolicy !== 'ignore' &&
+            parsed.unsupportedFieldPolicy !== 'manual' &&
+            parsed.unsupportedFieldPolicy !== 'remediate') ||
+        (parsed.guidanceMode !== undefined &&
+            parsed.guidanceMode !== 'full' &&
+            parsed.guidanceMode !== 'compact' &&
+            parsed.guidanceMode !== 'hint' &&
+            parsed.guidanceMode !== 'off') ||
         (parsed.fallbackToFirstOption !== undefined &&
             typeof parsed.fallbackToFirstOption !== 'boolean') ||
         (parsed.fallbackOnManual !== undefined &&
@@ -173,6 +205,9 @@ export function normalizeSmartQuestionConfig(raw, configDir) {
             ? [parsed.manualMarker.trim()]
             : [...DEFAULT_MANUAL_MARKERS];
     const manualMarker = manualMarkers[0] ?? DEFAULT_CONFIG.manualMarker ?? '[SQ:manual]';
+    const manualOnPatterns = parsed.manualOnPatterns !== undefined
+        ? cleanMarkers(parsed.manualOnPatterns)
+        : [...DEFAULT_MANUAL_ON_PATTERNS];
     const maxUnclassifiedRemediations = typeof parsed.maxUnclassifiedRemediations === 'number' &&
         Number.isFinite(parsed.maxUnclassifiedRemediations) &&
         parsed.maxUnclassifiedRemediations >= 0
@@ -185,6 +220,16 @@ export function normalizeSmartQuestionConfig(raw, configDir) {
             : parsed.unclassifiedQuestionPolicy === 'remediate-then-fallback'
                 ? 'remediate-then-fallback'
                 : 'remediate';
+    const unsupportedFieldPolicy = parsed.unsupportedFieldPolicy === 'manual'
+        ? 'manual'
+        : parsed.unsupportedFieldPolicy === 'remediate'
+            ? 'remediate'
+            : 'ignore';
+    const guidanceMode = parsed.guidanceMode === 'off'
+        ? 'off'
+        : parsed.guidanceMode === 'compact' || parsed.guidanceMode === 'hint'
+            ? 'compact'
+            : 'full';
     const timeoutMs = typeof parsed.timeoutMs === 'number' &&
         Number.isFinite(parsed.timeoutMs) &&
         parsed.timeoutMs >= 0 &&
@@ -198,8 +243,11 @@ export function normalizeSmartQuestionConfig(raw, configDir) {
         recommendedMarker,
         manualMarkers,
         manualMarker,
+        manualOnPatterns,
         maxUnclassifiedRemediations,
         unclassifiedQuestionPolicy,
+        unsupportedFieldPolicy,
+        guidanceMode,
         requireExactlyOneRecommendation: typeof parsed.requireExactlyOneRecommendation === 'boolean'
             ? parsed.requireExactlyOneRecommendation
             : DEFAULT_CONFIG.requireExactlyOneRecommendation,
