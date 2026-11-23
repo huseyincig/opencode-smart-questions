@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v1.3.0** evaluation on **23 November 2026**.
+This document describes the **v1.3.1** evaluation on **23 November 2026**.
 
 ## Automated checks
 
@@ -18,19 +18,25 @@ npm audit
 npm pack --dry-run
 ```
 
-CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.13.1**, `@opencode/plugin` **2.3.0**, and OpenCode **v2.3.2**.
+CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.13.1**, `@opencode/plugin` **2.4.0**, and OpenCode **v2.4.0**.
 
 ## Current results
 
 | Check | Observed result |
 | --- | --- |
-| Unit and regression tests (`npm test`) | **170/170 passed** |
-| Live OpenCode `v2.3.2` acceptance (`npm run test:acceptance`) | **8/8 scenarios passed** against live `opencode serve` |
+| Unit and regression tests (`npm test`) | **172/172 passed** |
+| Live OpenCode `v2.4.0` acceptance (`npm run test:acceptance`) | **8/8 scenarios passed** against live `opencode serve` |
 | Strict TypeScript and Oxlint | **Passed**, 0 warnings / 0 errors |
 | Simulated V2 comprehensive scenarios | **7/7 passed** |
 | Separate V2 smoke test | **Passed** |
 | Dependency audit (`npm audit`) | **0 vulnerabilities** |
 | Packaging dry run (`npm pack --dry-run`) | Expected server, UI, TUI, declaration, and documentation files included |
+
+## v1.3.1 regression & fix coverage
+
+- **Live TUI Keypress & Paste Countdown Cancellation (`src/ui.tsx`)**: Switched `context.renderer.keyInput` subscription to `prependListener` (with `.on` fallback) so user keypresses/pastes cancel countdowns before OpenCode's `Form` keymap calls `stopPropagation()`.
+- **Session & Kitty Modifier Coverage (`src/ui.tsx`)**: Added `lastRenderedSlotSessionID` and root-family fallback in `cancelActiveInteraction`, added `option`/`hyper` chord filtering, and added Kitty modifier-only keys to `NON_INTERVENTION_KEYS`.
+- **OpenCode `v2.4.0` Peer Alignment (`package.json`, `tests/v2-live-acceptance.mjs`)**: Updated `peerDependencies` (`@opentui/core >=0.9.4`, `@opentui/solid >=0.9.4`, `solid-js ^1.9.12`, `@opencode/plugin ^2.3.0 || ^2.4.0`) and acceptance host version matching.
 
 ## v1.3.0 regression & fix coverage
 

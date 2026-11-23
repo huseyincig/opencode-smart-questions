@@ -70,7 +70,7 @@ try {
   console.log('\n[GATE 1] Host Binary Verification...');
   const opencodeVersionOutput = execSync('opencode --version', { encoding: 'utf8' }).trim();
   console.log(`    Detected OpenCode binary version: ${opencodeVersionOutput}`);
-  assert.match(opencodeVersionOutput, /2\.3\./, 'Host version must be OpenCode v2.3.x');
+  assert.match(opencodeVersionOutput, /2\.(3|4)\./, 'Host version must be OpenCode v2.3.x or v2.4.x');
 
   // 2. Configure Isolated Temp Workspace (NEVER touch ~/.config/opencode)
   console.log('\n[GATE 2] Isolated Workspace & Plugin Discovery...');

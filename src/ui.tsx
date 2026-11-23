@@ -1257,8 +1257,24 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     'ctrl',
     'control',
     'alt',
+    'option',
     'meta',
     'super',
+    'hyper',
+    'leftshift',
+    'rightshift',
+    'leftctrl',
+    'rightctrl',
+    'leftalt',
+    'rightalt',
+    'leftmeta',
+    'rightmeta',
+    'leftsuper',
+    'rightsuper',
+    'lefthyper',
+    'righthyper',
+    'iso_level3_shift',
+    'iso_level5_shift',
     'capslock',
     'numlock',
     'scrolllock',
@@ -1324,26 +1340,90 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     })();
   };
 
+  let lastRenderedSlotSessionID: string | undefined;
+
+  const cancelActiveInteraction = (reason: string) => {
+    const targets = new Set<string>();
+    const route = context.ui.router.current();
+    if (route.type === 'session' && route.sessionID) {
+      targets.add(route.sessionID);
+    }
+    if (lastRenderedSlotSessionID) {
+      targets.add(lastRenderedSlotSessionID);
+    }
+
+    const rootFn = (context.data.session as { root?: (id: string) => string } | undefined)?.root;
+    const activeRoots = new Set<string>();
+    if (typeof rootFn === 'function') {
+      for (const sid of targets) {
+        try {
+          const rootID = rootFn(sid);
+          if (typeof rootID === 'string' && rootID) activeRoots.add(rootID);
+        } catch {}
+      }
+    }
+
+    for (const item of pending.values()) {
+      if (targets.has(item.sessionID)) continue;
+      if (targets.size === 0) {
+        targets.add(item.sessionID);
+        continue;
+      }
+      if (typeof rootFn === 'function' && activeRoots.size > 0) {
+        try {
+          const rootID = rootFn(item.sessionID);
+          if (typeof rootID === 'string' && activeRoots.has(rootID)) {
+            targets.add(item.sessionID);
+          }
+        } catch {}
+      }
+    }
+    for (const entry of inFlightForms.values()) {
+      if (targets.has(entry.sessionID)) continue;
+      if (targets.size === 0) {
+        targets.add(entry.sessionID);
+        continue;
+      }
+      if (typeof rootFn === 'function' && activeRoots.size > 0) {
+        try {
+          const rootID = rootFn(entry.sessionID);
+          if (typeof rootID === 'string' && activeRoots.has(rootID)) {
+            targets.add(entry.sessionID);
+          }
+        } catch {}
+      }
+    }
+
+    for (const sessionID of targets) {
+      cancelSessionAutoSelection(sessionID, reason);
+    }
+  };
+
   const onKey = (keyEvent?: {
     name?: string;
     ctrl?: boolean;
     meta?: boolean;
     alt?: boolean;
+    option?: boolean;
     super?: boolean;
+    hyper?: boolean;
   }) => {
-    if (keyEvent?.ctrl || keyEvent?.meta || keyEvent?.alt || keyEvent?.super) return;
+    if (
+      keyEvent?.ctrl ||
+      keyEvent?.meta ||
+      keyEvent?.alt ||
+      keyEvent?.option ||
+      keyEvent?.super ||
+      keyEvent?.hyper
+    ) {
+      return;
+    }
     const keyName = typeof keyEvent?.name === 'string' ? keyEvent.name.toLowerCase() : '';
     if (keyName && NON_INTERVENTION_KEYS.has(keyName)) return;
-    const route = context.ui.router.current();
-    if (route.type === 'session') {
-      cancelSessionAutoSelection(route.sessionID, 'user keyboard interaction');
-    }
+    cancelActiveInteraction('user keyboard interaction');
   };
   const onPaste = () => {
-    const route = context.ui.router.current();
-    if (route.type === 'session') {
-      cancelSessionAutoSelection(route.sessionID, 'user paste interaction');
-    }
+    cancelActiveInteraction('user paste interaction');
   };
 
   try {
@@ -1400,16 +1480,31 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       })
     );
 
-    context.renderer.keyInput.on('keypress', onKey);
-    cleanups.push(() => context.renderer.keyInput.off('keypress', onKey));
-    context.renderer.keyInput.on('paste', onPaste);
-    cleanups.push(() => context.renderer.keyInput.off('paste', onPaste));
+    // Register ahead of OpenCode's Keymap listener (which uses prependListener and calls
+    // stopPropagation() on handled form keys) so any user keypress cancels auto-selection.
+    const keyInput = context.renderer.keyInput as typeof context.renderer.keyInput & {
+      prependListener?: typeof context.renderer.keyInput.on;
+    };
+    const subscribeKey =
+      typeof keyInput.prependListener === 'function'
+        ? keyInput.prependListener.bind(keyInput)
+        : keyInput.on.bind(keyInput);
+    subscribeKey('keypress', onKey);
+    cleanups.push(() => keyInput.off('keypress', onKey));
+    subscribeKey('paste', onPaste);
+    cleanups.push(() => keyInput.off('paste', onPaste));
 
     cleanups.push(context.ui.slot({
       append: 'session.composer.top',
       render: (slotProps?: { sessionID?: string }) => {
-        const getSessionID = () =>
-          slotProps?.sessionID ?? (context.ui.router.current() as any)?.sessionID;
+        const getSessionID = () => {
+          const sid =
+            slotProps?.sessionID ?? (context.ui.router.current() as any)?.sessionID;
+          if (typeof sid === 'string' && sid) {
+            lastRenderedSlotSessionID = sid;
+          }
+          return sid;
+        };
         return (
           <SmartQuestionOverlay
             state={() => {

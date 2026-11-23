@@ -1892,3 +1892,98 @@ test('5.4: in-memory decision audit log records classification and auto-reply de
   assert.equal(decisions.some((d) => d.formID === 'frm-audit-54' && d.status === 'replied'), true);
 });
 
+test('6.1: keypress cancels countdown even when host keymap calls stopPropagation via prependListener (OpenCode v2.4.0)', async (t) => {
+  const { InternalKeyHandler, KeyEvent } = await import('@opentui/core');
+  const keyInput = new InternalKeyHandler();
+  // Simulate OpenCode TUI Keymap layer registered BEFORE plugins using prependListener + stopPropagation
+  keyInput.prependListener('keypress', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+
+  const form = {
+    id: 'frm-stop-prop-61',
+    sessionID: 'ses-1',
+    fields: [{
+      key: 'pick',
+      type: 'string',
+      options: [{ value: 'a', label: 'Alpha [SQ:recommended]' }, { value: 'b', label: 'Beta' }],
+    }],
+  };
+
+  const h = makeTuiHarness(t, {
+    options: { timeoutMs: 40 },
+    formList: () => [form],
+  });
+  h.context.renderer.keyInput = keyInput;
+
+  const dispose = await setup(h.context);
+  t.after(dispose);
+
+  await h.events.get('form.created')({ data: { form } });
+  await delay(5);
+
+  keyInput.emit('keypress', new KeyEvent({
+    name: 'down',
+    ctrl: false,
+    meta: false,
+    shift: false,
+    option: false,
+    sequence: '\x1b[B',
+    number: false,
+    raw: '\x1b[B',
+    eventType: 'press',
+    source: 'raw',
+  }));
+
+  await delay(65);
+  assert.equal(
+    h.replies.length,
+    0,
+    'countdown must be cancelled even when host keymap stops propagation on keypress'
+  );
+});
+
+test('6.2: keypress ignores Kitty modifier-only keys & option/hyper chords, and cancels via active slot sessionID', async (t) => {
+  const form = {
+    id: 'frm-slot-cancel-62',
+    sessionID: 'ses-slot-62',
+    fields: [{
+      key: 'pick',
+      type: 'string',
+      options: [{ value: 'a', label: 'Alpha [SQ:recommended]' }, { value: 'b', label: 'Beta' }],
+    }],
+  };
+
+  const form2 = { ...form, id: 'frm-slot-cancel-62b' };
+  const h = makeTuiHarness(t, {
+    options: { timeoutMs: 35 },
+    initialRoute: { type: 'home' },
+    formList: () => [form, form2],
+  });
+  const dispose = await setup(h.context);
+  t.after(dispose);
+
+  // Render slot with explicit sessionID while router is not on { type: 'session' }
+  const slot = h.getSlot();
+  assert.ok(slot);
+  createRoot((cleanupRoot) => {
+    t.after(cleanupRoot);
+    slot.render({ sessionID: 'ses-slot-62' });
+  });
+
+  await h.events.get('form.created')({ data: { form } });
+  h.emitKey({ name: 'leftshift' });
+  h.emitKey({ name: 'a', option: true });
+  h.emitKey({ name: 'k', hyper: true });
+  await delay(60);
+  assert.equal(h.replies.length, 1, 'Kitty modifier-only keys and option/hyper chords must not cancel');
+
+  await h.events.get('form.created')({ data: { form: form2 } });
+  await delay(5);
+  h.emitKey({ name: 'j' });
+  await delay(60);
+  assert.equal(h.replies.length, 1, 'typing/navigation key must cancel active slot session countdown');
+});
+
+

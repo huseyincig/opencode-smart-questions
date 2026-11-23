@@ -2843,7 +2843,7 @@ var setup = async (context) => {
       }
     }
   };
-  const NON_INTERVENTION_KEYS = /* @__PURE__ */ new Set(["pageup", "pagedown", "home", "end", "scrollup", "scrolldown", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "shift", "ctrl", "control", "alt", "meta", "super", "capslock", "numlock", "scrolllock"]);
+  const NON_INTERVENTION_KEYS = /* @__PURE__ */ new Set(["pageup", "pagedown", "home", "end", "scrollup", "scrolldown", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "shift", "ctrl", "control", "alt", "option", "meta", "super", "hyper", "leftshift", "rightshift", "leftctrl", "rightctrl", "leftalt", "rightalt", "leftmeta", "rightmeta", "leftsuper", "rightsuper", "lefthyper", "righthyper", "iso_level3_shift", "iso_level5_shift", "capslock", "numlock", "scrolllock"]);
   const getCachedSessionInfo = (sessionID) => {
     try {
       let sessionInfo = context.data.session?.get?.(sessionID);
@@ -2891,20 +2891,73 @@ var setup = async (context) => {
       }
     })();
   };
-  const onKey = (keyEvent) => {
-    if (keyEvent?.ctrl || keyEvent?.meta || keyEvent?.alt || keyEvent?.super) return;
-    const keyName = typeof keyEvent?.name === "string" ? keyEvent.name.toLowerCase() : "";
-    if (keyName && NON_INTERVENTION_KEYS.has(keyName)) return;
+  let lastRenderedSlotSessionID;
+  const cancelActiveInteraction = (reason) => {
+    const targets = /* @__PURE__ */ new Set();
     const route = context.ui.router.current();
-    if (route.type === "session") {
-      cancelSessionAutoSelection(route.sessionID, "user keyboard interaction");
+    if (route.type === "session" && route.sessionID) {
+      targets.add(route.sessionID);
+    }
+    if (lastRenderedSlotSessionID) {
+      targets.add(lastRenderedSlotSessionID);
+    }
+    const rootFn = context.data.session?.root;
+    const activeRoots = /* @__PURE__ */ new Set();
+    if (typeof rootFn === "function") {
+      for (const sid of targets) {
+        try {
+          const rootID = rootFn(sid);
+          if (typeof rootID === "string" && rootID) activeRoots.add(rootID);
+        } catch {
+        }
+      }
+    }
+    for (const item of pending.values()) {
+      if (targets.has(item.sessionID)) continue;
+      if (targets.size === 0) {
+        targets.add(item.sessionID);
+        continue;
+      }
+      if (typeof rootFn === "function" && activeRoots.size > 0) {
+        try {
+          const rootID = rootFn(item.sessionID);
+          if (typeof rootID === "string" && activeRoots.has(rootID)) {
+            targets.add(item.sessionID);
+          }
+        } catch {
+        }
+      }
+    }
+    for (const entry of inFlightForms.values()) {
+      if (targets.has(entry.sessionID)) continue;
+      if (targets.size === 0) {
+        targets.add(entry.sessionID);
+        continue;
+      }
+      if (typeof rootFn === "function" && activeRoots.size > 0) {
+        try {
+          const rootID = rootFn(entry.sessionID);
+          if (typeof rootID === "string" && activeRoots.has(rootID)) {
+            targets.add(entry.sessionID);
+          }
+        } catch {
+        }
+      }
+    }
+    for (const sessionID of targets) {
+      cancelSessionAutoSelection(sessionID, reason);
     }
   };
-  const onPaste = () => {
-    const route = context.ui.router.current();
-    if (route.type === "session") {
-      cancelSessionAutoSelection(route.sessionID, "user paste interaction");
+  const onKey = (keyEvent) => {
+    if (keyEvent?.ctrl || keyEvent?.meta || keyEvent?.alt || keyEvent?.option || keyEvent?.super || keyEvent?.hyper) {
+      return;
     }
+    const keyName = typeof keyEvent?.name === "string" ? keyEvent.name.toLowerCase() : "";
+    if (keyName && NON_INTERVENTION_KEYS.has(keyName)) return;
+    cancelActiveInteraction("user keyboard interaction");
+  };
+  const onPaste = () => {
+    cancelActiveInteraction("user paste interaction");
   };
   try {
     cleanups.push(context.data.on("form.created", onFormCreated));
@@ -2944,14 +2997,22 @@ var setup = async (context) => {
         clearSessionState(sessionID);
       }
     }));
-    context.renderer.keyInput.on("keypress", onKey);
-    cleanups.push(() => context.renderer.keyInput.off("keypress", onKey));
-    context.renderer.keyInput.on("paste", onPaste);
-    cleanups.push(() => context.renderer.keyInput.off("paste", onPaste));
+    const keyInput = context.renderer.keyInput;
+    const subscribeKey = typeof keyInput.prependListener === "function" ? keyInput.prependListener.bind(keyInput) : keyInput.on.bind(keyInput);
+    subscribeKey("keypress", onKey);
+    cleanups.push(() => keyInput.off("keypress", onKey));
+    subscribeKey("paste", onPaste);
+    cleanups.push(() => keyInput.off("paste", onPaste));
     cleanups.push(context.ui.slot({
       append: "session.composer.top",
       render: (slotProps) => {
-        const getSessionID = () => slotProps?.sessionID ?? context.ui.router.current()?.sessionID;
+        const getSessionID = () => {
+          const sid = slotProps?.sessionID ?? context.ui.router.current()?.sessionID;
+          if (typeof sid === "string" && sid) {
+            lastRenderedSlotSessionID = sid;
+          }
+          return sid;
+        };
         return _$createComponent(SmartQuestionOverlay, {
           state: () => {
             const sid = getSessionID();

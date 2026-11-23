@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.1 — 2026-11-23
+
+- **Live TUI Keypress & Paste Countdown Cancellation Fix (`src/ui.tsx`)**: Registered `context.renderer.keyInput` listeners via `prependListener` (with `.on` fallback) so Smart Questions cancels active auto-selection countdowns **before** OpenCode's built-in `Form` Keymap layer calls `keyEvent.stopPropagation()` on form navigation/editing keys.
+- **Session & OpenTUI Kitty Modifier Alignment (`src/ui.tsx`)**: Added `lastRenderedSlotSessionID` and root-family (`context.data.session.root`) fallback resolution in `cancelActiveInteraction`, added `option`/`hyper` chord checks, and expanded `NON_INTERVENTION_KEYS` with Kitty modifier-only keys (`leftshift`, `rightshift`, `leftctrl`, `rightctrl`, `leftalt`, `rightalt`, `leftmeta`, `rightmeta`, `leftsuper`, `rightsuper`, `lefthyper`, `righthyper`, `iso_level3_shift`, `iso_level5_shift`).
+- **OpenCode `v2.4.0` Compatibility (`package.json`, `tests/v2-live-acceptance.mjs`)**: Aligned `peerDependencies` with `@opencode/plugin@2.4.0` (`@opentui/core >=0.9.4`, `@opentui/solid >=0.9.4`, `solid-js ^1.9.12`, `@opencode/plugin ^2.3.0 || ^2.4.0`) and updated live acceptance host check for OpenCode `v2.4.x`.
+- **Verification**: 172/172 unit & regression tests, 7/7 sandbox scenarios, and 8/8 live OpenCode `v2.4.0` host acceptance scenarios pass (`npm run test:all`).
+
 ## 1.3.0 — 2026-11-23
 
 - **Unsupported Form Field Bypass & Policy (`src/form-adapter.ts`, `src/ui.tsx`, `src/config.ts`, `src/types.ts`)**: Forms containing free-text (`type: "string"` without `options`), numeric, boolean, hidden (`hidden: true`), or conditional (`when`) fields are now flagged with `unsupported: true` and no longer trigger `client.session.synthetic` unclassified remediation loops. Added `unsupportedFieldPolicy: "ignore" | "manual" | "remediate"` (default `"ignore"`).
