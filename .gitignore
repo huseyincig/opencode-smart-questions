@@ -5,3 +5,7 @@ node_modules/
 .agents/
 .codex/
 .opencode/
+# Local Antigravity/agent instructions and project memory.
+GEMINI.md
+AGENTS.md
+.gemini/
