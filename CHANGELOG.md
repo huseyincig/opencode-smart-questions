@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.4 — 2026-11-24
+
+- **V2 `form.metadata.message` / `description` Guard & First-Match Preservation (`src/form-adapter.ts`)**: Extended `V2FormInfo` with `metadata?: Record<string, unknown>` and scanned `form.metadata.message` and `form.metadata.description` (where OpenCode V2 carries form body prompts) for manual markers (`[SQ:manual]`, `[SQ_DECISION:manual]`) and destructive `manualOnPatterns`; fixed the outer-loop break so the first matched manual marker is never overwritten by subsequent checks.
+- **Isolated `loadConfig` Stat-Cache Clones (`src/config.ts`)**: Cloned cached `SmartQuestionConfig` objects (`recommendedMarkers`, `manualMarkers`, `manualOnPatterns`, `uiText`) on cache store and retrieval so caller mutations cannot poison process-wide cached configs.
+- **In-Flight User Cancellation Tombstone & Safe Router Access (`src/ui.tsx`)**: Recorded user-cancelled in-flight form IDs in a bounded 512-entry `userCancelledForms` map so duplicate `form.created` re-delivery cannot restart auto-selection after user interaction, and guarded `context.ui.router.current()` inside `cancelActiveInteraction` against transient router errors.
+- **Canonical Plugin Mesh Bridge Sync (`src/bridge.ts`)**: Synchronized `src/bridge.ts` with canonical `BRIDGE_REVISION: 2.3.1` (adding `MeshAgentProfile.bindingOwner`).
+- **Verification**: 181/181 unit & regression tests, 7/7 sandbox scenarios, and 8/8 live OpenCode `v2.4.1` host acceptance scenarios pass (`npm run test:all`).
+
 ## 1.3.3 — 2026-11-24
 
 - **Server Event Stream Filtering (`src/index.ts`)**: Passed explicit `types` filter (`session.synthetic`, `session.inbox.enqueued`, `form.created`, `form.replied`, `form.cancelled`, `session.deleted`) to `context.event.subscribe` so streaming token/tool deltas are never parsed or discarded by Smart Questions.

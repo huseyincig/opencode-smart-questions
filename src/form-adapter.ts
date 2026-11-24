@@ -33,6 +33,7 @@ export interface V2FormInfo {
   sessionID: string;
   title?: string;
   description?: string;
+  metadata?: Record<string, unknown>;
   fields: V2FormField[];
 }
 
@@ -297,6 +298,12 @@ export function classifyV2Form(
   const formTexts: string[] = [];
   if (typeof form.title === 'string') formTexts.push(form.title);
   if (typeof form.description === 'string') formTexts.push(form.description);
+  if (form.metadata && typeof form.metadata === 'object') {
+    const metaMessage = form.metadata.message;
+    const metaDescription = form.metadata.description;
+    if (typeof metaMessage === 'string') formTexts.push(metaMessage);
+    if (typeof metaDescription === 'string') formTexts.push(metaDescription);
+  }
 
   let formExplicitlyManual = false;
   let matchedManualMarker: string | undefined;
@@ -310,12 +317,13 @@ export function classifyV2Form(
         break;
       }
     }
+    if (formExplicitlyManual) break;
     if (/\[SQ_DECISION:(?:v1\][\s\S]*?mode=)?manual/iu.test(normalized)) {
       formExplicitlyManual = true;
       matchedManualMarker = '[SQ:manual]';
       break;
     }
-    if (!formExplicitlyManual && Array.isArray(manualPatterns) && manualPatterns.length > 0) {
+    if (Array.isArray(manualPatterns) && manualPatterns.length > 0) {
       const lower = normalized.toLowerCase();
       for (const pattern of manualPatterns) {
         if (typeof pattern !== 'string' || !pattern.trim()) continue;
@@ -326,6 +334,7 @@ export function classifyV2Form(
         }
       }
     }
+    if (formExplicitlyManual) break;
   }
 
   const prepared = prepareV2FormFields(form.fields);

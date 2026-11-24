@@ -2218,6 +2218,194 @@ test('7.4: loadConfig caches unchanged config files by stat metadata and invalid
   assert.equal(fourth?.timeoutMs, 30000);
 });
 
+test('8.1: classifyV2Form scans form.metadata.message/description for manual markers and destructive patterns without outer-loop overwrite', async () => {
+  const { classifyV2Form } = await import('../dist/form-adapter.js');
+
+  const destructiveMetaForm = {
+    id: 'frm-meta-destructive-81',
+    sessionID: 'ses-1',
+    title: 'Confirm deployment',
+    metadata: {
+      message: 'This action will run rm -rf /var/data before redeploying.',
+    },
+    fields: [
+      {
+        key: 'confirm',
+        type: 'string',
+        options: [
+          { value: 'yes', label: 'Proceed [SQ:recommended]' },
+          { value: 'no', label: 'Cancel' },
+        ],
+      },
+    ],
+  };
+
+  const destructiveResult = classifyV2Form(destructiveMetaForm);
+  assert.equal(destructiveResult.status, 'manual', 'destructive pattern in form.metadata.message must force manual');
+  assert.equal(destructiveResult.matchedMarker, 'rm -rf');
+
+  const explicitMetaMarkerForm = {
+    id: 'frm-meta-marker-81',
+    sessionID: 'ses-1',
+    title: 'Review change [SQ:manual]',
+    metadata: {
+      message: 'Also includes [SQ_DECISION:manual] note',
+      description: 'Second description',
+    },
+    fields: [
+      {
+        key: 'choice',
+        type: 'string',
+        options: [
+          { value: 'a', label: 'Option A [SQ:recommended]' },
+          { value: 'b', label: 'Option B' },
+        ],
+      },
+    ],
+  };
+
+  const customMarkerResult = classifyV2Form(
+    {
+      ...explicitMetaMarkerForm,
+      title: 'Review change [CUSTOM:manual] and [SQ_DECISION:manual]',
+    },
+    '[SQ:recommended]',
+    ['[CUSTOM:manual]', '[SQ:manual]']
+  );
+  assert.equal(customMarkerResult.status, 'manual');
+  assert.equal(
+    customMarkerResult.matchedMarker,
+    '[CUSTOM:manual]',
+    'first matched manual marker must not be overwritten by later regex or text entries'
+  );
+
+  const metaDescriptionManual = classifyV2Form({
+    id: 'frm-meta-desc-81',
+    sessionID: 'ses-1',
+    title: 'Choose target',
+    metadata: {
+      description: 'Sensitive operation [SQ:manual]',
+    },
+    fields: [
+      {
+        key: 'target',
+        type: 'string',
+        options: [
+          { value: 'a', label: 'Staging [SQ:recommended]' },
+          { value: 'b', label: 'Production' },
+        ],
+      },
+    ],
+  });
+  assert.equal(metaDescriptionManual.status, 'manual', 'form.metadata.description manual marker must force manual');
+});
+
+test('8.2: loadConfig stat cache returns isolated clones so caller mutations cannot poison cached config', async (t) => {
+  const { loadConfig } = await import('../dist/config.js');
+  const dir = tempDirectory(t);
+  const cfgDir = path.join(dir, '.opencode');
+  const cfgPath = path.join(cfgDir, 'smart-question.json');
+  fs.mkdirSync(cfgDir, { recursive: true });
+  fs.writeFileSync(
+    cfgPath,
+    JSON.stringify({
+      timeoutMs: 5500,
+      recommendedMarkers: ['[SQ:recommended]'],
+      manualOnPatterns: ['rm -rf'],
+      uiText: { manualTitle: 'Original Manual Title' },
+    }),
+    'utf8'
+  );
+
+  const first = loadConfig(dir);
+  assert.ok(first);
+  first.timeoutMs = 999999;
+  first.recommendedMarkers.push('[POISONED]');
+  first.manualOnPatterns.push('poisoned-pattern');
+  first.uiText.manualTitle = 'Poisoned Title';
+
+  const second = loadConfig(dir);
+  assert.ok(second);
+  assert.notEqual(second, first, 'cached loadConfig result must be a fresh clone');
+  assert.equal(second.timeoutMs, 5500);
+  assert.deepEqual(second.recommendedMarkers, ['[SQ:recommended]']);
+  assert.deepEqual(second.manualOnPatterns, ['rm -rf']);
+  assert.equal(second.uiText.manualTitle, 'Original Manual Title');
+});
+
+test('8.3: user keypress while form.created is in-flight prevents duplicate form.created re-delivery from starting countdown and tolerates router.current errors', async (t) => {
+  const sessionID = 'ses-inflight-cancel-83';
+  const form = {
+    id: 'frm-inflight-cancel-83',
+    sessionID,
+    fields: [
+      {
+        key: 'pick',
+        type: 'string',
+        options: [
+          { value: 'a', label: 'Alpha [SQ:recommended]' },
+          { value: 'b', label: 'Beta' },
+        ],
+      },
+    ],
+  };
+
+  let releaseSync;
+  let syncCalls = 0;
+  const h = makeTuiHarness(t, {
+    options: { timeoutMs: 25 },
+    formList: () => [form],
+  });
+  // First sync blocks while form.created is in-flight
+  h.context.data.session.get = () => (syncCalls > 0 ? { id: sessionID } : undefined);
+  h.context.data.session.sync = () => {
+    syncCalls += 1;
+    if (syncCalls === 1) {
+      return new Promise((resolve) => {
+        releaseSync = resolve;
+      });
+    }
+    return Promise.resolve();
+  };
+
+  const dispose = await setup(h.context);
+  t.after(dispose);
+
+  // Start first form.created (stays in-flight awaiting session.sync)
+  const firstDelivery = h.events.get('form.created')({ data: { form } });
+  await delay(5);
+
+  // Simulate throwing router.current() during keyInput handling — must still cancel in-flight without throwing
+  h.context.ui.router.current = () => {
+    throw new Error('transient router error');
+  };
+  assert.doesNotThrow(() => h.emitKey({ name: 'down' }));
+
+  releaseSync();
+  await firstDelivery;
+
+  // Re-deliver the same form.id — must NOT start a new countdown because user already interacted
+  await h.events.get('form.created')({ data: { form } });
+  await delay(60);
+
+  assert.equal(h.replies.length, 0, 'duplicate form.created after user interaction during in-flight must not auto-reply');
+});
+
+test('8.4: src/bridge.ts matches canonical opencode-plugin-mesh-interoperability bridge.ts', async () => {
+  const localBridge = fs.readFileSync(path.resolve(import.meta.dirname, '../src/bridge.ts'), 'utf8');
+  assert.match(
+    localBridge,
+    /bindingOwner\?:\s*"self"\s*\|\s*"external"\s*\|\s*undefined/,
+    'src/bridge.ts must include canonical MeshAgentProfile.bindingOwner field'
+  );
+  const canonicalPath = '/root/.gemini/config/skills/opencode-plugin-mesh-interoperability/references/bridge.ts';
+  if (fs.existsSync(canonicalPath)) {
+    const canonicalBridge = fs.readFileSync(canonicalPath, 'utf8');
+    assert.equal(localBridge, canonicalBridge, 'src/bridge.ts must be byte-identical to canonical bridge.ts');
+  }
+});
+
+
 
 
 

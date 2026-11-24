@@ -27,6 +27,7 @@ export interface V2FormInfo {
     sessionID: string;
     title?: string;
     description?: string;
+    metadata?: Record<string, unknown>;
     fields: V2FormField[];
 }
 export type V2FormDetectionResult = {

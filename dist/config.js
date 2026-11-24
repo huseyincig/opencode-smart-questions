@@ -308,6 +308,17 @@ export function resolveSmartQuestionConfig(projectDir, pluginOptions) {
 }
 const MAX_CONFIG_FILE_CACHE = 64;
 const configFileCache = new Map();
+function cloneSmartQuestionConfig(config) {
+    if (!config)
+        return null;
+    return {
+        ...config,
+        recommendedMarkers: [...config.recommendedMarkers],
+        ...(config.manualMarkers ? { manualMarkers: [...config.manualMarkers] } : {}),
+        ...(config.manualOnPatterns ? { manualOnPatterns: [...config.manualOnPatterns] } : {}),
+        uiText: { ...config.uiText },
+    };
+}
 function setConfigCache(filePath, entry) {
     if (configFileCache.has(filePath)) {
         configFileCache.delete(filePath);
@@ -353,7 +364,7 @@ export function loadConfig(projectDir) {
     const signature = `${configStat.mtimeMs}:${configStat.ctimeMs}:${configStat.size}`;
     const cached = configFileCache.get(configPath);
     if (cached && cached.signature === signature) {
-        return cached.config;
+        return cloneSmartQuestionConfig(cached.config);
     }
     try {
         const raw = fs.readFileSync(configPath, 'utf8');
@@ -362,7 +373,10 @@ export function loadConfig(projectDir) {
         if (!normalized && parsed?.enabled !== false) {
             console.error('[smart-question] Invalid smart-question config; auto-selection disabled');
         }
-        setConfigCache(configPath, { signature, config: normalized });
+        setConfigCache(configPath, {
+            signature,
+            config: cloneSmartQuestionConfig(normalized),
+        });
         return normalized;
     }
     catch (err) {

@@ -410,6 +410,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
   const inFlightForms = new Map<string, { sessionID: string; token: symbol }>();
   const remediatedForms = new Map<string, string>();
   const settledForms = new Map<string, true>();
+  const userCancelledForms = new Map<string, string>();
   const sessionChains = new Map<string, { fingerprint: string; consecutiveFailures: number }>();
   const uiInteractionLeases = new Map<
     string,
@@ -478,10 +479,24 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
   const MAX_SETTLED_FORMS = 512;
 
-  const cancelInFlightForSession = (sessionID: string) => {
+  const cancelInFlightForSession = (
+    sessionID: string,
+    options?: { recordUserCancel?: boolean }
+  ) => {
     for (const [fID, entry] of inFlightForms.entries()) {
       if (entry.sessionID === sessionID) {
         inFlightForms.delete(fID);
+        if (options?.recordUserCancel) {
+          setBounded(userCancelledForms, fID, sessionID, MAX_SETTLED_FORMS);
+        }
+      }
+    }
+  };
+
+  const clearUserCancelledForSession = (sessionID: string) => {
+    for (const [fID, sID] of userCancelledForms.entries()) {
+      if (sID === sessionID) {
+        userCancelledForms.delete(fID);
       }
     }
   };
@@ -540,11 +555,12 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     if (existingState?.lockPath) {
       deleteLockfile(existingState.lockPath);
     }
+    clearUserCancelledForSession(sessionID);
     updateSessionState(sessionID, () => undefined);
   };
 
   const cancelSessionAutoSelection = (sessionID: string, reason: string) => {
-    cancelInFlightForSession(sessionID);
+    cancelInFlightForSession(sessionID, { recordUserCancel: true });
     const state = activeBySession()[sessionID];
     if (!state?.formID || state.focusDisabled) return;
     const item = pending.get(state.formID);
@@ -577,7 +593,14 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
 
     // Re-delivery of the same form must preserve its reply owner and any
     // user-interaction cancellation instead of starting a new countdown.
-    if (pending.has(form.id) || inFlightForms.has(form.id) || settledForms.has(form.id)) return;
+    if (
+      pending.has(form.id) ||
+      inFlightForms.has(form.id) ||
+      settledForms.has(form.id) ||
+      userCancelledForms.has(form.id)
+    ) {
+      return;
+    }
 
     const flightToken = Symbol(form.id);
     inFlightForms.set(form.id, { sessionID: form.sessionID, token: flightToken });
@@ -1193,6 +1216,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     if (typeof formID === 'string') {
       setBounded(settledForms, formID, true, MAX_SETTLED_FORMS);
       inFlightForms.delete(formID);
+      userCancelledForms.delete(formID);
       remediatedForms.delete(formID);
       if (kind !== 'cancelled') {
         unmarkFormRemediated(formID);
@@ -1373,10 +1397,12 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
   const cancelActiveInteraction = (reason: string) => {
     if (pending.size === 0 && inFlightForms.size === 0) return;
     const targets = new Set<string>();
-    const route = context.ui.router.current();
-    if (route.type === 'session' && route.sessionID) {
-      targets.add(route.sessionID);
-    }
+    try {
+      const route = context.ui.router.current();
+      if (route?.type === 'session' && route.sessionID) {
+        targets.add(route.sessionID);
+      }
+    } catch {}
     if (lastRenderedSlotSessionID) {
       targets.add(lastRenderedSlotSessionID);
     }
@@ -1571,6 +1597,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     }
     remediatedForms.clear();
     settledForms.clear();
+    userCancelledForms.clear();
     sessionChains.clear();
     setActiveBySession({});
     throw error;
@@ -1587,6 +1614,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     }
     remediatedForms.clear();
     settledForms.clear();
+    userCancelledForms.clear();
     sessionChains.clear();
     setActiveBySession({});
   };

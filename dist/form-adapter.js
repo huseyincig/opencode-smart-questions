@@ -172,6 +172,14 @@ export function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers
         formTexts.push(form.title);
     if (typeof form.description === 'string')
         formTexts.push(form.description);
+    if (form.metadata && typeof form.metadata === 'object') {
+        const metaMessage = form.metadata.message;
+        const metaDescription = form.metadata.description;
+        if (typeof metaMessage === 'string')
+            formTexts.push(metaMessage);
+        if (typeof metaDescription === 'string')
+            formTexts.push(metaDescription);
+    }
     let formExplicitlyManual = false;
     let matchedManualMarker;
     for (const text of formTexts) {
@@ -183,12 +191,14 @@ export function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers
                 break;
             }
         }
+        if (formExplicitlyManual)
+            break;
         if (/\[SQ_DECISION:(?:v1\][\s\S]*?mode=)?manual/iu.test(normalized)) {
             formExplicitlyManual = true;
             matchedManualMarker = '[SQ:manual]';
             break;
         }
-        if (!formExplicitlyManual && Array.isArray(manualPatterns) && manualPatterns.length > 0) {
+        if (Array.isArray(manualPatterns) && manualPatterns.length > 0) {
             const lower = normalized.toLowerCase();
             for (const pattern of manualPatterns) {
                 if (typeof pattern !== 'string' || !pattern.trim())
@@ -200,6 +210,8 @@ export function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers
                 }
             }
         }
+        if (formExplicitlyManual)
+            break;
     }
     const prepared = prepareV2FormFields(form.fields);
     if (!prepared.ok) {

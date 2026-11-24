@@ -2,7 +2,7 @@
 
 **Status: PASS (8/8 Scenarios)**
 
-Smart Questions **v1.3.3** was verified end-to-end against a live **OpenCode v2.4.1** (`opencode serve`) instance on **24 November 2026** via `npm run test:acceptance` (`tests/v2-live-acceptance.mjs`).
+Smart Questions **v1.3.4** was verified end-to-end against a live **OpenCode v2.4.1** (`opencode serve`) instance on **24 November 2026** via `npm run test:acceptance` (`tests/v2-live-acceptance.mjs`).
 
 ## Test Environment
 
@@ -12,7 +12,7 @@ Smart Questions **v1.3.3** was verified end-to-end against a live **OpenCode v2.
 | OpenCode version | `2.4.1` |
 | Plugin SDK | `@opencode/plugin` `2.4.1` |
 | Client SDK | `@opencode/client` `2.4.1` |
-| Smart Questions version | `1.3.3` |
+| Smart Questions version | `1.3.4` |
 | Node.js | `26.13.1` |
 | Platform | Linux x86_64 |
 

@@ -292,6 +292,16 @@ function resolveSmartQuestionConfig(projectDir, pluginOptions) {
 }
 var MAX_CONFIG_FILE_CACHE = 64;
 var configFileCache = /* @__PURE__ */ new Map();
+function cloneSmartQuestionConfig(config) {
+  if (!config) return null;
+  return {
+    ...config,
+    recommendedMarkers: [...config.recommendedMarkers],
+    ...config.manualMarkers ? { manualMarkers: [...config.manualMarkers] } : {},
+    ...config.manualOnPatterns ? { manualOnPatterns: [...config.manualOnPatterns] } : {},
+    uiText: { ...config.uiText }
+  };
+}
 function setConfigCache(filePath, entry) {
   if (configFileCache.has(filePath)) {
     configFileCache.delete(filePath);
@@ -329,7 +339,7 @@ function loadConfig(projectDir) {
   const signature = `${configStat.mtimeMs}:${configStat.ctimeMs}:${configStat.size}`;
   const cached = configFileCache.get(configPath);
   if (cached && cached.signature === signature) {
-    return cached.config;
+    return cloneSmartQuestionConfig(cached.config);
   }
   try {
     const raw = fs.readFileSync(configPath, "utf8");
@@ -338,7 +348,10 @@ function loadConfig(projectDir) {
     if (!normalized && parsed?.enabled !== false) {
       console.error("[smart-question] Invalid smart-question config; auto-selection disabled");
     }
-    setConfigCache(configPath, { signature, config: normalized });
+    setConfigCache(configPath, {
+      signature,
+      config: cloneSmartQuestionConfig(normalized)
+    });
     return normalized;
   } catch (err) {
     console.error(
@@ -794,6 +807,12 @@ function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers, manua
   const formTexts = [];
   if (typeof form.title === "string") formTexts.push(form.title);
   if (typeof form.description === "string") formTexts.push(form.description);
+  if (form.metadata && typeof form.metadata === "object") {
+    const metaMessage = form.metadata.message;
+    const metaDescription = form.metadata.description;
+    if (typeof metaMessage === "string") formTexts.push(metaMessage);
+    if (typeof metaDescription === "string") formTexts.push(metaDescription);
+  }
   let formExplicitlyManual = false;
   let matchedManualMarker;
   for (const text of formTexts) {
@@ -805,12 +824,13 @@ function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers, manua
         break;
       }
     }
+    if (formExplicitlyManual) break;
     if (/\[SQ_DECISION:(?:v1\][\s\S]*?mode=)?manual/iu.test(normalized)) {
       formExplicitlyManual = true;
       matchedManualMarker = "[SQ:manual]";
       break;
     }
-    if (!formExplicitlyManual && Array.isArray(manualPatterns) && manualPatterns.length > 0) {
+    if (Array.isArray(manualPatterns) && manualPatterns.length > 0) {
       const lower = normalized.toLowerCase();
       for (const pattern of manualPatterns) {
         if (typeof pattern !== "string" || !pattern.trim()) continue;
@@ -821,6 +841,7 @@ function classifyV2Form(form, markers = DEFAULT_CONFIG.recommendedMarkers, manua
         }
       }
     }
+    if (formExplicitlyManual) break;
   }
   const prepared = prepareV2FormFields(form.fields);
   if (!prepared.ok) {
@@ -2205,6 +2226,7 @@ var setup = async (context) => {
   const inFlightForms = /* @__PURE__ */ new Map();
   const remediatedForms = /* @__PURE__ */ new Map();
   const settledForms = /* @__PURE__ */ new Map();
+  const userCancelledForms = /* @__PURE__ */ new Map();
   const sessionChains = /* @__PURE__ */ new Map();
   const uiInteractionLeases = /* @__PURE__ */ new Map();
   const MAX_UI_INTERACTION_LEASES = 512;
@@ -2265,10 +2287,20 @@ var setup = async (context) => {
     }
   };
   const MAX_SETTLED_FORMS = 512;
-  const cancelInFlightForSession = (sessionID) => {
+  const cancelInFlightForSession = (sessionID, options) => {
     for (const [fID, entry] of inFlightForms.entries()) {
       if (entry.sessionID === sessionID) {
         inFlightForms.delete(fID);
+        if (options?.recordUserCancel) {
+          setBounded(userCancelledForms, fID, sessionID, MAX_SETTLED_FORMS);
+        }
+      }
+    }
+  };
+  const clearUserCancelledForSession = (sessionID) => {
+    for (const [fID, sID] of userCancelledForms.entries()) {
+      if (sID === sessionID) {
+        userCancelledForms.delete(fID);
       }
     }
   };
@@ -2317,10 +2349,13 @@ var setup = async (context) => {
     if (existingState?.lockPath) {
       deleteLockfile(existingState.lockPath);
     }
+    clearUserCancelledForSession(sessionID);
     updateSessionState(sessionID, () => void 0);
   };
   const cancelSessionAutoSelection = (sessionID, reason) => {
-    cancelInFlightForSession(sessionID);
+    cancelInFlightForSession(sessionID, {
+      recordUserCancel: true
+    });
     const state = activeBySession()[sessionID];
     if (!state?.formID || state.focusDisabled) return;
     const item = pending.get(state.formID);
@@ -2347,7 +2382,9 @@ var setup = async (context) => {
     if (disposed) return;
     const form = event?.data?.form ?? event?.properties?.form;
     if (!form?.id || !form.sessionID || form.sessionID === "global") return;
-    if (pending.has(form.id) || inFlightForms.has(form.id) || settledForms.has(form.id)) return;
+    if (pending.has(form.id) || inFlightForms.has(form.id) || settledForms.has(form.id) || userCancelledForms.has(form.id)) {
+      return;
+    }
     const flightToken = Symbol(form.id);
     inFlightForms.set(form.id, {
       sessionID: form.sessionID,
@@ -2834,6 +2871,7 @@ var setup = async (context) => {
     if (typeof formID === "string") {
       setBounded(settledForms, formID, true, MAX_SETTLED_FORMS);
       inFlightForms.delete(formID);
+      userCancelledForms.delete(formID);
       remediatedForms.delete(formID);
       if (kind !== "cancelled") {
         unmarkFormRemediated(formID);
@@ -2937,9 +2975,12 @@ var setup = async (context) => {
   const cancelActiveInteraction = (reason) => {
     if (pending.size === 0 && inFlightForms.size === 0) return;
     const targets = /* @__PURE__ */ new Set();
-    const route = context.ui.router.current();
-    if (route.type === "session" && route.sessionID) {
-      targets.add(route.sessionID);
+    try {
+      const route = context.ui.router.current();
+      if (route?.type === "session" && route.sessionID) {
+        targets.add(route.sessionID);
+      }
+    } catch {
     }
     if (lastRenderedSlotSessionID) {
       targets.add(lastRenderedSlotSessionID);
@@ -3087,6 +3128,7 @@ var setup = async (context) => {
     }
     remediatedForms.clear();
     settledForms.clear();
+    userCancelledForms.clear();
     sessionChains.clear();
     setActiveBySession({});
     throw error;
@@ -3102,6 +3144,7 @@ var setup = async (context) => {
     }
     remediatedForms.clear();
     settledForms.clear();
+    userCancelledForms.clear();
     sessionChains.clear();
     setActiveBySession({});
   };

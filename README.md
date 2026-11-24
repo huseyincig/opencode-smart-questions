@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/opencode-smart-questions?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
 [![npm downloads](https://img.shields.io/npm/dm/opencode-smart-questions?color=blue&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
 [![OpenCode: v2.3.0+](https://img.shields.io/badge/OpenCode-v2.3.0%2B-10b981?logo=terminal&logoColor=white)](https://opencode.ai)
-[![Tests: 177/177 Passing](https://img.shields.io/badge/Tests-177%2F177%20Passing-339933?logo=githubactions&logoColor=white)](docs/verification.md)
+[![Tests: 181/181 Passing](https://img.shields.io/badge/Tests-181%2F181%20Passing-339933?logo=githubactions&logoColor=white)](docs/verification.md)
 [![Live Host: 8/8 Passing](https://img.shields.io/badge/Live%20Host-8%2F8%20Passing-339933?logo=checkmarx&logoColor=white)](docs/acceptance-v2.md)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.0.0-339933?logo=nodedotjs&logoColor=white)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
@@ -21,16 +21,16 @@ A high-performance, deterministic **OpenCode V2** plugin (`@opencode/plugin` `2.
 
 ![Automated and host acceptance results](docs/assets/verification-overview.svg)
 
-Smart Questions **v1.3.3** was verified on **24 November 2026**, using Node **26.13.1**, `@opencode/plugin` **2.4.1**, and live OpenCode **v2.4.1**:
+Smart Questions **v1.3.4** was verified on **24 November 2026**, using Node **26.13.1**, `@opencode/plugin` **2.4.1**, and live OpenCode **v2.4.1**:
 
-- **Unit & Regression Suite:** **177 / 177** tests passing (`npm test`).
+- **Unit & Regression Suite:** **181 / 181** tests passing (`npm test`).
 - **Live OpenCode v2.4.1 Host Acceptance:** **8 / 8** end-to-end scenarios passing against a live `opencode serve` (`v2.4.1`) instance (`npm run test:acceptance`).
 - **Sandbox Scenarios:** **7 / 7** comprehensive V2 scenarios and the separate V2 smoke test pass.
 - **Static Analysis & Audit:** Standard and strict TypeScript gates pass; Oxlint reports **0 warnings / 0 errors**; `npm audit` reports **0 vulnerabilities**.
 
 Read the detailed [V2 Acceptance Report](docs/acceptance-v2.md) and [Technical Verification](docs/verification.md) for full reproduction steps and test harnesses.
 
-See the [1.3.3 release notes](CHANGELOG.md) for server `event.subscribe` `types` filtering, zero-overhead idle TUI keypress/countdown updates, stat-validated `loadConfig` caching, pre-classification `msgApi.sync` bypass, and `v2.4.1` automation session isolation (`ses_aut_*`).
+See the [1.3.4 release notes](CHANGELOG.md) for V2 `form.metadata.message`/`description` destructive & manual guard coverage, isolated `loadConfig` cache clones, in-flight user cancellation tombstones, canonical Plugin Mesh `bridge.ts` (`bindingOwner`) sync, and `v2.4.1` optimization/automation isolation.
 
 ---
 
@@ -52,7 +52,7 @@ See the [1.3.3 release notes](CHANGELOG.md) for server `event.subscribe` `types`
 
 ## 📦 Installation
 
-The current version is **1.3.3** (OpenCode **v2.3.0+**, verified on **v2.4.1**).
+The current version is **1.3.4** (OpenCode **v2.3.0+**, verified on **v2.4.1**).
 
 You can install **OpenCode Smart Questions** globally for all workspaces, per-project, via npm/CLI, or from a local checkout.
 

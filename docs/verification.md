@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v1.3.3** evaluation on **24 November 2026**.
+This document describes the **v1.3.4** evaluation on **24 November 2026**.
 
 ## Automated checks
 
@@ -24,13 +24,20 @@ CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.
 
 | Check | Observed result |
 | --- | --- |
-| Unit and regression tests (`npm test`) | **177/177 passed** |
+| Unit and regression tests (`npm test`) | **181/181 passed** |
 | Live OpenCode `v2.4.1` acceptance (`npm run test:acceptance`) | **8/8 scenarios passed** against live `opencode serve` |
 | Strict TypeScript and Oxlint | **Passed**, 0 warnings / 0 errors |
 | Simulated V2 comprehensive scenarios | **7/7 passed** |
 | Separate V2 smoke test | **Passed** |
 | Dependency audit (`npm audit`) | **0 vulnerabilities** |
 | Packaging dry run (`npm pack --dry-run`) | Expected server, UI, TUI, declaration, and documentation files included |
+
+## v1.3.4 regression & fix coverage
+
+- **V2 `form.metadata` Classification & Break Fix (`src/form-adapter.ts`)**: Scanned `form.metadata.message` and `form.metadata.description` for manual markers and destructive `manualOnPatterns`, and broke out of the outer loop on first match so `matchedManualMarker` cannot be overwritten.
+- **Isolated `loadConfig` Cache Clones (`src/config.ts`)**: Added `cloneSmartQuestionConfig()` on cache store/return so caller mutations to marker/pattern arrays or `uiText` cannot poison cached configs.
+- **In-Flight User Cancellation Tombstone & Safe Router Access (`src/ui.tsx`)**: Added a bounded 512-entry `userCancelledForms` map to prevent duplicate `form.created` re-delivery from starting a countdown after user interaction during `inFlightForms`, and wrapped `context.ui.router.current()` in `try/catch`.
+- **Canonical Plugin Mesh Bridge Sync (`src/bridge.ts`)**: Synchronized `src/bridge.ts` with canonical `BRIDGE_REVISION: 2.3.1` (`MeshAgentProfile.bindingOwner`).
 
 ## v1.3.3 regression & fix coverage
 
