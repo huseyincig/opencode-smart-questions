@@ -1,3 +1,6 @@
+export function isAutomationSessionID(sessionID) {
+    return typeof sessionID === 'string' && /^ses_aut_/i.test(sessionID.trim());
+}
 function asRecord(value) {
     return value && typeof value === 'object'
         ? value
@@ -20,6 +23,9 @@ export function classifySessionScope(value) {
     const id = session?.id ?? session?.sessionID;
     if (!session || typeof id !== 'string' || !id) {
         return 'unknown';
+    }
+    if (isAutomationSessionID(id)) {
+        return 'automation';
     }
     const parentID = session.parentID ?? session.parentId;
     if (typeof parentID === 'string') {

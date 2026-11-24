@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.2 — 2026-11-24
+
+- **OpenCode `v2.4.1` Unattended Automation Isolation (`src/session-scope.ts`)**: Added `isAutomationSessionID` (`/^ses_aut_/i`) and `SessionScope = 'automation'` so OpenCode `v2.4.0+`/`v2.4.1` unattended automation runs (`ses_aut_*`, including plugin-created `ctx.experimental.automation` runs) are never treated as interactive root sessions and never receive `[SQ_GUIDANCE:v1]` or TUI auto-selection even when `includeSubagents: true`.
+- **OpenCode `v2.4.1` Peer & SDK Alignment (`package.json`, `package-lock.json`)**: Aligned `peerDependencies` with `@opencode/plugin@2.4.1` (`@opentui/core >=0.8.0`, `@opentui/solid >=0.8.0`, `solid-js ^1.9.12`, `@opencode/plugin ^2.3.0 || ^2.4.0`) and upgraded dev/typecheck dependencies to `@opencode/plugin@^2.4.1`, `@opentui/core@^0.9.9`, and `@opentui/solid@^0.9.9`.
+- **Verification**: 173/173 unit & regression tests, 7/7 sandbox scenarios, and 8/8 live OpenCode `v2.4.1` host acceptance scenarios pass (`npm run test:all`).
+
 ## 1.3.1 — 2026-11-23
 
 - **Live TUI Keypress & Paste Countdown Cancellation Fix (`src/ui.tsx`)**: Registered `context.renderer.keyInput` listeners via `prependListener` (with `.on` fallback) so Smart Questions cancels active auto-selection countdowns **before** OpenCode's built-in `Form` Keymap layer calls `keyEvent.stopPropagation()` on form navigation/editing keys.

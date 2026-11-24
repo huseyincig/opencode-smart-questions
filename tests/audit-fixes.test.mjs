@@ -1986,4 +1986,65 @@ test('6.2: keypress ignores Kitty modifier-only keys & option/hyper chords, and 
   assert.equal(h.replies.length, 1, 'typing/navigation key must cancel active slot session countdown');
 });
 
+test('6.3: unattended OpenCode v2.4.1 automation sessions (ses_aut_*) are excluded from guidance and auto-selection', async (t) => {
+  const { default: OpencodeSmartQuestions } = await import('../dist/index.js');
+  const { classifySessionScope, isEligibleSessionInfo } = await import('../dist/session-scope.js');
+
+  const autoSessionID = 'ses_aut_01JZXAUTOMATIONRUN';
+  const autoSessionInfo = { id: autoSessionID, location: { directory: '/tmp/sq-aut-63' } };
+
+  assert.equal(classifySessionScope(autoSessionInfo), 'automation');
+  assert.equal(isEligibleSessionInfo(autoSessionInfo, false), false);
+  assert.equal(isEligibleSessionInfo(autoSessionInfo, true), false);
+
+  let contextHook;
+  const disposeServer = await OpencodeSmartQuestions.setup({
+    location: { directory: '/tmp/sq-aut-63' },
+    options: { enabled: true, includeSubagents: true },
+    session: {
+      async get({ sessionID }) {
+        return { id: sessionID, location: { directory: '/tmp/sq-aut-63' } };
+      },
+      async hook(name, fn) {
+        if (name === 'context') contextHook = fn;
+        return { async dispose() {} };
+      },
+    },
+  });
+  t.after(() => disposeServer?.());
+
+  const ctxEvent = { sessionID: autoSessionID, system: [], messages: [] };
+  await contextHook(ctxEvent);
+  assert.equal(
+    ctxEvent.system.length,
+    0,
+    'automation sessions (ses_aut_*) must never receive interactive SQ guidance'
+  );
+
+  const form = {
+    id: 'frm-aut-63',
+    sessionID: autoSessionID,
+    fields: [{
+      key: 'pick',
+      type: 'string',
+      options: [{ value: 'a', label: 'Alpha [SQ:recommended]' }, { value: 'b', label: 'Beta' }],
+    }],
+  };
+  const h = makeTuiHarness(t, {
+    options: { timeoutMs: 15, includeSubagents: true },
+    formList: () => [form],
+  });
+  const disposeTui = await setup(h.context);
+  t.after(disposeTui);
+
+  await h.events.get('form.created')({ data: { form } });
+  await delay(50);
+  assert.equal(
+    h.replies.length,
+    0,
+    'automation sessions (ses_aut_*) must not trigger TUI auto-selection'
+  );
+});
+
+
 

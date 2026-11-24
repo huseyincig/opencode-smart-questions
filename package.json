@@ -1,6 +1,6 @@
 {
   "name": "opencode-smart-questions",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "Language-neutral auto-selection of recommended OpenCode V2 question forms with user-interaction cancellation, remediation, and optional Plugin Mesh handoffs",
   "type": "module",
   "main": "./dist/index.js",
@@ -70,8 +70,8 @@
   "homepage": "https://github.com/huseyincig/opencode-smart-questions#readme",
   "peerDependencies": {
     "@opencode/plugin": "^2.3.0 || ^2.4.0",
-    "@opentui/core": ">=0.9.4",
-    "@opentui/solid": ">=0.9.4",
+    "@opentui/core": ">=0.8.0",
+    "@opentui/solid": ">=0.8.0",
     "solid-js": "^1.9.12"
   },
   "peerDependenciesMeta": {
@@ -91,9 +91,9 @@
   "devDependencies": {
     "@babel/core": "^7.29.7",
     "@babel/preset-typescript": "^7.29.7",
-    "@opencode/plugin": "^2.4.0",
-    "@opentui/core": "^0.9.7",
-    "@opentui/solid": "^0.9.7",
+    "@opencode/plugin": "^2.4.1",
+    "@opentui/core": "^0.9.9",
+    "@opentui/solid": "^0.9.9",
     "@types/node": "^22.0.0",
     "babel-preset-solid": "^1.9.17",
     "esbuild": "^0.25.0",

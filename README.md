@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/opencode-smart-questions?color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
 [![npm downloads](https://img.shields.io/npm/dm/opencode-smart-questions?color=blue&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-smart-questions)
 [![OpenCode: v2.3.0+](https://img.shields.io/badge/OpenCode-v2.3.0%2B-10b981?logo=terminal&logoColor=white)](https://opencode.ai)
-[![Tests: 172/172 Passing](https://img.shields.io/badge/Tests-172%2F172%20Passing-339933?logo=githubactions&logoColor=white)](docs/verification.md)
+[![Tests: 173/173 Passing](https://img.shields.io/badge/Tests-173%2F173%20Passing-339933?logo=githubactions&logoColor=white)](docs/verification.md)
 [![Live Host: 8/8 Passing](https://img.shields.io/badge/Live%20Host-8%2F8%20Passing-339933?logo=checkmarx&logoColor=white)](docs/acceptance-v2.md)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.0.0-339933?logo=nodedotjs&logoColor=white)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
@@ -11,7 +11,7 @@
 
 [Installation](#-installation) · [How Selection Works](#-how-selection-works) · [Architecture & Flowchart](#-architecture--selection-lifecycle) · [Guardian Coordination (Optional)](#-optional-coordination-with-opencode-guardian) · [Configuration](#-configuration) · [Validation](#-validation--testing)
 
-A high-performance, deterministic **OpenCode V2** plugin (`@opencode/plugin` `2.3.0+` / `2.4.0+`) that automatically answers agent-recommended form choices after a configurable countdown, unless the user intervenes. It operates completely standalone and supports single-choice and multiple-choice forms on OpenCode V2 (`v2.3.0+`, verified on `v2.4.0`).
+A high-performance, deterministic **OpenCode V2** plugin (`@opencode/plugin` `2.3.0+` / `2.4.0+`) that automatically answers agent-recommended form choices after a configurable countdown, unless the user intervenes. It operates completely standalone and supports single-choice and multiple-choice forms on OpenCode V2 (`v2.3.0+`, verified on `v2.4.1`).
 
 **Language-independent selection:** Question text and options can be written in any language. The plugin recognizes exact configured markers such as `[SQ:recommended]`; it does not translate or alter recommendations. Alternative markers like `(Recommended)` and `(Önerilen)` are also recognized by default.
 
@@ -21,16 +21,16 @@ A high-performance, deterministic **OpenCode V2** plugin (`@opencode/plugin` `2.
 
 ![Automated and host acceptance results](docs/assets/verification-overview.svg)
 
-Smart Questions **v1.3.1** was verified on **23 November 2026**, using Node **26.13.1**, `@opencode/plugin` **2.4.0**, and live OpenCode **v2.4.0**:
+Smart Questions **v1.3.2** was verified on **24 November 2026**, using Node **26.13.1**, `@opencode/plugin` **2.4.1**, and live OpenCode **v2.4.1**:
 
-- **Unit & Regression Suite:** **172 / 172** tests passing (`npm test`).
-- **Live OpenCode v2.4.0 Host Acceptance:** **8 / 8** end-to-end scenarios passing against a live `opencode serve` (`v2.4.0`) instance (`npm run test:acceptance`).
+- **Unit & Regression Suite:** **173 / 173** tests passing (`npm test`).
+- **Live OpenCode v2.4.1 Host Acceptance:** **8 / 8** end-to-end scenarios passing against a live `opencode serve` (`v2.4.1`) instance (`npm run test:acceptance`).
 - **Sandbox Scenarios:** **7 / 7** comprehensive V2 scenarios and the separate V2 smoke test pass.
 - **Static Analysis & Audit:** Standard and strict TypeScript gates pass; Oxlint reports **0 warnings / 0 errors**; `npm audit` reports **0 vulnerabilities**.
 
 Read the detailed [V2 Acceptance Report](docs/acceptance-v2.md) and [Technical Verification](docs/verification.md) for full reproduction steps and test harnesses.
 
-See the [1.3.1 release notes](CHANGELOG.md) for OpenCode `v2.4.0` compatibility, `prependListener` keypress/paste countdown cancellation ahead of OpenCode's `Form` keymap `stopPropagation()`, and the `1.3.0` safety/token controls (`manualOnPatterns`, `unsupportedFieldPolicy`, `guidanceMode`, and `getRecentSmartQuestionDecisions`).
+See the [1.3.2 release notes](CHANGELOG.md) for OpenCode `v2.4.1` compatibility (unattended `ses_aut_*` automation session isolation and relaxed `@opentui/* >=0.8.0` peer alignment), `1.3.1` `prependListener` keypress/paste countdown cancellation ahead of OpenCode's `Form` keymap `stopPropagation()`, and `1.3.0` safety/token controls (`manualOnPatterns`, `unsupportedFieldPolicy`, `guidanceMode`, and `getRecentSmartQuestionDecisions`).
 
 ---
 
@@ -52,7 +52,7 @@ See the [1.3.1 release notes](CHANGELOG.md) for OpenCode `v2.4.0` compatibility,
 
 ## 📦 Installation
 
-The current version is **1.3.1** (OpenCode **v2.3.0+**, verified on **v2.4.0**).
+The current version is **1.3.2** (OpenCode **v2.3.0+**, verified on **v2.4.1**).
 
 You can install **OpenCode Smart Questions** globally for all workspaces, per-project, via npm/CLI, or from a local checkout.
 
@@ -253,7 +253,7 @@ npm pack --dry-run
 ```
 
 - **CI Matrix:** Runs on Node 22, 24, and 26 with strict typechecking and Oxlint verification.
-- **Acceptance Report:** See [V2 Acceptance](docs/acceptance-v2.md) for live OpenCode `v2.4.0` host verification.
+- **Acceptance Report:** See [V2 Acceptance](docs/acceptance-v2.md) for live OpenCode `v2.4.1` host verification.
 - **Technical Specifications:** Detailed boundaries and limitations are documented in [Technical Verification](docs/verification.md).
 
 ---

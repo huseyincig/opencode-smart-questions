@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v1.3.1** evaluation on **23 November 2026**.
+This document describes the **v1.3.2** evaluation on **24 November 2026**.
 
 ## Automated checks
 
@@ -18,19 +18,24 @@ npm audit
 npm pack --dry-run
 ```
 
-CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.13.1**, `@opencode/plugin` **2.4.0**, and OpenCode **v2.4.0**.
+CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.13.1**, `@opencode/plugin` **2.4.1**, and OpenCode **v2.4.1**.
 
 ## Current results
 
 | Check | Observed result |
 | --- | --- |
-| Unit and regression tests (`npm test`) | **172/172 passed** |
-| Live OpenCode `v2.4.0` acceptance (`npm run test:acceptance`) | **8/8 scenarios passed** against live `opencode serve` |
+| Unit and regression tests (`npm test`) | **173/173 passed** |
+| Live OpenCode `v2.4.1` acceptance (`npm run test:acceptance`) | **8/8 scenarios passed** against live `opencode serve` |
 | Strict TypeScript and Oxlint | **Passed**, 0 warnings / 0 errors |
 | Simulated V2 comprehensive scenarios | **7/7 passed** |
 | Separate V2 smoke test | **Passed** |
 | Dependency audit (`npm audit`) | **0 vulnerabilities** |
 | Packaging dry run (`npm pack --dry-run`) | Expected server, UI, TUI, declaration, and documentation files included |
+
+## v1.3.2 regression & fix coverage
+
+- **OpenCode `v2.4.1` Unattended Automation Isolation (`src/session-scope.ts`)**: Classified `ses_aut_*` automation run sessions as `scope: 'automation'` and excluded them from both server `[SQ_GUIDANCE:v1]` injection and TUI auto-selection regardless of `includeSubagents`.
+- **OpenCode `v2.4.1` Peer & SDK Alignment (`package.json`, `package-lock.json`)**: Relaxed OpenTUI peer floors to `@opentui/core >=0.8.0` and `@opentui/solid >=0.8.0` per `@opencode/plugin@2.4.1` (`#65819`) while typechecking and testing against `@opencode/plugin@2.4.1` and `@opentui/*@0.9.9`.
 
 ## v1.3.1 regression & fix coverage
 

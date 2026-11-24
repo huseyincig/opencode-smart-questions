@@ -1,4 +1,8 @@
-export type SessionScope = 'root' | 'child' | 'unknown';
+export type SessionScope = 'root' | 'child' | 'automation' | 'unknown';
+
+export function isAutomationSessionID(sessionID: unknown): boolean {
+  return typeof sessionID === 'string' && /^ses_aut_/i.test(sessionID.trim());
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object'
@@ -24,6 +28,9 @@ export function classifySessionScope(value: unknown): SessionScope {
   const id = session?.id ?? (session as Record<string, unknown> | null)?.sessionID;
   if (!session || typeof id !== 'string' || !id) {
     return 'unknown';
+  }
+  if (isAutomationSessionID(id)) {
+    return 'automation';
   }
 
   const parentID = session.parentID ?? (session as Record<string, unknown>).parentId;
