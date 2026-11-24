@@ -1,6 +1,6 @@
 # Guardian + Smart Questions Coordination Protocol
 
-Current documentation: Smart Questions **1.3.2** (OpenCode V2 `v2.3.0+`, verified on `v2.4.1`) and Guardian **0.11.2+**. See each package's release notes and verification report for current automated results.
+Current documentation: Smart Questions **1.3.3** (OpenCode V2 `v2.3.0+`, verified on `v2.4.1`) and Guardian **0.11.2+**. See each package's release notes and verification report for current automated results.
 
 OpenCode Guardian, OpenCode Hi, and Smart Questions are **completely standalone, independent plugins** with zero package dependencies on each other.
 

@@ -290,6 +290,19 @@ function resolveSmartQuestionConfig(projectDir, pluginOptions) {
   }
   return loadConfig(projectDir);
 }
+var MAX_CONFIG_FILE_CACHE = 64;
+var configFileCache = /* @__PURE__ */ new Map();
+function setConfigCache(filePath, entry) {
+  if (configFileCache.has(filePath)) {
+    configFileCache.delete(filePath);
+  }
+  configFileCache.set(filePath, entry);
+  while (configFileCache.size > MAX_CONFIG_FILE_CACHE) {
+    const oldest = configFileCache.keys().next().value;
+    if (oldest === void 0) break;
+    configFileCache.delete(oldest);
+  }
+}
 function loadConfig(projectDir) {
   const dir = typeof projectDir === "string" && projectDir ? projectDir : process.cwd();
   const candidatePaths = [
@@ -298,14 +311,25 @@ function loadConfig(projectDir) {
     path.resolve(os.homedir(), ".config/opencode/smart-question.json")
   ];
   let configPath = null;
+  let configStat = null;
   for (const candidate of candidatePaths) {
-    if (fs.existsSync(candidate)) {
-      configPath = candidate;
-      break;
+    try {
+      const stat = fs.statSync(candidate);
+      if (stat.isFile()) {
+        configPath = candidate;
+        configStat = stat;
+        break;
+      }
+    } catch {
     }
   }
-  if (!configPath) {
+  if (!configPath || !configStat) {
     return normalizeSmartQuestionConfig({}, path.resolve(dir, ".opencode"));
+  }
+  const signature = `${configStat.mtimeMs}:${configStat.ctimeMs}:${configStat.size}`;
+  const cached = configFileCache.get(configPath);
+  if (cached && cached.signature === signature) {
+    return cached.config;
   }
   try {
     const raw = fs.readFileSync(configPath, "utf8");
@@ -314,11 +338,13 @@ function loadConfig(projectDir) {
     if (!normalized && parsed?.enabled !== false) {
       console.error("[smart-question] Invalid smart-question config; auto-selection disabled");
     }
+    setConfigCache(configPath, { signature, config: normalized });
     return normalized;
   } catch (err) {
     console.error(
       `[smart-question] Failed to load smart-question config (${diagnosticErrorCode(err)}); auto-selection disabled`
     );
+    configFileCache.delete(configPath);
     return null;
   }
 }
@@ -2256,10 +2282,12 @@ var setup = async (context) => {
   };
   const updateSessionState = (sessionID, updater) => {
     setActiveBySession((current) => {
+      const prev = current[sessionID];
+      const updated = updater(prev);
+      if (updated === prev) return current;
       const next = {
         ...current
       };
-      const updated = updater(next[sessionID]);
       if (updated) next[sessionID] = updated;
       else delete next[sessionID];
       return next;
@@ -2382,8 +2410,18 @@ var setup = async (context) => {
       const log = createDiagnosticLogger(config, "smart-question-v2-ui");
       const effectiveConfigDir = config.configDir || path3.resolve(location?.directory || context.location?.directory || process.cwd(), ".opencode");
       cleanupStaleDrafts(effectiveConfigDir, config.timeoutMs, log);
+      const fallbackActive = config.unclassifiedQuestionPolicy === "fallback-first" || config.fallbackToFirstOption === true;
+      const classifyOptions = {
+        requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
+        allowFallback: fallbackActive,
+        allowFallbackOnManual: config.fallbackOnManual === true,
+        manualOnPatterns: config.manualOnPatterns,
+        unsupportedFieldPolicy: config.unsupportedFieldPolicy
+      };
       let handoff = getActiveHandoff(form.sessionID);
-      if (!handoff) {
+      const preliminary = !handoff ? classifyV2Form(form, config.recommendedMarkers, config.manualMarkers, null, classifyOptions) : null;
+      const skipMessageSync = preliminary !== null && (preliminary.status === "manual" || preliminary.status === "unclassified" && Boolean(preliminary.unsupported) && config.unsupportedFieldPolicy !== "remediate");
+      if (!handoff && !skipMessageSync) {
         try {
           const msgApi = context.data?.session?.message;
           let msgs = msgApi?.list?.(form.sessionID);
@@ -2411,14 +2449,7 @@ var setup = async (context) => {
       }
       if (!isFlightCurrent()) return;
       const agent = resolveAgentName(sessionInfo, form.sessionID);
-      const fallbackActive = config.unclassifiedQuestionPolicy === "fallback-first" || config.fallbackToFirstOption === true;
-      let classification = classifyV2Form(form, config.recommendedMarkers, config.manualMarkers, handoff, {
-        requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
-        allowFallback: fallbackActive,
-        allowFallbackOnManual: config.fallbackOnManual === true,
-        manualOnPatterns: config.manualOnPatterns,
-        unsupportedFieldPolicy: config.unsupportedFieldPolicy
-      });
+      let classification = !handoff && preliminary ? preliminary : classifyV2Form(form, config.recommendedMarkers, config.manualMarkers, handoff, classifyOptions);
       if (classification.status === "manual") {
         recordSmartQuestionDecision({
           formID: form.id,
@@ -2758,10 +2789,15 @@ var setup = async (context) => {
         item.interval = setInterval(() => {
           if (pending.get(form.id) !== item || item.status !== "pending") return;
           const countdown = Math.ceil(Math.max(0, item.expiresAt - Date.now()) / 1e3);
-          updateSessionState(form.sessionID, (current) => current?.formID === form.id ? {
-            ...current,
-            countdown
-          } : current);
+          updateSessionState(form.sessionID, (current) => {
+            if (!current || current.formID !== form.id || current.countdown === countdown) {
+              return current;
+            }
+            return {
+              ...current,
+              countdown
+            };
+          });
         }, 250);
       }
       pending.set(form.id, item);
@@ -2899,6 +2935,7 @@ var setup = async (context) => {
   };
   let lastRenderedSlotSessionID;
   const cancelActiveInteraction = (reason) => {
+    if (pending.size === 0 && inFlightForms.size === 0) return;
     const targets = /* @__PURE__ */ new Set();
     const route = context.ui.router.current();
     if (route.type === "session" && route.sessionID) {

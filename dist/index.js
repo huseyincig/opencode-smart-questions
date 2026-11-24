@@ -15,6 +15,14 @@ export * from './backend.js';
 export * from './handoff.js';
 export { acquireSessionLease, getBlockingSessionLease, isSessionWaitingOnUser, formatMeshHandoff, parseMeshHandoff, stampMeshMetadata, verifyMeshMetadata, isTrustedMeshMessage, forgetMeshSession, extractTrustedMeshHandoff, extractCurrentTurnMeshHandoff, setActiveMeshHandoff, getActiveMeshHandoff, consumeActiveMeshHandoff, clearActiveMeshHandoff, registerMeshPeer, getMeshPeers, hasMeshCapability, registerMeshStateRpc, callMeshRpc, MESH_STATE_RPC_DEFINITION, MESH_STATE_RPC_ID, resetMeshStateForTests, resolveMeshAgentProfile, } from './bridge.js';
 const MAX_BOUNDED_ENTRIES = 512;
+const SERVER_SUBSCRIBED_EVENT_TYPES = [
+    'session.synthetic',
+    'session.inbox.enqueued',
+    'form.created',
+    'form.replied',
+    'form.cancelled',
+    'session.deleted',
+];
 function setBoundedMap(map, key, value, max = MAX_BOUNDED_ENTRIES, onEvict) {
     if (map.has(key)) {
         map.delete(key);
@@ -312,7 +320,10 @@ const setupV2 = async (context) => {
                 let attempt = 0;
                 while (!eventController.signal.aborted) {
                     try {
-                        const stream = context.event.subscribe({ signal: eventController.signal });
+                        const stream = context.event.subscribe({
+                            signal: eventController.signal,
+                            types: [...SERVER_SUBSCRIBED_EVENT_TYPES],
+                        });
                         for await (const evt of stream) {
                             if (eventController.signal.aborted)
                                 break;

@@ -87,6 +87,15 @@ export {
 
 const MAX_BOUNDED_ENTRIES = 512;
 
+const SERVER_SUBSCRIBED_EVENT_TYPES = [
+  'session.synthetic',
+  'session.inbox.enqueued',
+  'form.created',
+  'form.replied',
+  'form.cancelled',
+  'session.deleted',
+] as const;
+
 function setBoundedMap<K, V>(
   map: Map<K, V>,
   key: K,
@@ -441,7 +450,10 @@ const setupV2: OpenCodeV2.Plugin['setup'] = async (context) => {
         let attempt = 0;
         while (!eventController.signal.aborted) {
           try {
-            const stream = context.event.subscribe({ signal: eventController.signal });
+            const stream = context.event.subscribe({
+              signal: eventController.signal,
+              types: [...SERVER_SUBSCRIBED_EVENT_TYPES],
+            });
             for await (const evt of stream) {
               if (eventController.signal.aborted) break;
               attempt = 0;

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.3 — 2026-11-24
+
+- **Server Event Stream Filtering (`src/index.ts`)**: Passed explicit `types` filter (`session.synthetic`, `session.inbox.enqueued`, `form.created`, `form.replied`, `form.cancelled`, `session.deleted`) to `context.event.subscribe` so streaming token/tool deltas are never parsed or discarded by Smart Questions.
+- **Zero-Overhead TUI Keypress & Countdown Updates (`src/ui.tsx`)**: Added an immediate fast-path in `cancelActiveInteraction` when no countdown or in-flight form is active (`pending.size === 0 && inFlightForms.size === 0`), short-circuited `updateSessionState` on unchanged references, and skipped 250ms countdown updates when whole seconds have not changed (~75% fewer reactive updates while a form is open).
+- **Pre-Classification Message Sync Bypass & Stat-Validated Config Cache (`src/ui.tsx`, `src/config.ts`)**: Pre-classified incoming forms before invoking `session.message.sync` so strictly manual (`[SQ:manual]` / `manualOnPatterns`) and ignored unsupported fields skip unnecessary DB message syncs while preserving full handoff safety for `AUTO`/remediation forms; added a 64-entry LRU `mtimeMs:ctimeMs:size`-validated cache in `loadConfig`.
+- **Verification**: 177/177 unit & regression tests, 7/7 sandbox scenarios, and 8/8 live OpenCode `v2.4.1` host acceptance scenarios pass (`npm run test:all`).
+
 ## 1.3.2 — 2026-11-24
 
 - **OpenCode `v2.4.1` Unattended Automation Isolation (`src/session-scope.ts`)**: Added `isAutomationSessionID` (`/^ses_aut_/i`) and `SessionScope = 'automation'` so OpenCode `v2.4.0+`/`v2.4.1` unattended automation runs (`ses_aut_*`, including plugin-created `ctx.experimental.automation` runs) are never treated as interactive root sessions and never receive `[SQ_GUIDANCE:v1]` or TUI auto-selection even when `includeSubagents: true`.

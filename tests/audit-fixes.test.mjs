@@ -2046,5 +2046,178 @@ test('6.3: unattended OpenCode v2.4.1 automation sessions (ses_aut_*) are exclud
   );
 });
 
+test('7.1: server event.subscribe passes explicit types filter so streaming deltas are not consumed', async (t) => {
+  const { default: OpencodeSmartQuestions } = await import('../dist/index.js');
+  let capturedOptions = null;
+
+  const dispose = await OpencodeSmartQuestions.setup({
+    location: { directory: tempDirectory(t) },
+    options: { enabled: true },
+    session: {
+      async get({ sessionID }) {
+        return { id: sessionID, location: { directory: '/tmp' } };
+      },
+      async hook() {
+        return { async dispose() {} };
+      },
+    },
+    event: {
+      subscribe(options) {
+        capturedOptions = options;
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next() {
+                return new Promise((resolve) => {
+                  if (options?.signal?.aborted) {
+                    resolve({ done: true, value: undefined });
+                    return;
+                  }
+                  options?.signal?.addEventListener(
+                    'abort',
+                    () => resolve({ done: true, value: undefined }),
+                    { once: true }
+                  );
+                });
+              },
+            };
+          },
+        };
+      },
+    },
+  });
+  t.after(() => dispose?.());
+
+  await delay(10);
+  assert.ok(capturedOptions, 'event.subscribe must be called');
+  assert.ok(Array.isArray(capturedOptions.types), 'event.subscribe must pass a types filter array');
+  assert.deepEqual(
+    [...capturedOptions.types].sort(),
+    [
+      'form.cancelled',
+      'form.created',
+      'form.replied',
+      'session.deleted',
+      'session.inbox.enqueued',
+      'session.synthetic',
+    ]
+  );
+});
+
+test('7.2: TUI onKey and onPaste short-circuit without calling router.current when no form is active', async (t) => {
+  let routerCalls = 0;
+  const h = makeTuiHarness(t, { options: { timeoutMs: 50 } });
+  const origCurrent = h.context.ui.router.current;
+  h.context.ui.router.current = () => {
+    routerCalls += 1;
+    return origCurrent();
+  };
+
+  const dispose = await setup(h.context);
+  t.after(dispose);
+
+  routerCalls = 0;
+  h.emitKey({ name: 'a' });
+  h.emitKey({ name: 'b' });
+  h.emitKey({ name: 'down' });
+  for (const fn of h.keyListeners.get('paste') ?? []) fn();
+
+  assert.equal(
+    routerCalls,
+    0,
+    'router.current must not be invoked on keypress/paste when no countdown or in-flight form is active'
+  );
+});
+
+test('7.3: TUI countdown skips redundant Solid updates within same second and skips msgApi.sync for strictly manual/unsupported forms', async (t) => {
+  const uiSrc = fs.readFileSync(path.resolve(import.meta.dirname, '../src/ui.tsx'), 'utf8');
+  assert.match(
+    uiSrc,
+    /current\.countdown === countdown/,
+    'countdown interval must skip state updates when whole seconds have not changed'
+  );
+  assert.match(
+    uiSrc,
+    /if \(updated === prev\) return current/,
+    'updateSessionState must short-circuit when updater returns unchanged reference'
+  );
+
+  // Verify msgApi.sync is skipped for already-manual and unsupported free-text forms
+  let syncCalls = 0;
+  const manualForm = {
+    id: 'frm-manual-nosync-73',
+    sessionID: 'ses-1',
+    fields: [{
+      key: 'pick',
+      type: 'string',
+      options: [{ value: 'a', label: 'Run rm -rf /tmp/prod [SQ:recommended]' }, { value: 'b', label: 'Cancel' }],
+    }],
+  };
+  const freeTextForm = {
+    id: 'frm-freetext-nosync-73',
+    sessionID: 'ses-1',
+    fields: [{ key: 'notes', type: 'string', label: 'Notes' }],
+  };
+  const h = makeTuiHarness(t, {
+    options: { timeoutMs: 25 },
+    formList: () => [manualForm, freeTextForm],
+    messageApi: {
+      list() {
+        return [{ role: 'user', text: 'turn 1' }];
+      },
+      async sync() {
+        syncCalls += 1;
+      },
+    },
+  });
+  const dispose = await setup(h.context);
+  t.after(dispose);
+
+  await h.events.get('form.created')({ data: { form: manualForm } });
+  await h.events.get('form.created')({ data: { form: freeTextForm } });
+  await delay(50);
+
+  assert.equal(syncCalls, 0, 'msgApi.sync must be skipped when form is already strictly manual or ignored unsupported');
+  assert.equal(h.replies.length, 0);
+});
+
+test('7.4: loadConfig caches unchanged config files by stat metadata and invalidates on modification/deletion', async (t) => {
+  const { loadConfig } = await import('../dist/config.js');
+  const dir = tempDirectory(t);
+  const cfgDir = path.join(dir, '.opencode');
+  const cfgPath = path.join(cfgDir, 'smart-question.json');
+  fs.mkdirSync(cfgDir, { recursive: true });
+  fs.writeFileSync(cfgPath, JSON.stringify({ timeoutMs: 4321 }), 'utf8');
+
+  const first = loadConfig(dir);
+  assert.equal(first?.timeoutMs, 4321);
+
+  const origReadFileSync = fs.readFileSync;
+  let reads = 0;
+  fs.readFileSync = (...args) => {
+    if (args[0] === cfgPath) reads += 1;
+    return origReadFileSync(...args);
+  };
+  t.after(() => {
+    fs.readFileSync = origReadFileSync;
+  });
+
+  const second = loadConfig(dir);
+  assert.equal(second?.timeoutMs, 4321);
+  assert.equal(reads, 0, 'unchanged config file must be served from stat-validated cache without readFileSync');
+
+  // Modify file (different size/content) -> cache must invalidate immediately
+  fs.writeFileSync(cfgPath, JSON.stringify({ timeoutMs: 123456 }), 'utf8');
+  const third = loadConfig(dir);
+  assert.equal(third?.timeoutMs, 123456);
+  assert.equal(reads, 1, 'modified config file must re-read immediately');
+
+  // Delete file -> falls back to defaults immediately
+  fs.unlinkSync(cfgPath);
+  const fourth = loadConfig(dir);
+  assert.equal(fourth?.timeoutMs, 30000);
+});
+
+
 
 

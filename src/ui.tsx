@@ -500,8 +500,10 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
     updater: (current: OverlayState | undefined) => OverlayState | undefined
   ) => {
     setActiveBySession((current) => {
+      const prev = current[sessionID];
+      const updated = updater(prev);
+      if (updated === prev) return current;
       const next = { ...current };
-      const updated = updater(next[sessionID]);
       if (updated) next[sessionID] = updated;
       else delete next[sessionID];
       return next;
@@ -651,8 +653,37 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
         );
       cleanupStaleDrafts(effectiveConfigDir, config.timeoutMs, log);
 
+      const fallbackActive =
+        config.unclassifiedQuestionPolicy === 'fallback-first' ||
+        config.fallbackToFirstOption === true;
+      const classifyOptions = {
+        requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
+        allowFallback: fallbackActive,
+        allowFallbackOnManual: config.fallbackOnManual === true,
+        manualOnPatterns: config.manualOnPatterns,
+        unsupportedFieldPolicy: config.unsupportedFieldPolicy,
+      };
+
+      // Pre-classify before expensive session message sync: forms that are already
+      // strictly manual or ignored unsupported fields do not need a DB message sync.
       let handoff = getActiveHandoff(form.sessionID);
-      if (!handoff) {
+      const preliminary = !handoff
+        ? classifyV2Form(
+            form,
+            config.recommendedMarkers,
+            config.manualMarkers,
+            null,
+            classifyOptions
+          )
+        : null;
+      const skipMessageSync =
+        preliminary !== null &&
+        (preliminary.status === 'manual' ||
+          (preliminary.status === 'unclassified' &&
+            Boolean(preliminary.unsupported) &&
+            config.unsupportedFieldPolicy !== 'remediate'));
+
+      if (!handoff && !skipMessageSync) {
         try {
           const msgApi = (context.data?.session as any)?.message;
           let msgs = msgApi?.list?.(form.sessionID);
@@ -689,23 +720,17 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
       if (!isFlightCurrent()) return;
 
       const agent = resolveAgentName(sessionInfo, form.sessionID);
-      const fallbackActive =
-        config.unclassifiedQuestionPolicy === 'fallback-first' ||
-        config.fallbackToFirstOption === true;
 
-      let classification = classifyV2Form(
-        form,
-        config.recommendedMarkers,
-        config.manualMarkers,
-        handoff,
-        {
-          requireExactlyOneRecommendation: config.requireExactlyOneRecommendation,
-          allowFallback: fallbackActive,
-          allowFallbackOnManual: config.fallbackOnManual === true,
-          manualOnPatterns: config.manualOnPatterns,
-          unsupportedFieldPolicy: config.unsupportedFieldPolicy,
-        }
-      );
+      let classification =
+        !handoff && preliminary
+          ? preliminary
+          : classifyV2Form(
+              form,
+              config.recommendedMarkers,
+              config.manualMarkers,
+              handoff,
+              classifyOptions
+            );
 
       if (classification.status === 'manual') {
         recordSmartQuestionDecision({
@@ -1086,9 +1111,12 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
           const countdown = Math.ceil(
             Math.max(0, item.expiresAt - Date.now()) / 1000
           );
-          updateSessionState(form.sessionID, (current) =>
-            current?.formID === form.id ? { ...current, countdown } : current
-          );
+          updateSessionState(form.sessionID, (current) => {
+            if (!current || current.formID !== form.id || current.countdown === countdown) {
+              return current;
+            }
+            return { ...current, countdown };
+          });
         }, 250);
       }
 
@@ -1343,6 +1371,7 @@ export const setup: OpenCodeV2Tui.Definition['setup'] = async (context) => {
   let lastRenderedSlotSessionID: string | undefined;
 
   const cancelActiveInteraction = (reason: string) => {
+    if (pending.size === 0 && inFlightForms.size === 0) return;
     const targets = new Set<string>();
     const route = context.ui.router.current();
     if (route.type === 'session' && route.sessionID) {

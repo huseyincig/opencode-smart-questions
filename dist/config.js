@@ -306,6 +306,20 @@ export function resolveSmartQuestionConfig(projectDir, pluginOptions) {
     }
     return loadConfig(projectDir);
 }
+const MAX_CONFIG_FILE_CACHE = 64;
+const configFileCache = new Map();
+function setConfigCache(filePath, entry) {
+    if (configFileCache.has(filePath)) {
+        configFileCache.delete(filePath);
+    }
+    configFileCache.set(filePath, entry);
+    while (configFileCache.size > MAX_CONFIG_FILE_CACHE) {
+        const oldest = configFileCache.keys().next().value;
+        if (oldest === undefined)
+            break;
+        configFileCache.delete(oldest);
+    }
+}
 /**
  * Load smart-question configuration from project or global config.
  * Missing configuration uses safe defaults; malformed configuration disables
@@ -319,14 +333,27 @@ export function loadConfig(projectDir) {
         path.resolve(os.homedir(), '.config/opencode/smart-question.json'),
     ];
     let configPath = null;
+    let configStat = null;
     for (const candidate of candidatePaths) {
-        if (fs.existsSync(candidate)) {
-            configPath = candidate;
-            break;
+        try {
+            const stat = fs.statSync(candidate);
+            if (stat.isFile()) {
+                configPath = candidate;
+                configStat = stat;
+                break;
+            }
+        }
+        catch {
+            // Candidate absent or inaccessible; continue to next candidate.
         }
     }
-    if (!configPath) {
+    if (!configPath || !configStat) {
         return normalizeSmartQuestionConfig({}, path.resolve(dir, '.opencode'));
+    }
+    const signature = `${configStat.mtimeMs}:${configStat.ctimeMs}:${configStat.size}`;
+    const cached = configFileCache.get(configPath);
+    if (cached && cached.signature === signature) {
+        return cached.config;
     }
     try {
         const raw = fs.readFileSync(configPath, 'utf8');
@@ -335,10 +362,12 @@ export function loadConfig(projectDir) {
         if (!normalized && parsed?.enabled !== false) {
             console.error('[smart-question] Invalid smart-question config; auto-selection disabled');
         }
+        setConfigCache(configPath, { signature, config: normalized });
         return normalized;
     }
     catch (err) {
         console.error(`[smart-question] Failed to load smart-question config (${diagnosticErrorCode(err)}); auto-selection disabled`);
+        configFileCache.delete(configPath);
         return null;
     }
 }

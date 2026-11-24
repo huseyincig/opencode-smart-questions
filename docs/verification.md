@@ -1,6 +1,6 @@
 # Verification and limitations
 
-This document describes the **v1.3.2** evaluation on **24 November 2026**.
+This document describes the **v1.3.3** evaluation on **24 November 2026**.
 
 ## Automated checks
 
@@ -24,13 +24,19 @@ CI declares Node 22.x, 24.x and 26.x. The local verification run used Node **26.
 
 | Check | Observed result |
 | --- | --- |
-| Unit and regression tests (`npm test`) | **173/173 passed** |
+| Unit and regression tests (`npm test`) | **177/177 passed** |
 | Live OpenCode `v2.4.1` acceptance (`npm run test:acceptance`) | **8/8 scenarios passed** against live `opencode serve` |
 | Strict TypeScript and Oxlint | **Passed**, 0 warnings / 0 errors |
 | Simulated V2 comprehensive scenarios | **7/7 passed** |
 | Separate V2 smoke test | **Passed** |
 | Dependency audit (`npm audit`) | **0 vulnerabilities** |
 | Packaging dry run (`npm pack --dry-run`) | Expected server, UI, TUI, declaration, and documentation files included |
+
+## v1.3.3 regression & fix coverage
+
+- **Server Event Filtering (`src/index.ts`)**: Subscribes only to the 6 relevant event types (`session.synthetic`, `session.inbox.enqueued`, `form.created`, `form.replied`, `form.cancelled`, `session.deleted`) via `context.event.subscribe({ signal, types })` so streaming text/tool deltas incur zero processing overhead.
+- **TUI Idle Keypress, Countdown & Sync Optimizations (`src/ui.tsx`)**: Added an idle fast-path in `cancelActiveInteraction` (`pending.size === 0 && inFlightForms.size === 0`), skipped unchanged-second Solid updates in `updateSessionState`/countdown interval, and bypassed `session.message.sync` for strictly manual or ignored unsupported forms.
+- **Stat-Validated Config Cache (`src/config.ts`)**: Cached parsed `smart-question.json` files by `mtimeMs:ctimeMs:size` in a 64-entry LRU map with instant invalidation on modification or deletion.
 
 ## v1.3.2 regression & fix coverage
 
